@@ -1,0 +1,170 @@
+defaults:
+  - model_global_variables
+  - blocks_zoo_small
+  - blocks_zoo_input
+  - blocks_zoo
+  - encoder: pronet_gvpencoder
+  - optimizer: adam
+  - scheduler: polynomial_lr
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+  - _self_
+
+optimizer:
+  lr: 1e-5
+
+hydra:
+  job:
+    chdir: False
+  searchpath:
+    # - file:///lustre/fsn1/projects/rech/pyg/ust26qt/atomsurf/atomsurf/atomsurf/tasks/shared_conf
+    - file:///cluster/CBIO/data2/vgertner/atomsurf/atomsurf/atomsurf/tasks/shared_conf
+
+# general params
+seed: 2024
+use_wandb: True
+run_name: default
+project_name: atomsurf-atomsurf_tasks_masif_ligand
+# data_dir: /cluster/CBIO/data2/vgertner/atomsurf/atomsurf/data/masif_ligand/msms_01
+# data_dir: /lustre/fsn1/projects/rech/pyg/ust26qt/atomsurf/atomsurf/data/masif_ligand/msms_01
+data_dir: /cluster/CBIO/data2/vgertner/atomsurf/atomsurf/data/masif_ligand/msms_01
+out_dir: ../../../outputs/masif_ligand/out_dir
+test_freq: 5
+epochs: 500
+device: 0
+log_dir: "./"
+path_model: "version_x/checkpoints/last.ckpt"
+min_batch_size: 2
+use_inmem: False
+exclude_failed_patches: False
+timing: 'total'
+
+# Preprocessing parameters (for preprocess.py)
+preprocessing:
+  surface_method: msms # 'msms' or 'alpha_complex'
+  sbl_exe_path: null # Path to sbl-alpha-complex-of-molecular-model.exe, if needed
+  alpha_value: 20
+  face_reduction_rate: 0.1
+
+# On-the-fly preprocessing parameters (for train_on_fly.py)
+# These override cfg_surface/cfg_graph values when using on-fly training
+on_fly:
+  surface_method: msms       # 'msms' or 'alpha_complex'
+  alpha_value: 0.1           # Alpha value for alpha_complex method
+  face_reduction_rate: 0.1   # Mesh simplification rate (1.0 = no reduction)
+  max_vert_number: 10000000    # Maximum vertices per surface
+  use_pymesh: false          # Use PyMesh for mesh cleaning
+  use_cache: false           # Cache generated surfaces/graphs in memory
+  precomputed_patches_dir: null            # Path to msms data directory
+  # Patch extraction settings
+  # use_whole_surfaces: If true, use full protein surfaces
+  #                     If false, extract patches around binding sites using reference data
+  use_whole_surfaces: false
+  # patch_radius: Distance threshold (Å) for including vertices in patch
+  #               Vertices within this distance of reference patch vertices are kept
+  patch_radius: 6.0
+  
+  # Directory for precomputed ESM embeddings (optional)
+  # If set, loader will look for {protein_name}_esm.pt in this dir
+  esm_dir: null
+
+  # Noise augmentation settings (only applied during training)
+  # noise_mode: Type of noise augmentation
+  #   - 'none': No noise (default)
+  #   - 'independent': Noise graph and mesh separately with two sigmas
+  #   - 'joint': Noise atom coordinates, regenerate mesh from noised positions
+  noise_mode: 'none'
+  # sigma_graph: Noise standard deviation for graph coordinates (Angstroms)
+  #   Used in both 'independent' and 'joint' modes
+  sigma_graph: 0.3
+  # sigma_mesh: Noise standard deviation for mesh vertices along normals (Angstroms)
+  #   Only used in 'independent' mode (mesh noise applied along vertex normals)
+  sigma_mesh: 0.3
+  # clip_sigma: Clip noise to ±clip_sigma*sigma to prevent extreme outliers
+  clip_sigma: 3.0
+
+  # Debug mode: save PLY files for visualization (TEMPORARY - remove after debugging)
+  debug_save_ply: false           # If true, saves full surfaces and patches as PLY files
+  debug_ply_dir: '/tmp/onfly_debug'  # Directory to save PLY files
+  debug_max_samples: 5            # Max samples to save before auto-disabling
+  debug_exit_after_save: false    # If true, exit training after saving debug samples
+
+# loader params
+loader:
+  num_workers: 8
+  batch_size: 4
+  pin_memory: False
+  prefetch_factor: 2
+  shuffle: true
+  drop_last: false
+  persistent_workers: true
+  max_drop_per_batch: 0
+  small_batch_prob: null
+  small_batch_target_range: null
+
+train:
+  save_top_k: 2
+  early_stoping_patience: 100
+  accumulate_grad_batches: 1
+  val_check_interval: 1.0
+  check_val_every_n_epoch: 1
+  limit_train_batches: 1.0
+  limit_val_batches: 1.0
+  limit_test_batches: 1.0
+  gradient_clip_val: 1.0
+  deterministic: False
+  max_steps: -1
+  auto_lr_find: False
+  log_every_n_steps: 10
+  detect_anomaly: False
+  overfit_batches: 0
+  to_monitor: accuracy_balanced/val
+
+cfg_surface:
+  use_surfaces: true
+  use_whole_surfaces: False
+  data_dir: ${data_dir}
+  data_name: surfaces_patches
+  feat_keys: 'all'
+  oh_keys: 'all'
+  gdf_expand: true
+  cache_curvatures: false
+  curvature_scales: [1.0, 2.0, 3.0, 5.0, 10.0]
+  # Data augmentation settings (ONLY applies when use_whole_surfaces: True)
+  # Augmentation is applied to full PDB surfaces (surfaces_full_*), not to patches.
+  # 
+  # n_augmented_views: Number of pre-computed augmented views per sample
+  #   - Set to 1 for no augmentation (default)
+  #   - Set to 20 for 20 different noise views (requires preprocessing with same settings)
+  # augmentation_sigma: Noise standard deviation used during preprocessing (in Angstroms)
+  #   - Recommended: 0.3-0.5 for 'normal', 0.1-0.2 for 'isotropic'
+  # augmentation_noise_type: Type of noise to apply
+  #   - 'normal': Displace vertices along their normals (recommended, physically motivated)
+  #   - 'isotropic': Add independent Gaussian noise in all 3 directions (simpler but less stable)
+  #
+  # When using augmentation, set:
+  #   use_whole_surfaces: True
+  #   data_name: surfaces_full_{surface_method}_{face_reduction_rate}_{use_pymesh}
+  #   (The loader will automatically append _aug{n}_noise_sigma{s} suffix)
+  n_augmented_views: 1
+  augmentation_sigma: 0.3
+  augmentation_noise_type: 'normal'
+
+cfg_graph:
+  use_graphs: true
+  data_dir: ${data_dir}
+  data_name: rgraph
+  feat_keys: 'all'
+  oh_keys: 'all'
+  esm_dir: ${data_dir}/../esm
+  use_esm: true
+
+cfg_head:
+  encoded_dims: ${model_hdim}
+  output_dims: 7
+  norm_type: batch
+  dropout: 0.25
+
+
+encoder:
+  pool_on: surface

@@ -1,0 +1,26 @@
+input_encoder_hmr:
+  _target_: atomsurf.network_utils.communication.surface_graph_comm.SurfaceGraphCommunication
+  s_pre_block: ${2layer_input}
+  g_pre_block: ${2layer_input_chunk}
+  bp_sg_block: ${identity_mp}
+  bp_gs_block: ${hmr_mp_double}
+  s_post_block: ${cat_merge}
+  g_post_block: ${return_processed}
+
+input_encoder_bihmr:
+  _target_: atomsurf.network_utils.communication.surface_graph_comm.SurfaceGraphCommunication
+  s_pre_block: ${2layer_input_chunk}
+  g_pre_block: ${2layer_input_chunk}
+  bp_sg_block: ${hmr_mp_double}
+  bp_gs_block: ${hmr_mp_double}
+  s_post_block: ${cat_merge}
+  g_post_block: ${cat_merge}
+
+input_encoder_gvp:
+  _target_: atomsurf.network_utils.communication.surface_graph_comm.SurfaceGraphCommunication
+  s_pre_block: ${2layer_input}
+  g_pre_block: ${2layer_input}
+  bp_sg_block: ${gvp_mp_double}
+  bp_gs_block: ${gvp_mp_double}
+  s_post_block: ${cat_merge}
+  g_post_block: ${cat_merge}

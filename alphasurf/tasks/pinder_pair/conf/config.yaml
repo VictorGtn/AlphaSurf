@@ -1,0 +1,138 @@
+defaults:
+  - model_global_variables
+  - blocks_zoo_small
+  - blocks_zoo_input
+  - blocks_zoo
+  - encoder: pronet_gvpencoder
+  - optimizer: adam
+  - scheduler: reduce_lr_on_plateau
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+  - _self_
+
+optimizer:
+  lr: 1e-4
+
+hydra:
+  job:
+    chdir: False
+  searchpath:
+    - file:///cluster/CBIO/data2/vgertner/atomsurf/atomsurf/atomsurf/tasks/shared_conf
+
+# General
+seed: 2024
+use_wandb: False
+run_name: default
+project_name: pinder_pair
+data_dir: /cluster/CBIO/data2/vgertner/alphasurf/atomsurf/data/pinder-pair
+log_dir: "./"
+epochs: 100
+device: 0
+min_batch_size: 2
+ckpt_path: null                 # Path to model checkpoint for testing
+
+# Task-specific parameters
+# Task-specific parameters
+neg_to_pos_ratio: -1.0          # Ratio of negative to positive pairs (-1 = all)
+max_pos_per_pair: -1            # Max positive pairs per system (-1 = all)
+surface_neg_to_pos_ratio: 10.0  # Ratio for surface vertices
+surface_loss_weight: 1.0        # Weight for auxiliary surface loss
+interface_distance_graph: 8.0   # Distance threshold (Å) for residue graph interface
+interface_distance_surface: 6.0 # Distance threshold (Å) for surface mesh interface
+
+# Test structure setting (only affects test split)
+# - 'holo': bound structures (ground truth complex)
+# - 'apo': unbound experimental structures (more realistic)
+# - 'af2': AlphaFold2 predicted structures
+test_setting: apo
+
+# On-the-fly mode (set to null for disk mode)
+on_fly:
+  surface_method: alpha_complex
+  alpha_value: 0
+  face_reduction_rate: 1.0
+  max_vert_number: 100000
+  min_vert_number: 16           # Allow small peptides
+  use_pymesh: false
+  use_whole_surfaces: true      # Full proteins for pair task
+  
+  # Noise augmentation
+  noise_mode: 'none'
+  sigma_graph: 0.3
+  sigma_mesh: 0.3
+  clip_sigma: 3.0
+
+# Preprocessing (for preprocess.py)
+preprocessing:
+  surface_method: msms          # msms or alpha_complex
+  alpha_value: 0.0              # For alpha_complex
+  face_reduction_rate: 1.0
+  use_pymesh: false
+  compute_surfaces: true
+  compute_graphs: false
+  compute_esm: false
+  recompute_surfaces: false
+  recompute_graphs: false
+  split: train                  # train, val, or test
+  max_systems: null             # Limit for debugging
+  msms_exe_path: null           # Auto-detect if null
+  sbl_exe_path: null            # Auto-detect if null
+  n_augmented_views: 1          # Number of augmented views per protein
+  augmentation_sigma: 0.3       # Noise sigma for augmentation
+  augmentation_noise_type: normal  # normal or uniform
+
+# DataLoader
+loader:
+  num_workers: 8
+  batch_size: 8
+  pin_memory: False
+  prefetch_factor: 2
+  shuffle: true
+  persistent_workers: true
+  # Dynamic batching (uses atom count as proxy for mesh size)
+  use_dynamic_batching: false
+  max_atoms_per_batch: 50000
+  min_batch_size: 2
+
+# Training
+train:
+  save_top_k: 2
+  early_stoping_patience: 50
+  accumulate_grad_batches: 1
+  val_check_interval: 1.0
+  check_val_every_n_epoch: 1
+  limit_train_batches: 1.0
+  limit_val_batches: 1.0
+  gradient_clip_val: 1.0
+  max_steps: -1
+  log_every_n_steps: 50
+  detect_anomaly: False
+  overfit_batches: 0
+  to_monitor: auroc/val
+
+# Surface configuration
+cfg_surface:
+  use_surfaces: true
+  use_whole_surfaces: true
+  data_dir: ${data_dir}
+  data_name: surfaces
+  feat_keys: 'all'
+  oh_keys: 'all'
+
+# Graph configuration
+cfg_graph:
+  use_graphs: true
+  data_dir: ${data_dir}
+  data_name: rgraph
+  feat_keys: 'all'
+  oh_keys: 'all'
+  esm_dir: ${data_dir}/esm
+  use_esm: false
+
+# Model head
+cfg_head:
+  encoded_dims: ${model_hdim}
+  dropout: 0.25
+
+encoder:
+  pool_on: graph

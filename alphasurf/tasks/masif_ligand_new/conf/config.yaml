@@ -1,0 +1,111 @@
+defaults:
+  - model_global_variables
+  - blocks_zoo_small
+  - blocks_zoo_input
+  - blocks_zoo
+  - encoder: pronet_gvpencoder
+  - optimizer: adam
+  - scheduler: polynomial_lr
+  - override hydra/job_logging: colorlog
+  - override hydra/hydra_logging: colorlog
+  - _self_
+
+optimizer:
+  lr: 1e-5
+
+hydra:
+  job:
+    chdir: False
+  searchpath:
+    - file:///cluster/CBIO/data2/vgertner/atomsurf/atomsurf/atomsurf/tasks/shared_conf
+
+# General
+seed: 2024
+use_wandb: True
+run_name: default
+project_name: masif_ligand_new
+data_dir: /cluster/CBIO/data2/vgertner/atomsurf/atomsurf/data/masif_ligand/msms_01
+log_dir: "./"
+epochs: 500
+device: 0
+min_batch_size: 2
+
+# On-the-fly mode configuration
+# Set to null to use disk mode (precomputed surfaces/graphs)
+on_fly:
+  surface_method: alpha_complex  # 'msms' or 'alpha_complex'
+  alpha_value: 0.1
+  face_reduction_rate: 0.1
+  max_vert_number: 100000
+  use_pymesh: false
+  precomputed_patches_dir: null  # Path to precomputed MSMS patches (optional)
+  
+  # Patch extraction (set use_whole_surfaces: true for full proteins)
+  use_whole_surfaces: false
+  patch_radius: 6.0
+  min_verts: 140
+  patch_max_radius: 12.0
+  
+  # ESM embeddings directory
+  esm_dir: null
+  
+  # Noise augmentation (only applied during training)
+  # mode: 'none', 'independent', or 'joint'
+  noise_mode: 'none'
+  sigma_graph: 0.3
+  sigma_mesh: 0.3
+  clip_sigma: 3.0
+
+# DataLoader
+loader:
+  num_workers: 8
+  batch_size: 4
+  pin_memory: False
+  prefetch_factor: 2
+  shuffle: true
+  drop_last: false
+  persistent_workers: true
+
+# Training
+train:
+  save_top_k: 2
+  early_stoping_patience: 100
+  accumulate_grad_batches: 1
+  val_check_interval: 1.0
+  check_val_every_n_epoch: 1
+  limit_train_batches: 1.0
+  limit_val_batches: 1.0
+  gradient_clip_val: 1.0
+  max_steps: -1
+  log_every_n_steps: 10
+  detect_anomaly: False
+  overfit_batches: 0
+  to_monitor: accuracy_balanced/val
+
+# Surface configuration (used for disk mode or as base for on_fly)
+cfg_surface:
+  use_surfaces: true
+  use_whole_surfaces: false
+  data_dir: ${data_dir}
+  data_name: surfaces_patches
+  feat_keys: 'all'
+  oh_keys: 'all'
+
+# Graph configuration
+cfg_graph:
+  use_graphs: true
+  data_dir: ${data_dir}
+  data_name: rgraph
+  feat_keys: 'all'
+  oh_keys: 'all'
+  esm_dir: ${data_dir}/../esm
+  use_esm: true
+
+# Model head
+cfg_head:
+  encoded_dims: ${model_hdim}
+  output_dims: 7
+  dropout: 0.25
+
+encoder:
+  pool_on: surface

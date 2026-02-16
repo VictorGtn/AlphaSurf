@@ -1,0 +1,52 @@
+#!/bin/bash -l
+#SBATCH --job-name=atomsurf_alpha0_patches
+#SBATCH --output=/cluster/CBIO/data2/vgertner/atomsurf/log/train_alpha0_patches_%j.log
+#SBATCH --error=/cluster/CBIO/data2/vgertner/atomsurf/log/train_alpha0_patches_%j.err
+#SBATCH --time=2-00:00:00        
+#SBATCH --mem=64000              
+#SBATCH --gres=gpu:1             
+#SBATCH -p cbio-gpu              
+#SBATCH --cpus-per-task=4   
+#SBATCH --nodelist=node006
+
+source /cluster/CBIO/home/vgertner/miniconda3/etc/profile.d/conda.sh
+conda activate atomsurf
+
+# Change to script directory to ensure relative paths work
+cd /cluster/CBIO/data2/vgertner/atomsurf/atomsurf/atomsurf/tasks/masif_ligand
+
+# Data directory configuration
+DATA_DIR_NAME="alpha0"
+DATA_DIR="/cluster/CBIO/data2/vgertner/atomsurf/atomsurf/data/masif_ligand/$DATA_DIR_NAME"
+SURFACE_DATA_NAME="surfaces_patches_geom"
+RGRAPH_DATA_NAME="rgraph"
+
+echo "Launching training for $DATA_DIR_NAME with patches"
+echo "Data directory: $DATA_DIR"
+echo "Surface data: $SURFACE_DATA_NAME"
+echo "Graph data: $RGRAPH_DATA_NAME"
+
+python3 train.py \
+  data_dir=$DATA_DIR \
+  cfg_surface.use_whole_surfaces=false \
+  cfg_surface.data_name=$SURFACE_DATA_NAME \
+  cfg_surface.data_dir=$DATA_DIR \
+  cfg_graph.data_name=$RGRAPH_DATA_NAME \
+  cfg_graph.data_dir=$DATA_DIR \
+  encoder=pronet_gvpencoder.yaml \
+  optimizer.lr=0.0001 \
+  scheduler=reduce_lr_on_plateau \
+  epochs=1 \
+  loader.batch_size=8 \
+  loader.num_workers=8 \
+  diffusion_net.use_bn=true \
+  diffusion_net.use_layernorm=false \
+  diffusion_net.init_time=2.0 \
+  diffusion_net.init_std=2.0 \
+  train.save_top_k=5 \
+  train.early_stoping_patience=500 \
+  run_name=hybrid_gvp_3layers_msms_01_patches \
+  exclude_failed_patches=False \
+  device=0 \
+  seed=2024 \
+  

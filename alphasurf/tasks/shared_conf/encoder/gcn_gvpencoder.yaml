@@ -1,0 +1,9 @@
+name: gcn_gvpencoder
+
+
+blocks:
+  - ${input_encoder_gvp}
+  - ${diff|gcn|gat}
+  - ${diff|gcn|gat}
+  - ${diff|gcn|gat}
+  - ${diff|gcn|gat}

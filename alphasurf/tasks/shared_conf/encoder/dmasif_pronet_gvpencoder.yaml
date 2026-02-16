@@ -1,0 +1,8 @@
+name: dmasif_pronet_gvpencoder
+
+blocks:
+  - ${input_encoder_gvp}
+  - ${dmasif|pronet|gvp_normals}
+  - ${dmasif|pronet|gvp_normals}
+  - ${dmasif|pronet|gvp_normals}
+

@@ -1,0 +1,8 @@
+name: vanilla_pronet
+
+
+blocks:
+  - ${input_encoder_hmr}
+  - ${pronet|gvp}
+  - ${pronet|gvp}
+  - ${pronet|gvp}

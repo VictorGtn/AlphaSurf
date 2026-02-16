@@ -1,0 +1,20 @@
+# general model setup
+model_hdim: 128
+model_dropout: 0.1
+
+# Input params
+input_use_neigh: true
+
+# DiffusionNet Params
+use_layernorm: true
+diff_time_mean: 2  # either null (for constant init) or a float
+diff_time_std: 2
+
+# MP params
+use_knn: true
+gvp_use_normal: true
+gvp_vector_gate: false
+gvp_n_layers: 3
+gvp_use_angles: True
+
+dmasif_config: /cluster/CBIO/data2/vgertner/atomsurf/atomsurf/atomsurf/tasks/shared_conf/config.yml
