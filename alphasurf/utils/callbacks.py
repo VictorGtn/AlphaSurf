@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import torch
@@ -13,16 +14,30 @@ def add_wandb_logger(loggers, projectname, runname):
     wand_id = wandb.util.generate_id()
     tb_logger = loggers[-1]
     tags = []
-    Path(tb_logger.log_dir).absolute().mkdir(parents=True, exist_ok=True)
+    log_dir = Path(tb_logger.log_dir).absolute()
+    log_dir.mkdir(parents=True, exist_ok=True)
+
     wandb_logger = WandbLogger(
         project=projectname,
         name=runname,
         tags=tags,
-        version=Path(tb_logger.log_dir).stem,
+        version=log_dir.stem,
         id=wand_id,
-        save_dir=tb_logger.log_dir,
+        save_dir=str(log_dir),
         log_model=False,
     )
+
+    # Create a symlink in the project root for easier TUI access (wandb beta leet)
+    try:
+        project_root = log_dir.parents[1]  # lightning_logs/version_X/..
+        wandb_link = project_root / "wandb"
+        current_wandb = log_dir / "wandb"
+        if current_wandb.exists():
+            if wandb_link.is_symlink() or not wandb_link.exists():
+                os.system(f"ln -sfn {current_wandb} {wandb_link}")
+    except Exception:
+        pass
+
     loggers += [wandb_logger]
 
 

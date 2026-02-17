@@ -237,6 +237,7 @@ class SurfaceObject(Data, FeaturesHolder):
         max_vert_number=50000,
         face_reduction_rate=1.0,
         use_fem_decomp=False,
+        use_robust_laplacian=False,
         use_pymesh=False,
         out_ply_path=None,
         surface_method="msms",
@@ -264,7 +265,11 @@ class SurfaceObject(Data, FeaturesHolder):
 
         with Timer("compute_operators"):
             frames, massvec, L, evals, evecs, gradX, gradY = compute_operators(
-                verts, faces, normals=vnormals, use_fem_decomp=use_fem_decomp
+                verts,
+                faces,
+                normals=vnormals,
+                use_fem_decomp=use_fem_decomp,
+                use_robust_laplacian=use_robust_laplacian,
             )
 
         surface = cls(

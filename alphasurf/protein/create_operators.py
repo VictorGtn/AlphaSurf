@@ -351,6 +351,7 @@ def compute_operators(
         )
     # Build the scalar Laplacian
     if use_robust_laplacian:
+        print("DEBUG: Using robust_laplacian")
         L, M = robust_laplacian.mesh_laplacian(verts, faces)
     else:
         L = pp3d.cotan_laplacian(verts, faces, denom_eps=1e-10)

@@ -377,6 +377,7 @@ class ProteinLoader:
         use_pymesh = getattr(cfg, "use_pymesh", False)
         use_whole_surfaces = getattr(cfg, "use_whole_surfaces", True)
         precomputed_patches_dir = getattr(cfg, "precomputed_patches_dir", None)
+        use_robust_laplacian = getattr(cfg, "use_robust_laplacian", False)
 
         try:
             extra_kwargs = {}
@@ -391,9 +392,7 @@ class ProteinLoader:
                 pocket_name is not None or uses_precomputed_msms
             )
 
-            print(f"DEBUG: Starting surface gen for {protein_name}")
             if should_extract_patch:
-                # ... (omitted) ...
                 if uses_precomputed_msms and pocket_name:
                     patch_path = os.path.join(
                         precomputed_patches_dir, f"{pocket_name}.pt"
@@ -455,6 +454,7 @@ class ProteinLoader:
                     use_pymesh=use_pymesh,
                     surface_method=surface_method,
                     min_vert_number=min_vert_number,
+                    use_robust_laplacian=use_robust_laplacian,
                 )
 
                 surface.add_geom_feats()
@@ -494,6 +494,7 @@ class ProteinLoader:
                     use_pymesh=use_pymesh,
                     surface_method=surface_method,
                     min_vert_number=min_vert_number,
+                    use_robust_laplacian=use_robust_laplacian,
                 )
 
                 surface.add_geom_feats()

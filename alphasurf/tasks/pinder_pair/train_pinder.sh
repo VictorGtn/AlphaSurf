@@ -4,7 +4,7 @@
 #SBATCH --nodelist=node006
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
 #SBATCH --time=24:00:00
 #SBATCH --output=%x_%j.log
@@ -29,6 +29,7 @@ export PYTHONPATH=$PYTHONPATH:$REPO_ROOT:$(dirname $REPO_ROOT)/cgal_alpha_bindin
 # Configuration for WandB
 export WANDB_MODE=online
 export WANDB_DIR="/cluster/CBIO/data2/vgertner/atomsurf/log"
+export WANDB_CORE="True"
 mkdir -p $WANDB_DIR
 
 # Training command
@@ -36,12 +37,12 @@ mkdir -p $WANDB_DIR
 python $REPO_ROOT/alphasurf/tasks/pinder_pair/train.py \
     run_name=pinder_pair_v1 \
     use_wandb=true \
-    loader.num_workers=8 \
-    loader.batch_size=8 \
+    loader.num_workers=16 \
+    loader.batch_size=16 \
     loader.pin_memory=false \
     loader.persistent_workers=false \
     loader.prefetch_factor=1 \
-    loader.use_dynamic_batching=true \
+    loader.use_dynamic_batching=false \
     loader.max_atoms_per_batch=40000 \
     loader.min_batch_size=2 \
     on_fly.surface_method=alpha_complex \

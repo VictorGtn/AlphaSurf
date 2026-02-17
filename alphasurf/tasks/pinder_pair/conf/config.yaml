@@ -55,6 +55,7 @@ on_fly:
   min_vert_number: 16           # Allow small peptides
   use_pymesh: false
   use_whole_surfaces: true      # Full proteins for pair task
+  use_robust_laplacian: true    # Use robust_laplacian for FEM matrices
   
   # Noise augmentation
   noise_mode: 'none'

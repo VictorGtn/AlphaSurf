@@ -302,6 +302,12 @@ def pdb_to_alpha_complex(
                 f"pdb_to_alpha_complex failed for : {pdb_path} data must be finite, check for nan or inf values in atom_radius"
             )
 
+        # Check for empty atom_pos
+        if len(atom_pos) == 0:
+            raise RuntimeError(
+                f"pdb_to_alpha_complex failed for : {pdb_path} - No atoms found (empty array)"
+            )
+
         with Timer("sbl_alpha_complex"):
             verts, faces, singular_edges, singular_faces = (
                 cgal_alpha.compute_alpha_complex_from_atoms(
@@ -585,7 +591,7 @@ def mesh_simplification(
             msg = f"WARNING: Dropped {drop_ratio:.1%} of faces in component filtering"
             if obj_name:
                 msg += f" for {obj_name}"
-            print(msg)
+            # print(msg)
         verts_out = np.asarray(mesh.vertices).astype(np.float32)
         faces_out = np.asarray(mesh.triangles).astype(np.int32)
 
