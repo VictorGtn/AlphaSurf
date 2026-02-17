@@ -24,7 +24,7 @@ seed: 2024
 use_wandb: False
 run_name: default
 project_name: pinder_pair
-data_dir: /cluster/CBIO/data2/vgertner/alphasurf/atomsurf/data/pinder-pair
+data_dir: /cluster/CBIO/data2/vgertner/alphasurf/alphasurf/data/pinder-pair
 log_dir: "./"
 epochs: 100
 device: 0

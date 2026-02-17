@@ -20,8 +20,6 @@ import logging
 import os
 from typing import Any, Literal, Optional, Tuple
 
-logger = logging.getLogger(__name__)
-
 import numpy as np
 import torch
 from alphasurf.protein.graphs import parse_pdb_path
@@ -30,6 +28,8 @@ from alphasurf.protein.residue_graph import ResidueGraphBuilder
 from alphasurf.protein.surfaces import SurfaceObject
 from alphasurf.protein.transforms import NoiseAugmentor, PatchExtractor, add_mesh_noise
 from torch_geometric.data import Data
+
+logger = logging.getLogger(__name__)
 
 
 class ProteinLoader:
@@ -391,7 +391,9 @@ class ProteinLoader:
                 pocket_name is not None or uses_precomputed_msms
             )
 
+            print(f"DEBUG: Starting surface gen for {protein_name}")
             if should_extract_patch:
+                # ... (omitted) ...
                 if uses_precomputed_msms and pocket_name:
                     patch_path = os.path.join(
                         precomputed_patches_dir, f"{pocket_name}.pt"
@@ -413,16 +415,12 @@ class ProteinLoader:
                         verts, faces = pdb_to_surf_with_min(
                             pdb_path, min_number=min_vert_number
                         )
-                        singular_edges = 0
-                        singular_faces = 0
                     elif surface_method == "alpha_complex":
-                        verts, faces, singular_edges, singular_faces = (
-                            pdb_to_alpha_complex(
-                                pdb_path,
-                                alpha_value=alpha_value,
-                                atom_pos=extra_kwargs.get("atom_pos"),
-                                atom_radius=extra_kwargs.get("atom_radius"),
-                            )
+                        verts, faces, _, _ = pdb_to_alpha_complex(
+                            pdb_path,
+                            alpha_value=alpha_value,
+                            atom_pos=extra_kwargs.get("atom_pos"),
+                            atom_radius=extra_kwargs.get("atom_radius"),
                         )
                     else:
                         raise ValueError(f"Unknown surface method: {surface_method}")
@@ -457,12 +455,9 @@ class ProteinLoader:
                     use_pymesh=use_pymesh,
                     surface_method=surface_method,
                     min_vert_number=min_vert_number,
-                    obj_name=protein_name,
                 )
+
                 surface.add_geom_feats()
-                surface.add_geom_feats()
-                surface.singular_edges = float(singular_edges)
-                surface.singular_faces = float(singular_faces)
             else:
                 from alphasurf.protein.create_surface import (
                     pdb_to_alpha_complex,
@@ -473,10 +468,8 @@ class ProteinLoader:
                     verts, faces = pdb_to_surf_with_min(
                         pdb_path, min_number=min_vert_number
                     )
-                    singular_edges = 0
-                    singular_faces = 0
                 elif surface_method == "alpha_complex":
-                    verts, faces, singular_edges, singular_faces = pdb_to_alpha_complex(
+                    verts, faces, _, _ = pdb_to_alpha_complex(
                         pdb_path,
                         alpha_value=alpha_value,
                         atom_pos=extra_kwargs.get("atom_pos"),
@@ -501,12 +494,9 @@ class ProteinLoader:
                     use_pymesh=use_pymesh,
                     surface_method=surface_method,
                     min_vert_number=min_vert_number,
-                    obj_name=protein_name,
                 )
+
                 surface.add_geom_feats()
-                surface.add_geom_feats()
-                surface.singular_edges = float(singular_edges)
-                surface.singular_faces = float(singular_faces)
 
             surface.from_numpy()
 
@@ -521,6 +511,7 @@ class ProteinLoader:
 
         except Exception as e:
             logger.warning("Surface generation failed for %s: %s", protein_name, e)
+
             return None
 
     def _generate_graph(

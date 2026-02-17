@@ -4,7 +4,7 @@
 #SBATCH --nodelist=node006
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:1
 #SBATCH --time=24:00:00
 #SBATCH --output=%x_%j.log
@@ -23,7 +23,7 @@ export CUDA_VISIBLE_DEVICES=${SLURM_JOB_GPUS:-${GPU_DEVICE_ORDINAL:-0}}
 echo "=== Assigned GPU: $CUDA_VISIBLE_DEVICES (look for gpu.$CUDA_VISIBLE_DEVICES.* in wandb) ==="
 
 # Set path
-export REPO_ROOT=$(git rev-parse --show-toplevel)
+export REPO_ROOT=/cluster/CBIO/data2/vgertner/alphasurf/alphasurf
 export PYTHONPATH=$PYTHONPATH:$REPO_ROOT:$(dirname $REPO_ROOT)/cgal_alpha_bindings/build
 
 # Configuration for WandB
@@ -33,16 +33,16 @@ mkdir -p $WANDB_DIR
 
 # Training command
 # We use the config defaults which point to the correct data_dir
-python $REPO_ROOT/atomsurf/tasks/pinder_pair/train.py \
+python $REPO_ROOT/alphasurf/tasks/pinder_pair/train.py \
     run_name=pinder_pair_v1 \
     use_wandb=true \
-    loader.num_workers=4 \
+    loader.num_workers=8 \
     loader.batch_size=8 \
     loader.pin_memory=false \
     loader.persistent_workers=false \
     loader.prefetch_factor=1 \
     loader.use_dynamic_batching=true \
-    loader.max_atoms_per_batch=60000 \
+    loader.max_atoms_per_batch=40000 \
     loader.min_batch_size=2 \
     on_fly.surface_method=alpha_complex \
     on_fly.alpha_value=0 \

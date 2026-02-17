@@ -19,6 +19,8 @@ class FocalLoss(nn.Module):
             logits: (N, *) raw scores (before sigmoid)
             targets: (N, *) binary labels (0 or 1)
         """
+        if targets.shape != logits.shape:
+            targets = targets.view_as(logits)
         # Ensure targets are float
         targets = targets.float()
 

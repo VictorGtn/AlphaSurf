@@ -13,8 +13,8 @@ from scipy.sparse.linalg import eigsh
 script_dir = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.join(script_dir, "..", ".."))
 
-import alphasurf.utils.torch_utils as diff_utils
-import robust_laplacian
+import alphasurf.utils.torch_utils as diff_utils  # noqa: E402
+import robust_laplacian  # noqa: E402
 
 """
 In this file, we define functions to make the following transformations :
@@ -62,7 +62,7 @@ class TriMesh(object):
         cos3 = np.einsum("ij,ij->i", -e1, e2) / (L1 * L2)
 
         # cot(arccos(x)) = x/sqrt(1-x^2)
-        I = np.concatenate([faces[:, 0], faces[:, 1], faces[:, 2]])
+        I = np.concatenate([faces[:, 0], faces[:, 1], faces[:, 2]])  # noqa: E741
         J = np.concatenate([faces[:, 1], faces[:, 2], faces[:, 0]])
         S = np.concatenate([cos3, cos1, cos2])
         S = 0.5 * S / np.sqrt(1 - S**2)
@@ -84,7 +84,7 @@ class TriMesh(object):
         v3 = verts[faces[:, 2]]
         face_areas = 0.5 * np.linalg.norm(np.cross(v2 - v1, v3 - v1), axis=1)
 
-        I = np.concatenate([faces[:, 0], faces[:, 1], faces[:, 2]])
+        I = np.concatenate([faces[:, 0], faces[:, 1], faces[:, 2]])  # noqa: E741
         J = np.concatenate([faces[:, 1], faces[:, 2], faces[:, 0]])
         S = np.concatenate([face_areas, face_areas, face_areas])
 
@@ -367,13 +367,17 @@ def compute_operators(
             massvec = M.diagonal()
             # M is already a sparse matrix, so use it directly
             M_mat = M
+            if np.isnan(massvec).any():
+                raise RuntimeError("NaN mass matrix")
+            massvec = scipy.sparse.diags(massvec)
         else:
             massvec = pp3d.vertex_areas(verts, faces)
             massvec += eps * np.mean(massvec)
-            M_mat = scipy.sparse.diags(massvec)
+            if np.isnan(massvec).any():
+                raise RuntimeError("NaN mass matrix")
+            massvec = scipy.sparse.diags(massvec)
+            M_mat = massvec
 
-        if np.isnan(massvec).any():
-            raise RuntimeError("NaN mass matrix")
         # Prepare matrices
         L_eigsh = (L + scipy.sparse.identity(L.shape[0]) * eps).tocsc()
         eigs_sigma = eps
@@ -383,6 +387,7 @@ def compute_operators(
             try:
                 # We would be happy here to lower tol or maxiter since we don't need these to be super precise,
                 # but for some reason those parameters seem to have no effect
+                # for robust laplacian we have the full Mass matrix.
                 evals, evecs = sla.eigsh(L_eigsh, k=k_eig, M=M_mat, sigma=eigs_sigma)
 
                 # Clip off any eigenvalues that end up slightly negative due to numerical weirdness
