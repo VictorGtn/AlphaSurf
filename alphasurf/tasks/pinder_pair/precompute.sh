@@ -44,7 +44,7 @@ echo "Alpha Value:    $param_alpha"
 echo "Face Reduction: $param_reduction"
 echo ""
 
-python atomsurf/tasks/pinder_pair/precompute.py \
+python alphasurf/tasks/pinder_pair/precompute.py \
     on_fly.surface_method=$param_surface \
     on_fly.alpha_value=$param_alpha \
     on_fly.face_reduction_rate=$param_reduction \

@@ -50,7 +50,7 @@ def process_protein(name, cfg, surface_dir, graph_dir, recompute=False):
     graph_path = os.path.join(graph_dir, f"{name}.pt")
 
     if not recompute and os.path.exists(surf_path) and os.path.exists(graph_path):
-        return "skipped", 0.0, 0.0, 0.0
+        return "skipped", 0.0, 0.0, 0.0, 0.0
 
     try:
         # Initialize loader locally to avoid pickling issues with CGAL bindings
@@ -60,19 +60,19 @@ def process_protein(name, cfg, surface_dir, graph_dir, recompute=False):
         protein = loader.load(name)
 
         if protein is None:
-            return f"failed: {name} load returned None", 0.0, 0.0, 0.0
+            return f"failed: {name} load returned None", 0.0, 0.0, 0.0, 0.0
 
         drop_ratio = 0.0
+        drop_ratio_vertex = 0.0
         singular_edges = 0.0
         singular_faces = 0.0
         # Save Surface
         if protein.surface is not None:
-            # We save the SurfaceObject directly
-            # Note: We strip features to save space?
-            # ProteinLoader.load_from_disk expects '.pt' with torch.load
             torch.save(protein.surface, surf_path)
             if hasattr(protein.surface, "drop_ratio"):
                 drop_ratio = protein.surface.drop_ratio
+            if hasattr(protein.surface, "drop_ratio_vertex"):
+                drop_ratio_vertex = protein.surface.drop_ratio_vertex
             if hasattr(protein.surface, "singular_edges"):
                 singular_edges = protein.surface.singular_edges
             if hasattr(protein.surface, "singular_faces"):
@@ -82,10 +82,10 @@ def process_protein(name, cfg, surface_dir, graph_dir, recompute=False):
         if protein.graph is not None:
             torch.save(protein.graph, graph_path)
 
-        return "success", drop_ratio, singular_edges, singular_faces
+        return "success", drop_ratio, drop_ratio_vertex, singular_edges, singular_faces
 
     except Exception as e:
-        return f"error: {name} {str(e)}", 0.0, 0.0, 0.0
+        return f"error: {name} {str(e)}", 0.0, 0.0, 0.0, 0.0
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
@@ -170,14 +170,17 @@ def main(cfg):
             )
 
     # Summary
-    success = [r for r, _, _, _ in results if r == "success"]
-    skipped = [r for r, _, _, _ in results if r == "skipped"]
+    success = [r for r, _, _, _, _ in results if r == "success"]
+    skipped = [r for r, _, _, _, _ in results if r == "skipped"]
     errors = [
-        r for r, _, _, _ in results if r.startswith("error") or r.startswith("failed")
+        r
+        for r, _, _, _, _ in results
+        if r.startswith("error") or r.startswith("failed")
     ]
-    drop_ratios = [d for r, d, _, _ in results if r == "success"]
-    singular_edges_list = [s for r, _, s, _ in results if r == "success"]
-    singular_faces_list = [f for r, _, _, f in results if r == "success"]
+    drop_ratios = [d for r, d, _, _, _ in results if r == "success"]
+    drop_ratios_vertex = [d for r, _, d, _, _ in results if r == "success"]
+    singular_edges_list = [s for r, _, _, s, _ in results if r == "success"]
+    singular_faces_list = [f for r, _, _, _, f in results if r == "success"]
 
     print("\nDone.")
     print(f"Success: {len(success)}")
@@ -194,10 +197,26 @@ def main(cfg):
         import numpy as np
 
         drop_ratios = np.array(drop_ratios)
-        print("\nComponent Drop Statistics:")
+        print("\nComponent Drop Statistics (edge-sharing):")
         for threshold in [0.1, 0.2, 0.3, 0.4]:
             count = np.sum(drop_ratios > threshold)
             pct = (count / len(drop_ratios)) * 100
+            print(f"  > {threshold:.0%} faces dropped: {count} proteins ({pct:.1f}%)")
+
+    if len(drop_ratios_vertex) > 0:
+        import numpy as np
+
+        drop_ratios_vertex = np.array(drop_ratios_vertex)
+        n_nonzero = np.sum(drop_ratios_vertex > 0)
+        print(
+            "\nComponent Drop Statistics (vertex-sharing, same baseline as edge-based):"
+        )
+        print(
+            f"  Proteins with any vertex-only components: {n_nonzero} ({n_nonzero / len(drop_ratios_vertex) * 100:.1f}%)"
+        )
+        for threshold in [0.1, 0.2, 0.3, 0.4]:
+            count = np.sum(drop_ratios_vertex > threshold)
+            pct = (count / len(drop_ratios_vertex)) * 100
             print(f"  > {threshold:.0%} faces dropped: {count} proteins ({pct:.1f}%)")
 
     if len(singular_edges_list) > 0:

@@ -57,7 +57,7 @@ def compute_alpha_complex(pdb_path, alpha_value=0.0):
 
     # 1. Get Singular Faces
     print("Computing Singular Faces...")
-    verts_s, faces_s, _, _ = cgal_alpha.compute_alpha_complex_from_atoms(
+    verts_s, faces_s = cgal_alpha.compute_alpha_complex_from_atoms(
         atom_pos.astype(np.float32),
         atom_radius.astype(np.float32),
         float(alpha_value),
@@ -67,7 +67,7 @@ def compute_alpha_complex(pdb_path, alpha_value=0.0):
 
     # 2. Get Regular Faces
     print("Computing Regular Faces...")
-    verts_r, faces_r, _, _ = cgal_alpha.compute_alpha_complex_from_atoms(
+    verts_r, faces_r = cgal_alpha.compute_alpha_complex_from_atoms(
         atom_pos.astype(np.float32),
         atom_radius.astype(np.float32),
         float(alpha_value),

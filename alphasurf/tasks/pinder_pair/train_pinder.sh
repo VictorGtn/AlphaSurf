@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=pinder_train
 #SBATCH --partition=cbio-gpu
-#SBATCH --nodelist=node006
+#SBATCH --nodelist=node003
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
@@ -38,7 +38,7 @@ python $REPO_ROOT/alphasurf/tasks/pinder_pair/train.py \
     run_name=pinder_pair_v1 \
     use_wandb=true \
     loader.num_workers=16 \
-    loader.batch_size=16 \
+    loader.batch_size=4 \
     loader.pin_memory=false \
     loader.persistent_workers=false \
     loader.prefetch_factor=1 \

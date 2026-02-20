@@ -415,7 +415,7 @@ class ProteinLoader:
                             pdb_path, min_number=min_vert_number
                         )
                     elif surface_method == "alpha_complex":
-                        verts, faces, _, _ = pdb_to_alpha_complex(
+                        verts, faces = pdb_to_alpha_complex(
                             pdb_path,
                             alpha_value=alpha_value,
                             atom_pos=extra_kwargs.get("atom_pos"),
@@ -469,7 +469,7 @@ class ProteinLoader:
                         pdb_path, min_number=min_vert_number
                     )
                 elif surface_method == "alpha_complex":
-                    verts, faces, _, _ = pdb_to_alpha_complex(
+                    verts, faces = pdb_to_alpha_complex(
                         pdb_path,
                         alpha_value=alpha_value,
                         atom_pos=extra_kwargs.get("atom_pos"),

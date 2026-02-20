@@ -21,10 +21,10 @@ if _cgal_bindings_dir is None:
 
 sys.path.insert(0, _cgal_bindings_dir)
 print(f"[CGAL] Loading bindings from: {_cgal_bindings_dir}")
-import cgal_alpha  # ty:ignore[unresolved-import]
+import cgal_alpha  # ty:ignore[unresolved-import] # noqa: E402
 
 print(f"[CGAL] Successfully loaded: {cgal_alpha.__file__}")
-from alphasurf.protein.graphs import parse_pdb_path
+from alphasurf.protein.graphs import parse_pdb_path  # noqa: E402
 
 # os.environ['OMP_NUM_THREADS'] = '1'
 # os.environ['MKL_NUM_THREADS'] = '1'
@@ -33,7 +33,7 @@ if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.realpath(__file__))
     sys.path.append(os.path.join(script_dir, "..", ".."))
 
-from alphasurf.utils.python_utils import silentremove
+from alphasurf.utils.python_utils import silentremove  # noqa: E402
 
 
 def cluster_triangles_by_vertex_sharing(faces):
@@ -309,17 +309,15 @@ def pdb_to_alpha_complex(
             )
 
         with Timer("sbl_alpha_complex"):
-            verts, faces, singular_edges, singular_faces = (
-                cgal_alpha.compute_alpha_complex_from_atoms(
-                    atom_pos.astype(np.float32),
-                    atom_radius.astype(np.float32),
-                    float(alpha_value),
-                    1.4,
-                    "singular+regular",
-                )
+            verts, faces = cgal_alpha.compute_alpha_complex_from_atoms(
+                atom_pos.astype(np.float32),
+                atom_radius.astype(np.float32),
+                float(alpha_value),
+                1.4,
+                "singular+regular",
             )
 
-        return verts, faces, singular_edges, singular_faces
+        return verts, faces
 
     else:
         # Subprocess approach (old method)
@@ -374,7 +372,7 @@ def pdb_to_alpha_complex(
                 if os.path.exists(results_dir):
                     shutil.rmtree(results_dir)
 
-        return verts, faces, 0, 0
+        return verts, faces
 
 
 """
@@ -496,12 +494,6 @@ def mesh_simplification(
     Most of the computation time resides in the coarsening.
     """
 
-    # Extract base name for debug saves
-    if out_ply is not None:
-        base_name = os.path.splitext(os.path.basename(out_ply))[0]
-    else:
-        base_name = "debug_mesh"
-
     # remeshing to have a target number of vertices
     faces_num = max(min_vert_number * 2 + 1, int(face_reduction_rate * len(faces)))
     mesh = o3d.geometry.TriangleMesh(
@@ -532,39 +524,32 @@ def mesh_simplification(
     faces_out = np.asarray(mesh.triangles)
     # save_debug_ply(mesh, base_name, "11_final_mesh_before_pymesh")
 
-    # Default drop_ratio if not calculated (e.g. pymesh path or no clustering)
     drop_ratio = 0.0
+    drop_ratio_vertex = 0.0
 
     if not use_pymesh:
-        # TODO time
-        if surface_method == "alpha_complex":
-            triangle_clusters, cluster_n_triangles, _ = (
-                mesh.cluster_connected_triangles()
-            )
-            triangle_clusters = np.asarray(triangle_clusters)
-            cluster_n_triangles = np.asarray(cluster_n_triangles)
-        else:
-            # Standard edge-based clustering for MSMS
-            triangle_clusters, cluster_n_triangles, _ = (
-                mesh.cluster_connected_triangles()
-            )
-            triangle_clusters = np.asarray(triangle_clusters)
-            cluster_n_triangles = np.asarray(cluster_n_triangles)
-        # save_debug_ply(mesh, base_name, "07_after_cluster_connected_triangles")
+        triangle_clusters, cluster_n_triangles, _ = mesh.cluster_connected_triangles()
+        triangle_clusters = np.asarray(triangle_clusters)
+        cluster_n_triangles = np.asarray(cluster_n_triangles)
 
         if surface_method == "alpha_complex":
-            # For alpha_complex, just keep the largest connected component
+            # Vertex-sharing clustering (experiment): run on the same pre-filter faces
+            # so both drop_ratios are comparable against the same baseline.
+            vc_clusters, vc_cluster_n = cluster_triangles_by_vertex_sharing(
+                np.asarray(mesh.triangles)
+            )
+            if len(vc_cluster_n) > 1:
+                vc_largest = np.argmax(vc_cluster_n)
+                vc_dropped = np.sum(vc_clusters != vc_largest)
+                drop_ratio_vertex = vc_dropped / len(vc_clusters)
+
             largest_cluster_idx = np.argmax(cluster_n_triangles)
             triangles_to_remove = triangle_clusters != largest_cluster_idx
             dropped_faces = np.sum(triangles_to_remove)
             mesh.remove_triangles_by_mask(triangles_to_remove)
-            # save_debug_ply(mesh, base_name, "08_alpha_complex_after_remove_triangles")
             mesh.remove_unreferenced_vertices()
-            # save_debug_ply(mesh, base_name, "09_alpha_complex_after_remove_unreferenced_vertices")
             mesh.remove_degenerate_triangles()
-            # save_debug_ply(mesh, base_name, "10_alpha_complex_after_remove_degenerate_triangles")
         else:
-            # For MSMS, remove small clusters with cutoff check
             largest_cluster_size = np.max(cluster_n_triangles)
             cutoff = int(0.01 * largest_cluster_size)
             assert (
@@ -574,24 +559,16 @@ def mesh_simplification(
             triangles_to_remove = cluster_n_triangles[triangle_clusters] < cutoff
             dropped_faces = np.sum(triangles_to_remove)
             mesh.remove_triangles_by_mask(triangles_to_remove)
-            # save_debug_ply(mesh, base_name, "08_msms_after_remove_triangles")
             mesh.remove_unreferenced_vertices()
-            # save_debug_ply(mesh, base_name, "09_msms_after_remove_unreferenced_vertices")
             mesh.remove_degenerate_triangles()
-            # save_debug_ply(mesh, base_name, "10_msms_after_remove_degenerate_triangles")
 
-        # Log warning if too many faces were removed
         total_faces = len(triangle_clusters)
-        if total_faces > 0:
-            drop_ratio = dropped_faces / total_faces
-        else:
-            drop_ratio = 0.0
+        drop_ratio = dropped_faces / total_faces if total_faces > 0 else 0.0
 
         if drop_ratio > 0.1:
             msg = f"WARNING: Dropped {drop_ratio:.1%} of faces in component filtering"
             if obj_name:
                 msg += f" for {obj_name}"
-            # print(msg)
         verts_out = np.asarray(mesh.vertices).astype(np.float32)
         faces_out = np.asarray(mesh.triangles).astype(np.int32)
 
@@ -681,7 +658,7 @@ def mesh_simplification(
 
     # save_debug_ply(mesh, base_name, "13_final_mesh_after_trimesh_preprocess")
 
-    return verts_out, faces_out, drop_ratio
+    return verts_out, faces_out, drop_ratio, drop_ratio_vertex
 
 
 def get_surface(
@@ -699,13 +676,13 @@ def get_surface(
     if surface_method == "msms":
         verts, faces = pdb_to_surf_with_min(pdb_path, min_number=min_vert_number)
     elif surface_method == "alpha_complex":
-        verts, faces, _, _ = pdb_to_alpha_complex(
+        verts, faces = pdb_to_alpha_complex(
             pdb_path, sbl_exe_path=sbl_exe_path, alpha_value=alpha_value
         )
     else:
         raise ValueError(f"Unknown surface method: {surface_method}")
 
-    verts, faces, drop_ratio = mesh_simplification(
+    verts, faces, drop_ratio, _ = mesh_simplification(
         verts=verts,
         faces=faces,
         out_ply=out_ply_path,

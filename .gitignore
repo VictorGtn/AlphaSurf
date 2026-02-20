@@ -162,8 +162,9 @@ cython_debug/
 # ignore all files that has the path **/outputs/
 **/outputs/
 
-# Ignore all wandb folders in any subfolder
-**/wandb/
+# Ignore all wandb folders and symlinks in any subfolder
+**/wandb
+
 **/lightning_logs/
 
 bin/

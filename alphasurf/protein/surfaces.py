@@ -39,7 +39,7 @@ def get_geom_feats(verts, faces, evecs, evals, vnormals, num_signatures=16):
         import igl
 
         _, _, k1, k2 = igl.principal_curvature(verts, faces)
-    except:
+    except Exception:
         return None
 
     gauss_curvs = (k1 * k2).reshape(-1, 1)
@@ -250,7 +250,7 @@ class SurfaceObject(Data, FeaturesHolder):
         verts = diff_utils.toNP(verts)
         faces = diff_utils.toNP(faces).astype(int)
         with Timer("mesh_processing"):
-            verts, faces, drop_ratio = mesh_simplification(
+            verts, faces, drop_ratio, drop_ratio_vertex = mesh_simplification(
                 verts=verts,
                 faces=faces,
                 out_ply=out_ply_path,
@@ -284,6 +284,7 @@ class SurfaceObject(Data, FeaturesHolder):
             vnormals=vnormals,
         )
         surface.drop_ratio = drop_ratio
+        surface.drop_ratio_vertex = drop_ratio_vertex
         return surface
 
     @classmethod
@@ -313,7 +314,7 @@ class SurfaceObject(Data, FeaturesHolder):
             elif surface_method == "alpha_complex":
                 from alphasurf.protein.create_surface import pdb_to_alpha_complex
 
-                verts, faces, _, _ = pdb_to_alpha_complex(
+                verts, faces = pdb_to_alpha_complex(
                     pdb_path,
                     sbl_exe_path=sbl_exe_path,
                     alpha_value=alpha_value,
