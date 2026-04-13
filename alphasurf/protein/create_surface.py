@@ -115,7 +115,7 @@ def save_debug_ply(mesh, base_name, step_name):
 
 """
 In this file, we define functions to make the following transformations :
-PDB -> MSMS surfaces as vert and faces 
+PDB -> MSMS surfaces as vert and faces
 MSMS surface -> refined one, saved as .ply
 """
 
@@ -314,7 +314,6 @@ def pdb_to_alpha_complex(
                 atom_radius.astype(np.float32),
                 float(alpha_value),
                 1.4,
-                "singular+regular",
             )
 
         return verts, faces
@@ -507,11 +506,13 @@ def mesh_simplification(
     if surface_method == "msms":
         mesh.remove_non_manifold_edges()
     # save_debug_ply(mesh, base_name, "01_after_remove_non_manifold_edges")
-    mesh.remove_duplicated_vertices()
+    if surface_method != "alpha_complex":
+        mesh.remove_duplicated_vertices()
     # save_debug_ply(mesh, base_name, "02_after_remove_duplicated_vertices")
     mesh.remove_degenerate_triangles()
     # save_debug_ply(mesh, base_name, "03_after_remove_degenerate_triangles")
-    mesh.remove_duplicated_triangles()
+    if surface_method != "alpha_complex":
+        mesh.remove_duplicated_triangles()
     # save_debug_ply(mesh, base_name, "04_after_remove_duplicated_triangles")
 
     mesh.remove_unreferenced_vertices()
@@ -651,7 +652,8 @@ def mesh_simplification(
     verts_out = verts_out.astype(np.float32)
     faces_out = faces_out.astype(np.int32)
     # remove duplicate
-    mesh = trimesh.Trimesh(vertices=verts_out, faces=faces_out, preprocess=True)
+    _preprocess = surface_method != "alpha_complex"
+    mesh = trimesh.Trimesh(vertices=verts_out, faces=faces_out, preprocess=_preprocess)
     # save_debug_ply(mesh, base_name, "12_after_trimesh_preprocess")
     verts_out = np.array(mesh.vertices).astype(np.float32)
     faces_out = np.array(mesh.faces).astype(np.int32)
@@ -659,6 +661,163 @@ def mesh_simplification(
     # save_debug_ply(mesh, base_name, "13_final_mesh_after_trimesh_preprocess")
 
     return verts_out, faces_out, drop_ratio, drop_ratio_vertex
+
+
+def pdb_to_edtsurf(pdb_path):
+    """Generate molecular surface using EDTSurf."""
+    EDTSURF_BIN = str(Path(__file__).resolve().parents[3] / "EDTSurf" / "EDTSurf")
+    out_base = os.path.join(tempfile.gettempdir(), f"edtsurf_{os.getpid()}")
+    ply_file = out_base + ".ply"
+
+    try:
+        result = subprocess.run(
+            [
+                EDTSURF_BIN,
+                "-i",
+                pdb_path,
+                "-o",
+                out_base,
+                "-s",
+                "3",
+                "-p",
+                "1.4",
+                "-f",
+                "0.5",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if not os.path.exists(ply_file):
+            raise RuntimeError(f"EDTSurf produced no output: {result.stdout[-200:]}")
+
+        mesh = trimesh.load(ply_file, process=False)
+        verts = np.array(mesh.vertices, dtype=np.float32)
+        faces = np.array(mesh.faces, dtype=np.int32)
+        return verts, faces
+    finally:
+        silentremove(ply_file)
+        silentremove(out_base + ".asa")
+        silentremove(out_base + "-cav.pdb")
+
+
+def _parse_off(off_path):
+    """Parse OFF mesh file (NanoShaper output format)."""
+    with open(off_path, "r") as f:
+        lines = f.readlines()
+
+    # Strip comments and blank lines, keeping only data lines
+    data_lines = [
+        line.strip()
+        for line in lines
+        if line.strip() and not line.strip().startswith("#")
+    ]
+
+    d = 0
+    if data_lines[d].startswith("OFF"):
+        d += 1
+    n_verts, n_faces, _ = map(int, data_lines[d].split())
+    d += 1
+
+    verts = np.zeros((n_verts, 3), dtype=np.float32)
+    for i in range(n_verts):
+        verts[i] = [float(x) for x in data_lines[d].split()[:3]]
+        d += 1
+
+    faces = np.zeros((n_faces, 3), dtype=np.int32)
+    for i in range(n_faces):
+        parts = data_lines[d].split()
+        if int(parts[0]) == 3:
+            faces[i] = [int(parts[1]), int(parts[2]), int(parts[3])]
+        d += 1
+
+    return verts, faces
+
+
+def pdb_to_nanoshaper(pdb_path, probe_radius=1.4, grid_scale=2.0):
+    """Generate SES molecular surface using NanoShaper."""
+    NANOSHAPER_BIN = str(
+        Path(__file__).resolve().parents[3]
+        / "nanoshaper-master"
+        / "build"
+        / "NanoShaper"
+    )
+
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    binary_base_path = os.path.abspath(os.path.join(script_dir, "..", "..", "bin"))
+    system = platform.system()
+    if system == "Darwin":
+        platform_dir = "msms_macos"
+    elif system == "Linux":
+        platform_dir = "msms_linux"
+    else:
+        raise RuntimeError(f"Unsupported platform: {system}")
+    binary_path = os.path.join(binary_base_path, platform_dir)
+    pdb2xyzr_path = os.path.abspath(os.path.join(binary_path, "pdb_to_xyzr"))
+
+    work_dir = tempfile.mkdtemp(prefix="nanoshaper_")
+    xyzr_file = os.path.join(work_dir, "atoms.xyzr")
+    conf_file = os.path.join(work_dir, "conf.prm")
+    off_file = os.path.join(work_dir, "triangulatedSurf.off")
+
+    try:
+        with open(xyzr_file, "w") as f:
+            subprocess.run(
+                [pdb2xyzr_path, pdb_path], stdout=f, cwd=binary_path, check=True
+            )
+
+        conf = (
+            f"Compute_Vertex_Normals = true\n"
+            f"Save_Mesh_MSMS_Format = false\n"
+            f"Load_Balancing = true\n"
+            f"Grid_scale = {grid_scale}\n"
+            f"Grid_perfil = 80.0\n"
+            f"XYZR_FileName = {xyzr_file}\n"
+            f"Build_epsilon_maps = false\n"
+            f"Build_status_map = true\n"
+            f"Tri2Balls = false\n"
+            f"Surface = ses\n"
+            f"Smooth_Mesh = true\n"
+            f"Number_thread = 4\n"
+            f"Skin_Surface_Parameter = 0.45\n"
+            f"Blobbyness = -2.5\n"
+            f"Skip_Mem_CleanUp = true\n"
+            f"Patch_Based_Algorithm = true\n"
+            f"Analytical_Ray_Vs_Torus_Intersection = true\n"
+            f"Force_Serial_Build = false\n"
+            f"Max_Num_Atoms = -1\n"
+            f"Domain_Shrinkage = 1.0\n"
+            f"Optimize_Grids = true\n"
+            f"Cavity_Detection_Filling = false\n"
+            f"Conditional_Volume_Filling_Value = 11.4\n"
+            f"Keep_Water_Shaped_Cavities = false\n"
+            f"Probe_Radius = {probe_radius}\n"
+            f"Max_Probes_Self_Intersections = 100\n"
+            f"Self_Intersections_Grid_Coefficient = 1.5\n"
+            f"Accurate_Triangulation = true\n"
+            f"Triangulation = true\n"
+            f"Check_duplicated_vertices = true\n"
+            f"Save_Status_map = false\n"
+            f"Save_PovRay = false\n"
+        )
+        with open(conf_file, "w") as f:
+            f.write(conf)
+
+        result = subprocess.run(
+            [NANOSHAPER_BIN, conf_file],
+            cwd=work_dir,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+
+        if not os.path.exists(off_file):
+            raise RuntimeError(f"NanoShaper produced no output: {result.stderr[-300:]}")
+
+        verts, faces = _parse_off(off_file)
+        return verts, faces
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
 
 
 def get_surface(
@@ -679,6 +838,10 @@ def get_surface(
         verts, faces = pdb_to_alpha_complex(
             pdb_path, sbl_exe_path=sbl_exe_path, alpha_value=alpha_value
         )
+    elif surface_method == "edtsurf":
+        verts, faces = pdb_to_edtsurf(pdb_path)
+    elif surface_method == "nanoshaper":
+        verts, faces = pdb_to_nanoshaper(pdb_path)
     else:
         raise ValueError(f"Unknown surface method: {surface_method}")
 
@@ -728,13 +891,13 @@ def add_normal_noise(verts, faces, sigma=0.3, normals=None, clip_sigma=3.0, seed
     Returns:
         verts_noisy: (N, 3) array of displaced vertex positions
     """
-    import igl
-
     if seed is not None:
         np.random.seed(seed)
 
     if normals is None:
-        normals = igl.per_vertex_normals(verts, faces)
+        from alphasurf.protein.create_operators import vertex_normals
+
+        normals = vertex_normals(verts, faces)
 
     noise = np.random.randn(len(verts), 1) * sigma
 

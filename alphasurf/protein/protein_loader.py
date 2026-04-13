@@ -378,6 +378,8 @@ class ProteinLoader:
         use_whole_surfaces = getattr(cfg, "use_whole_surfaces", True)
         precomputed_patches_dir = getattr(cfg, "precomputed_patches_dir", None)
         use_robust_laplacian = getattr(cfg, "use_robust_laplacian", False)
+        use_igl_normals = getattr(cfg, "use_igl_normals", False)
+        nanoshaper_grid_scale = getattr(cfg, "nanoshaper_grid_scale", 2.0)
 
         try:
             extra_kwargs = {}
@@ -407,6 +409,8 @@ class ProteinLoader:
                 else:
                     from alphasurf.protein.create_surface import (
                         pdb_to_alpha_complex,
+                        pdb_to_edtsurf,
+                        pdb_to_nanoshaper,
                         pdb_to_surf_with_min,
                     )
 
@@ -421,6 +425,12 @@ class ProteinLoader:
                             atom_pos=extra_kwargs.get("atom_pos"),
                             atom_radius=extra_kwargs.get("atom_radius"),
                         )
+                    elif surface_method == "edtsurf":
+                        verts, faces = pdb_to_edtsurf(pdb_path)
+                    elif surface_method == "nanoshaper":
+                        verts, faces = pdb_to_nanoshaper(
+                            pdb_path, grid_scale=nanoshaper_grid_scale
+                        )
                     else:
                         raise ValueError(f"Unknown surface method: {surface_method}")
 
@@ -429,9 +439,7 @@ class ProteinLoader:
                             verts, faces, pocket_name
                         )
                         if result is None:
-                            logger.warning(
-                                "Patch extraction failed for %s", pocket_name
-                            )
+                            logger.debug("Patch extraction failed for %s", pocket_name)
                             return None
                         patch_verts, patch_faces = result
                     else:
@@ -455,12 +463,15 @@ class ProteinLoader:
                     surface_method=surface_method,
                     min_vert_number=min_vert_number,
                     use_robust_laplacian=use_robust_laplacian,
+                    use_igl_normals=use_igl_normals,
                 )
 
                 surface.add_geom_feats()
             else:
                 from alphasurf.protein.create_surface import (
                     pdb_to_alpha_complex,
+                    pdb_to_edtsurf,
+                    pdb_to_nanoshaper,
                     pdb_to_surf_with_min,
                 )
 
@@ -474,6 +485,12 @@ class ProteinLoader:
                         alpha_value=alpha_value,
                         atom_pos=extra_kwargs.get("atom_pos"),
                         atom_radius=extra_kwargs.get("atom_radius"),
+                    )
+                elif surface_method == "edtsurf":
+                    verts, faces = pdb_to_edtsurf(pdb_path)
+                elif surface_method == "nanoshaper":
+                    verts, faces = pdb_to_nanoshaper(
+                        pdb_path, grid_scale=nanoshaper_grid_scale
                     )
                 else:
                     raise ValueError(f"Unknown surface method: {surface_method}")
@@ -495,6 +512,7 @@ class ProteinLoader:
                     surface_method=surface_method,
                     min_vert_number=min_vert_number,
                     use_robust_laplacian=use_robust_laplacian,
+                    use_igl_normals=use_igl_normals,
                 )
 
                 surface.add_geom_feats()

@@ -178,15 +178,28 @@ class PatchExtractor:
 
     def get_patch_vertices(self, pocket_name: str) -> Optional[np.ndarray]:
         """Load reference patch vertices from NPZ file."""
+        import logging
+
+        logger = logging.getLogger(__name__)
+
         npz_path = os.path.join(self.patch_dir, f"{pocket_name}.npz")
         if not os.path.exists(npz_path):
+            logger.warning(
+                "Patch extraction failed for %s: file %s not found",
+                pocket_name,
+                npz_path,
+            )
             return None
 
         try:
             data = np.load(npz_path, allow_pickle=True)
             return data["pkt_verts"]
         except Exception as e:
-            print(f"Failed to load patch {pocket_name}: {e}")
+            logger.warning(
+                "Patch extraction failed for %s: error loading npz file: %s",
+                pocket_name,
+                e,
+            )
             return None
 
     def extract_patch(
@@ -230,6 +243,14 @@ class PatchExtractor:
 
             current_radius += 2.0
 
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Patch extraction failed for %s: no connected component reached min_verts=%d within max_radius=%.1f",
+            pocket_name,
+            self.min_verts,
+            self.max_radius,
+        )
         return None
 
     def _get_largest_component(
