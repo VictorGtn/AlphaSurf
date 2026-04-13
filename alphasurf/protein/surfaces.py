@@ -4,6 +4,7 @@ import sys
 import igl
 import numpy as np
 import torch
+from cpp_curvature.curvature_ext import principal_curvature as _principal_curvature
 from torch_geometric.data import Batch, Data
 from torch_sparse import SparseTensor
 
@@ -36,12 +37,9 @@ def get_geom_feats(verts, faces, evecs, evals, vnormals, num_signatures=16):
         return None
 
     try:
-        import igl
-
-        _, _, k1, k2 = igl.principal_curvature(verts, faces)
+        _, _, k1, k2 = _principal_curvature(verts, faces, normals=vnormals)
     except Exception:
         return None
-
     gauss_curvs = (k1 * k2).reshape(-1, 1)
     mean_curvs = (0.5 * (k1 + k2)).reshape(-1, 1)
 
@@ -242,8 +240,9 @@ class SurfaceObject(Data, FeaturesHolder):
         out_ply_path=None,
         surface_method="msms",
         obj_name=None,
+        use_igl_normals=False,
     ):
-        from alphasurf.protein.create_operators import compute_operators
+        from alphasurf.protein.create_operators import compute_operators, vertex_normals
         from alphasurf.protein.create_surface import mesh_simplification
         from alphasurf.utils.timing_stats import Timer
 
@@ -261,7 +260,7 @@ class SurfaceObject(Data, FeaturesHolder):
                 surface_method=surface_method,
                 obj_name=obj_name,
             )
-        vnormals = igl.per_vertex_normals(verts, faces)
+        vnormals = vertex_normals(verts, faces, use_igl=use_igl_normals)
 
         with Timer("compute_operators"):
             frames, massvec, L, evals, evecs, gradX, gradY = compute_operators(
