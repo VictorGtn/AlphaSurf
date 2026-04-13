@@ -23,10 +23,9 @@ import argparse
 import functools
 import logging
 import multiprocessing
-import os
 import warnings
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from tqdm import tqdm
 
@@ -44,7 +43,7 @@ def process_id_chunk(
     test_setting: str,
     overwrite: bool = False,
 ) -> Tuple[int, List[Dict]]:
-    """Process a chunk of systems."""
+    """Process a chunk of systems using PinderSystem properties directly."""
     try:
         from pinder.core.loader.loader import PinderLoader
     except ImportError:
@@ -53,15 +52,10 @@ def process_id_chunk(
     output_dir = Path(output_dir)
     pdb_dir = output_dir / "pdb"
     systems_info = []
-
-    # Initialize loader for this chunk
     loader = PinderLoader(ids=ids)
 
-    # Use index-based iteration to handle errors in __getitem__ or loading
     for i in range(len(ids)):
         try:
-            # Access by index to isolate errors to specific systems
-            # Handle loader output format (can be tuple or system)
             item = loader[i]
             if isinstance(item, tuple):
                 system = item[0]
@@ -69,61 +63,44 @@ def process_id_chunk(
                 system = item
 
             system_id = system.entry.id
+            setting = test_setting if split == "test" else "holo"
 
-            # Get appropriate structures based on setting
-            if split == "test":
-                receptor_path, ligand_path = _get_test_structures(system, test_setting)
+            if setting == "holo":
+                # native_R/L extracted from the dimer — avoids corrupted
+                # test_set_pdbs for test systems, works for train/val too.
+                r_struct = system.native_R
+                l_struct = system.native_L
+            elif setting == "apo":
+                r_struct = system.apo_receptor
+                l_struct = system.apo_ligand
+            elif setting == "af2":
+                r_struct = system.pred_receptor
+                l_struct = system.pred_ligand
             else:
-                # For train/val, use holo (bound) structures
-                receptor_path = _get_structure_path(system, "receptor", "holo")
-                ligand_path = _get_structure_path(system, "ligand", "holo")
-
-            if receptor_path is None or ligand_path is None:
-                # DEBUG: print why we skipped
-                # print(
-                #     f"SKIP {system_id}: Paths are None (R={receptor_path}, L={ligand_path})"
-                # )
                 continue
 
-            # Skip check for cloud paths
-            if not (
-                str(receptor_path).startswith("gs://")
-                or str(receptor_path).startswith("s3://")
-            ):
-                if not os.path.exists(receptor_path) or not os.path.exists(ligand_path):
-                    # float check
-                    # print(
-                    #     f"SKIP {system_id}: Local paths don't exist (R={receptor_path}, L={ligand_path})"
-                    # )
-                    continue
+            if r_struct is None or l_struct is None:
+                continue
 
-            # Copy to standardized location
-            # Use setting-specific names to allow coexistence of Holo, Apo, and AF2
-            suffix = ""
-            if split == "test":
-                suffix = f"_{test_setting}"
-
+            suffix = f"_{setting}" if split == "test" else ""
             receptor_dest = pdb_dir / f"{system_id}_R{suffix}.pdb"
             ligand_dest = pdb_dir / f"{system_id}_L{suffix}.pdb"
 
-            # Only copy if files don't exist or overwrite is enabled
             if overwrite or not receptor_dest.exists():
-                _copy_file(receptor_path, receptor_dest)
-
+                r_struct.to_pdb(receptor_dest)
             if overwrite or not ligand_dest.exists():
-                _copy_file(ligand_path, ligand_dest)
+                l_struct.to_pdb(ligand_dest)
 
             systems_info.append(
                 {
                     "id": system_id,
                     "receptor_id": f"{system_id}_R",
                     "ligand_id": f"{system_id}_L",
-                    "setting": test_setting if split == "test" else "holo",
+                    "setting": setting,
                 }
             )
 
         except Exception as e:
-            # Try to get system ID if possible, otherwise use index
             sys_id_str = ids[i] if i < len(ids) else f"index_{i}"
             print(f"Error processing system {sys_id_str}: {e}")
             continue
@@ -206,83 +183,6 @@ def download_pinder_clustered(
 
     print(f"\nTotal processed: {len(systems_info)}")
     return systems_info
-
-
-def _get_structure_path(system, chain_type: str, setting: str) -> Optional[str]:
-    """
-    Get path to structure file for a chain.
-
-    Args:
-        system: PinderSystem object
-        chain_type: 'receptor' or 'ligand'
-        setting: 'holo' (bound), 'apo' (unbound), 'af2' (predicted)
-    """
-    try:
-        if setting == "holo":
-            # Bound (from complex)
-            if chain_type == "receptor":
-                return (
-                    str(system.holo_receptor.filepath) if system.holo_receptor else None
-                )
-            else:
-                return str(system.holo_ligand.filepath) if system.holo_ligand else None
-
-        elif setting == "apo":
-            # Unbound experimental structure
-            if chain_type == "receptor":
-                return (
-                    str(system.apo_receptor.filepath) if system.apo_receptor else None
-                )
-            else:
-                return str(system.apo_ligand.filepath) if system.apo_ligand else None
-
-        elif setting == "af2":
-            # AlphaFold2 predicted
-            if chain_type == "receptor":
-                return (
-                    str(system.pred_receptor.filepath) if system.pred_receptor else None
-                )
-            else:
-                return str(system.pred_ligand.filepath) if system.pred_ligand else None
-
-    except AttributeError:
-        pass
-
-    return None
-
-
-def _get_test_structures(system, setting: str):
-    """Get receptor and ligand paths for test setting."""
-    receptor_path = _get_structure_path(system, "receptor", setting)
-    ligand_path = _get_structure_path(system, "ligand", setting)
-
-    # Fallback to holo if specific setting not available
-    if receptor_path is None:
-        receptor_path = _get_structure_path(system, "receptor", "holo")
-    if ligand_path is None:
-        ligand_path = _get_structure_path(system, "ligand", "holo")
-
-    return receptor_path, ligand_path
-
-
-def _copy_file(src: str, dst: Path):
-    """Copy file, handling both local and remote paths."""
-    import shutil
-    import subprocess
-
-    if str(src).startswith("gs://") or str(src).startswith("s3://"):
-        # Cloud storage — try gsutil, fallback to aws s3
-        result = subprocess.run(
-            ["gsutil", "cp", str(src), str(dst)],
-            capture_output=True,
-        )
-        if result.returncode != 0:
-            subprocess.run(
-                ["aws", "s3", "cp", str(src), str(dst)],
-                capture_output=True,
-            )
-    else:
-        shutil.copy2(src, dst)
 
 
 def save_split(

@@ -265,8 +265,8 @@ class PinderPairDataModule(pl.LightningDataModule):
                     count += 1
         return count
 
-    def val_dataloader(self) -> DataLoader:
-        return self._eval_dataloader("val")
+    def val_dataloader(self):
+        return [self._eval_dataloader("val"), self._eval_dataloader("test")]
 
     def test_dataloader(self) -> DataLoader:
         return self._eval_dataloader("test")

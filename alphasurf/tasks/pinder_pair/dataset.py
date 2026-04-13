@@ -139,7 +139,9 @@ def load_pinder_split(
                 system = item
 
             # Determine paths based on split/setting
-            r_path, l_path = _resolve_pinder_paths(system, split, test_setting)
+            r_path, l_path = _resolve_pinder_paths(
+                system, split, test_setting, data_dir / "pdb"
+            )
 
             if r_path and l_path and os.path.exists(r_path) and os.path.exists(l_path):
                 systems.append(
@@ -170,10 +172,14 @@ def load_pinder_split(
 
 
 def _resolve_pinder_paths(
-    system, split: str, setting: str = None
+    system, split: str, setting: str = None, pdb_dir: Path = None
 ) -> Tuple[Optional[str], Optional[str]]:
-    """Resolve receptor and ligand paths from PinderSystem."""
-    # Default to holo for train/val
+    """Resolve receptor and ligand paths from PinderSystem.
+
+    For holo: writes native_R/native_L (from the dimer) to pdb_dir to avoid
+    the corrupted test_set_pdbs normalization. For apo/af2: returns paths
+    from the pinder package (those are in pdbs/ and are correct).
+    """
     if split != "test":
         setting = "holo"
     if setting is None:
@@ -183,10 +189,19 @@ def _resolve_pinder_paths(
     l_path = None
 
     if setting == "holo":
-        if system.holo_receptor:
-            r_path = system.holo_receptor.filepath
-        if system.holo_ligand:
-            l_path = system.holo_ligand.filepath
+        # native_R/L extracted from the native dimer — avoids corrupted
+        # test_set_pdbs for test systems. Requires pdb_dir to write to.
+        system_id = system.entry.id
+        if pdb_dir is not None and system.native_R and system.native_L:
+            pdb_dir = Path(pdb_dir)
+            pdb_dir.mkdir(parents=True, exist_ok=True)
+            suffix = f"_{setting}" if split == "test" else ""
+            r_path = pdb_dir / f"{system_id}_R{suffix}.pdb"
+            l_path = pdb_dir / f"{system_id}_L{suffix}.pdb"
+            if not r_path.exists():
+                system.native_R.to_pdb(r_path)
+            if not l_path.exists():
+                system.native_L.to_pdb(l_path)
     elif setting == "apo":
         if system.apo_receptor:
             r_path = system.apo_receptor.filepath
@@ -197,16 +212,6 @@ def _resolve_pinder_paths(
             r_path = system.pred_receptor.filepath
         if system.pred_ligand:
             l_path = system.pred_ligand.filepath
-
-    # Fallback for test: if specific setting missing, fall back to holo?
-    # Usually strictly enforcing the setting is better for evaluation correctness.
-    # But let's check if we want fallback. The preprocess.py had fallback.
-    # checking preprocess.py... yes, it falls back to holo.
-    if split == "test" and (r_path is None or l_path is None):
-        if system.holo_receptor:
-            r_path = system.holo_receptor.filepath
-        if system.holo_ligand:
-            l_path = system.holo_ligand.filepath
 
     return r_path, l_path
 
@@ -769,7 +774,8 @@ class PinderAlignedDataset(PinderPairDataset):
 
             hid = sys.get(f"holo_{ptype}_id")
             if not hid:
-                return None
+                suffix = "R" if ptype == "receptor" else "L"
+                hid = f"{sys['id']}_{suffix}"
 
             dummy = {"id": sys["id"], f"{ptype}_id": hid, "setting": "holo"}
             return self._get_pdb_path(dummy, ptype)

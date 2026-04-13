@@ -105,12 +105,13 @@ class PinderPairNet(nn.Module):
 
         # --- Surface Level ---
 
-        surf_out = None
-        if (
+        has_surface_pairs = (
             hasattr(batch, "surface_idx_left")
             and batch.surface_idx_left is not None
             and len(batch.surface_idx_left) > 0
-        ):
+        )
+
+        if has_surface_pairs:
             # 1. Surface Site Predictions
             surf_site_pred_1 = self.binding_site_head(surface_1.x)
             surf_site_pred_2 = self.binding_site_head(surface_2.x)
@@ -149,8 +150,8 @@ class PinderPairNet(nn.Module):
             "site_pred_2": site_pred_2,
         }
 
-        # Surface outputs (if available)
-        if hasattr(batch, "surface_1"):
+        # Surface outputs (only if pairs were computed)
+        if has_surface_pairs:
             outputs["surface"] = {
                 "emb_left": processed_left_surf,
                 "emb_right": processed_right_surf,

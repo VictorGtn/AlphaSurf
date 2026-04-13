@@ -289,8 +289,8 @@ def pdb_to_graphs(pdb_path, agraph_dump=None, rgraph_dump=None, recompute_g=Fals
         if do_rgraphs or do_agraphs:
             try:
                 arrays = parse_pdb_path(pdb_path, use_pqr=False)
-            except:
-                print("Trying to use pqr to fix sse")
+            except Exception as e:
+                print("Trying to use pqr to fix sse, exception raised: ", e)
                 arrays = parse_pdb_path(pdb_path)
             # create residuegraph
             if do_rgraphs:
@@ -353,7 +353,7 @@ class PreprocessDataset(Dataset):
         self.augmentation_noise_type = augmentation_noise_type
 
         # Build surface directory name (include augmentation info if applicable)
-        surface_dirname = f'surfaces_{surface_method}_{face_reduction_rate}{f"_{use_pymesh}" if use_pymesh is not None else ""}'
+        surface_dirname = f"surfaces_{surface_method}_{face_reduction_rate}{f'_{use_pymesh}' if use_pymesh is not None else ''}"
         if n_augmented_views > 1:
             surface_dirname += f"_aug{n_augmented_views}_{augmentation_noise_type}_sigma{augmentation_sigma}"
         self.out_surf_dir = os.path.join(data_dir, surface_dirname)
@@ -506,6 +506,9 @@ def update_model_input_dim(cfg, dataset_temp, gkey="graph", skey="surface"):
         found = False
         for i, example in enumerate(dataset_temp):
             if example is not None:
+                g_data = getattr(example, gkey, None)
+                s_data = getattr(example, skey, None)
+
                 with open_dict(cfg):
                     feat_encoder_kwargs = cfg.encoder.blocks[0]
                     # Handle SurfaceGraphCommunication blocks (have s_pre_block/g_pre_block)
@@ -513,28 +516,31 @@ def update_model_input_dim(cfg, dataset_temp, gkey="graph", skey="surface"):
                         if (
                             hasattr(cfg, "cfg_graph")
                             and cfg.cfg_graph.use_graphs
-                            and hasattr(example[gkey], "x")
-                            and example[gkey].x is not None
+                            and g_data is not None
+                            and hasattr(g_data, "x")
+                            and g_data.x is not None
                         ):
-                            feat_encoder_kwargs.g_pre_block["dim_in"] = example[
-                                gkey
-                            ].x.shape[1]
+                            feat_encoder_kwargs.g_pre_block["dim_in"] = g_data.x.shape[
+                                1
+                            ]
                         if (
                             hasattr(cfg, "cfg_surface")
                             and cfg.cfg_surface.use_surfaces
-                            and hasattr(example[skey], "x")
-                            and example[skey].x is not None
+                            and s_data is not None
+                            and hasattr(s_data, "x")
+                            and s_data.x is not None
                         ):
-                            feat_encoder_kwargs.s_pre_block["dim_in"] = example[
-                                skey
-                            ].x.shape[1]
+                            feat_encoder_kwargs.s_pre_block["dim_in"] = s_data.x.shape[
+                                1
+                            ]
                     # Handle ProteinEncoderBlock blocks (have surface_encoder/graph_encoder)
                     elif "surface_encoder" in feat_encoder_kwargs:
                         if (
                             hasattr(cfg, "cfg_surface")
                             and cfg.cfg_surface.use_surfaces
-                            and hasattr(example[skey], "x")
-                            and example[skey].x is not None
+                            and s_data is not None
+                            and hasattr(s_data, "x")
+                            and s_data.x is not None
                         ):
                             surface_encoder = feat_encoder_kwargs.surface_encoder
                             # Check if surface_encoder has dim_in (e.g., dmasif_block)
@@ -542,12 +548,13 @@ def update_model_input_dim(cfg, dataset_temp, gkey="graph", skey="surface"):
                                 isinstance(surface_encoder, dict)
                                 and "dim_in" in surface_encoder
                             ):
-                                surface_encoder["dim_in"] = example[skey].x.shape[1]
+                                surface_encoder["dim_in"] = s_data.x.shape[1]
                         if (
                             hasattr(cfg, "cfg_graph")
                             and cfg.cfg_graph.use_graphs
-                            and hasattr(example[gkey], "x")
-                            and example[gkey].x is not None
+                            and g_data is not None
+                            and hasattr(g_data, "x")
+                            and g_data.x is not None
                         ):
                             graph_encoder = feat_encoder_kwargs.graph_encoder
                             if (
@@ -555,7 +562,7 @@ def update_model_input_dim(cfg, dataset_temp, gkey="graph", skey="surface"):
                                 and isinstance(graph_encoder, dict)
                                 and "dim_in" in graph_encoder
                             ):
-                                graph_encoder["dim_in"] = example[gkey].x.shape[1]
+                                graph_encoder["dim_in"] = g_data.x.shape[1]
                 found = True
                 break
             if i > 50:
