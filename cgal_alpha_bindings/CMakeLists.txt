@@ -14,7 +14,18 @@ find_package(pybind11 REQUIRED)
 find_package(CGAL REQUIRED)
 
 pybind11_add_module(cgal_alpha cgal_alpha_bindings.cpp)
+pybind11_add_module(cgal_alpha_algo2 cgal_alpha_bindings_algo2.cpp)
+
+# Include SBL and necessary extensions (for cgal_alpha only)
+target_include_directories(cgal_alpha PRIVATE
+    "/cluster/CBIO/data2/vgertner/sbl/Core/Union_of_balls_boundary_3/include"
+    "/cluster/CBIO/data2/vgertner/sbl/Core/Triangulations_extensions_3/include"
+    "/cluster/CBIO/data2/vgertner/sbl/Core/Union_find/include"
+    "/cluster/CBIO/data2/vgertner/sbl/Core/Specialized_iterators/include"
+)
+
 target_link_libraries(cgal_alpha PRIVATE CGAL::CGAL)
+target_link_libraries(cgal_alpha_algo2 PRIVATE CGAL::CGAL)
 
 # Print info
 message(STATUS "Python: ${Python3_EXECUTABLE}")

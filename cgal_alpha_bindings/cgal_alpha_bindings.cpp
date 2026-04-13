@@ -1,21 +1,27 @@
-#include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
+#include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
 #include <CGAL/Exact_predicates_inexact_constructions_kernel.h>
-#include <CGAL/Regular_triangulation_3.h>
 #include <CGAL/Fixed_alpha_shape_3.h>
-#include <CGAL/Fixed_alpha_shape_vertex_base_3.h>
 #include <CGAL/Fixed_alpha_shape_cell_base_3.h>
+#include <CGAL/Fixed_alpha_shape_vertex_base_3.h>
+#include <CGAL/Regular_triangulation_3.h>
 
-#include <vector>
+#include <SBL/GT/Union_of_balls_boundary_3_builder.hpp>
+#include <SBL/GT/Union_of_balls_boundary_3_data_structure.hpp>
+
+#include <algorithm>
 #include <array>
-#include <unordered_set>
-#include <unordered_map>
-#include <string>
-#include <stdexcept>
-#include <numeric>
+#include <limits>
 #include <list>
+#include <numeric>
+#include <stdexcept>
+#include <string>
+#include <tuple>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace py = pybind11;
 
@@ -34,26 +40,33 @@ typedef Fixed_alpha_shape::Vertex_handle Vertex_handle;
 typedef Fixed_alpha_shape::Cell_handle Cell_handle;
 typedef Fixed_alpha_shape::Facet Facet;
 
-struct PtrPairHash {
-    size_t operator()(const std::pair<Vertex_handle, Vertex_handle>& p) const {
-        size_t h1 = std::hash<void*>{}(p.first.operator->());
-        size_t h2 = std::hash<void*>{}(p.second.operator->());
-        return h1 ^ (h2 * 2654435761ULL);
-    }
-};
-struct PtrTripleHash {
-    size_t operator()(const std::tuple<Vertex_handle, Vertex_handle, Vertex_handle>& t) const {
-        size_t h1 = std::hash<void*>{}(std::get<0>(t).operator->());
-        size_t h2 = std::hash<void*>{}(std::get<1>(t).operator->()) * 2654435761ULL;
-        size_t h3 = std::hash<void*>{}(std::get<2>(t).operator->()) * 40503ULL;
-        return h1 ^ h2 ^ h3;
-    }
-};
+typedef SBL::GT::T_Union_of_balls_boundary_3_data_structure<Fixed_alpha_shape>
+    UBB_DS;
+typedef SBL::GT::T_Union_of_balls_boundary_3_builder<UBB_DS, K::FT> UBB_Builder;
+
 struct PtrHash {
-    template<typename T>
-    size_t operator()(T const& p) const {
-        return std::hash<void*>{}(p.operator->());
-    }
+  template <typename T> size_t operator()(T const &p) const {
+    return std::hash<void *>{}(p.operator->());
+  }
+};
+
+struct PtrPairHash {
+  size_t operator()(const std::pair<Vertex_handle, Vertex_handle> &p) const {
+    size_t h1 = std::hash<void *>{}(p.first.operator->());
+    size_t h2 = std::hash<void *>{}(p.second.operator->());
+    return h1 ^ (h2 * 2654435761ULL);
+  }
+};
+
+struct PtrTripleHash {
+  size_t operator()(
+      const std::tuple<Vertex_handle, Vertex_handle, Vertex_handle> &t) const {
+    size_t h1 = std::hash<void *>{}(std::get<0>(t).operator->());
+    size_t h2 =
+        std::hash<void *>{}(std::get<1>(t).operator->()) * 2654435761ULL;
+    size_t h3 = std::hash<void *>{}(std::get<2>(t).operator->()) * 40503ULL;
+    return h1 ^ h2 ^ h3;
+  }
 };
 
 typedef std::pair<Vertex_handle, Vertex_handle> EdgeKey;
@@ -62,189 +75,415 @@ typedef std::unordered_set<EdgeKey, PtrPairHash> EdgeSet;
 typedef std::unordered_set<FacetKey, PtrTripleHash> FacetSet;
 
 static EdgeKey make_edge_key(Vertex_handle u, Vertex_handle v) {
-    return (u < v) ? EdgeKey{u, v} : EdgeKey{v, u};
+  return (u < v) ? EdgeKey{u, v} : EdgeKey{v, u};
 }
 
-static FacetKey make_facet_key(Vertex_handle u, Vertex_handle v, Vertex_handle w) {
-    std::array<Vertex_handle, 3> arr = {u, v, w};
-    std::sort(arr.begin(), arr.end());
-    return {arr[0], arr[1], arr[2]};
+static FacetKey make_facet_key(Vertex_handle u, Vertex_handle v,
+                               Vertex_handle w) {
+  std::array<Vertex_handle, 3> arr = {u, v, w};
+  std::sort(arr.begin(), arr.end());
+  return {arr[0], arr[1], arr[2]};
 }
 
 static std::unordered_set<Fixed_alpha_shape::Classification_type>
-parse_filter(const std::string& filter_str) {
-    std::unordered_set<Fixed_alpha_shape::Classification_type> allowed;
-    if (filter_str == "all") {
-        allowed = {Fixed_alpha_shape::SINGULAR, Fixed_alpha_shape::REGULAR, Fixed_alpha_shape::INTERIOR};
-    } else if (filter_str == "solid") {
-        allowed = {Fixed_alpha_shape::REGULAR, Fixed_alpha_shape::INTERIOR};
-    } else {
-        if (filter_str.find("singular") != std::string::npos) allowed.insert(Fixed_alpha_shape::SINGULAR);
-        if (filter_str.find("regular") != std::string::npos) allowed.insert(Fixed_alpha_shape::REGULAR);
-        if (filter_str.find("interior") != std::string::npos) allowed.insert(Fixed_alpha_shape::INTERIOR);
-    }
-    return allowed;
+parse_filter(const std::string &filter_str) {
+  std::unordered_set<Fixed_alpha_shape::Classification_type> allowed;
+  if (filter_str == "all") {
+    allowed = {Fixed_alpha_shape::SINGULAR, Fixed_alpha_shape::REGULAR,
+               Fixed_alpha_shape::INTERIOR};
+  } else if (filter_str == "solid") {
+    allowed = {Fixed_alpha_shape::REGULAR, Fixed_alpha_shape::INTERIOR};
+  } else {
+    if (filter_str.find("singular") != std::string::npos)
+      allowed.insert(Fixed_alpha_shape::SINGULAR);
+    if (filter_str.find("regular") != std::string::npos)
+      allowed.insert(Fixed_alpha_shape::REGULAR);
+    if (filter_str.find("interior") != std::string::npos)
+      allowed.insert(Fixed_alpha_shape::INTERIOR);
+  }
+  return allowed;
 }
 
-std::tuple<py::array_t<float>, py::array_t<int32_t>>
-compute_alpha_complex_from_atoms(
-    py::array_t<float> positions,
-    py::array_t<float> radii,
-    float alpha,
-    float probe_radius = 1.4f,
-    const std::string& filter = "singular+regular"
-) {
-    auto pos_buf = positions.unchecked<2>();
-    auto rad_buf = radii.unchecked<1>();
-    if (pos_buf.shape(1) != 3) throw std::invalid_argument("positions must have shape (N, 3)");
-    size_t n_atoms = pos_buf.shape(0);
+py::tuple compute_alpha_complex_from_atoms(
+    py::array_t<float> positions, py::array_t<float> radii, float alpha,
+    float probe_radius = 1.4f, const std::string &filter = "singular+regular",
+    bool return_face_types = false) {
+  auto pos_buf = positions.unchecked<2>();
+  auto rad_buf = radii.unchecked<1>();
+  if (pos_buf.shape(1) != 3)
+    throw std::invalid_argument("positions must have shape (N, 3)");
+  size_t n_atoms = pos_buf.shape(0);
+  if (rad_buf.shape(0) != n_atoms)
+    throw std::invalid_argument("radii must have shape (N,)");
 
-    try {
-    std::vector<Weighted_point> wpoints; wpoints.reserve(n_atoms);
-    for (size_t i = 0; i < n_atoms; i++) wpoints.emplace_back(Point_3(pos_buf(i, 0), pos_buf(i, 1), pos_buf(i, 2)), (rad_buf(i) + probe_radius) * (rad_buf(i) + probe_radius));
+  try {
+    std::vector<Weighted_point> wpoints;
+    wpoints.reserve(n_atoms);
+    for (size_t i = 0; i < n_atoms; i++) {
+      double r = rad_buf(i) + probe_radius;
+      wpoints.emplace_back(Point_3(pos_buf(i, 0), pos_buf(i, 1), pos_buf(i, 2)),
+                           r * r);
+    }
+
     Triangulation T(wpoints.begin(), wpoints.end());
     Fixed_alpha_shape A(T, alpha);
     auto allowed = parse_filter(filter);
-    K::Compute_squared_radius_smallest_orthogonal_sphere_3 sq_radius_ortho;
 
-    std::unordered_set<Vertex_handle, PtrHash> used_vertices;
-    std::vector<std::array<Vertex_handle, 3>> face_verts;
-    EdgeSet face_edges;
-    FacetSet face_set;
+    // OPT #1: Vector-based union-find
+    std::vector<Cell_handle> exterior_cells;
+    exterior_cells.reserve(1024);
+    std::unordered_map<Cell_handle, int, PtrHash> cell_to_id;
 
-    auto add_facet = [&](const Facet& f) {
-        auto cell = f.first; int opp = f.second;
-        std::array<Vertex_handle, 3> vh; int idx = 0;
-        for (int i = 0; i < 4; i++) if (i != opp) vh[idx++] = cell->vertex(i);
-        for (int i = 0; i < 3; i++) used_vertices.insert(vh[i]);
-        face_verts.push_back(vh);
-        for (int i = 0; i < 3; i++) face_edges.insert(make_edge_key(vh[i], vh[(i+1)%3]));
-        face_set.insert(make_facet_key(vh[0], vh[1], vh[2]));
-    };
+    int inf_id = -1;
 
-    // Largest connected component selection
-    for (auto fit = A.finite_facets_begin(); fit != A.finite_facets_end(); ++fit)
-        if (allowed.count(A.classify(*fit))) add_facet(*fit);
-
-    size_t n = face_verts.size();
-    if (n > 1) {
-        std::unordered_map<Vertex_handle, std::vector<size_t>, PtrHash> vtx_to_faces;
-        for (size_t i = 0; i < n; i++) for (auto& vh : face_verts[i]) vtx_to_faces[vh].push_back(i);
-        std::vector<size_t> parent(n); std::iota(parent.begin(), parent.end(), 0);
-        auto find = [&](size_t x) { while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; } return x; };
-        for (auto& [vh, flist] : vtx_to_faces) for (size_t i = 1; i < flist.size(); i++) { size_t r1 = find(flist[0]), r2 = find(flist[i]); if (r1 != r2) parent[r1] = r2; }
-        std::unordered_map<size_t, size_t> csize; for (size_t i = 0; i < n; i++) csize[find(i)]++;
-        size_t best = std::max_element(csize.begin(), csize.end(), [](const auto& a, const auto& b) { return a.second < b.second; })->first;
-        std::vector<std::array<Vertex_handle, 3>> kept;
-        for (size_t i = 0; i < n; i++) if (find(i) == best) kept.push_back(face_verts[i]);
-        face_verts = std::move(kept);
-        face_edges.clear(); face_set.clear(); used_vertices.clear();
-        for (auto& vh : face_verts) { face_set.insert(make_facet_key(vh[0], vh[1], vh[2])); for (int i = 0; i < 3; i++) used_vertices.insert(vh[i]); for (int i = 0; i < 3; i++) face_edges.insert(make_edge_key(vh[i], vh[(i+1)%3])); }
+    for (auto cit = A.all_cells_begin(); cit != A.all_cells_end(); ++cit) {
+      if (A.classify(cit) == Fixed_alpha_shape::EXTERIOR) {
+        int id = static_cast<int>(exterior_cells.size());
+        cell_to_id[cit] = id;
+        exterior_cells.push_back(cit);
+        if (inf_id == -1 && A.is_infinite(cit)) {
+          inf_id = id;
+        }
+      }
     }
 
-    // Build exterior component Union-Find (excludes pockets from infinite exterior)
-    std::unordered_map<Cell_handle, Cell_handle, PtrHash> uf;
-    auto uf_find = [&](Cell_handle x) { while (uf[x] != x) { uf[x] = uf[uf[x]]; x = uf[x]; } return x; };
-    auto uf_union = [&](Cell_handle a, Cell_handle b) { a = uf_find(a); b = uf_find(b); if (a != b) uf[a] = b; };
-    Cell_handle inf_repr; bool has_inf = false;
-    for (auto cit = A.all_cells_begin(); cit != A.all_cells_end(); ++cit) if (A.classify(cit) == Fixed_alpha_shape::EXTERIOR) { uf[cit] = cit; if (A.is_infinite(cit)) { if (!has_inf) { inf_repr = cit; has_inf = true; } else uf_union(inf_repr, cit); } }
-    for (auto fit = A.finite_facets_begin(); fit != A.finite_facets_end(); ++fit) if (A.classify(*fit) == Fixed_alpha_shape::EXTERIOR) uf_union(fit->first, fit->first->neighbor(fit->second));
-    auto is_ext = [&](Cell_handle c) { auto it = uf.find(c); return (it != uf.end() && uf_find(c) == uf_find(inf_repr)); };
-    std::unordered_map<Cell_handle, bool, PtrHash> solid;
-    for (auto cit = A.finite_cells_begin(); cit != A.finite_cells_end(); ++cit) solid[cit] = (A.classify(cit) == Fixed_alpha_shape::INTERIOR) || !is_ext(cit);
+    const int n_ext = static_cast<int>(exterior_cells.size());
+    std::vector<int> uf(n_ext);
+    std::iota(uf.begin(), uf.end(), 0);
 
-    // Rebuild face list with pocket exclusion
-    face_verts.clear(); face_set.clear();
+    auto uf_find = [&](int x) -> int {
+      while (uf[x] != x) {
+        uf[x] = uf[uf[x]];
+        x = uf[x];
+      }
+      return x;
+    };
+    auto uf_union = [&](int a, int b) {
+      a = uf_find(a);
+      b = uf_find(b);
+      if (a != b) uf[a] = b;
+    };
+
+    if (inf_id != -1) {
+      for (int id = 0; id < n_ext; ++id) {
+        if (A.is_infinite(exterior_cells[id])) {
+          uf_union(inf_id, id);
+        }
+      }
+    }
+
     for (auto fit = A.finite_facets_begin(); fit != A.finite_facets_end(); ++fit) {
-        Cell_handle c1 = fit->first, c2 = c1->neighbor(fit->second);
-        bool s1 = !A.is_infinite(c1) && solid[c1], s2 = !A.is_infinite(c2) && solid[c2];
-        auto cls = A.classify(*fit);
-        if (s1 != s2) { std::array<Vertex_handle, 3> fvh; int idx = 0; for (int i = 0; i < 4; i++) if (i != fit->second) fvh[idx++] = c1->vertex(i); face_verts.push_back(fvh); face_set.insert(make_facet_key(fvh[0], fvh[1], fvh[2])); }
-        else if (!s1 && !s2 && cls == Fixed_alpha_shape::SINGULAR && allowed.count(Fixed_alpha_shape::SINGULAR) && (is_ext(c1) || is_ext(c2))) { std::array<Vertex_handle, 3> fvh; int idx = 0; for (int i = 0; i < 4; i++) if (i != fit->second) fvh[idx++] = c1->vertex(i); face_verts.push_back(fvh); face_set.insert(make_facet_key(fvh[0], fvh[1], fvh[2])); }
-    }
-    used_vertices.clear(); face_edges.clear();
-    for (const auto& vh : face_verts) { for (int i = 0; i < 3; i++) used_vertices.insert(vh[i]); for (int i = 0; i < 3; i++) face_edges.insert(make_edge_key(vh[i], vh[(i+1)%3])); }
-
-    // Singular edge repair
-    std::vector<Fixed_alpha_shape::Edge> sedges; A.get_alpha_shape_edges(std::back_inserter(sedges), Fixed_alpha_shape::SINGULAR);
-    for (const auto& e : sedges) {
-        Vertex_handle u = e.first->vertex(e.second), v = e.first->vertex(e.third);
-        if (face_edges.count(make_edge_key(u, v))) continue;
-        auto pre_c = A.incident_cells(e), pre_d = pre_c; bool surf = false;
-        do { if (A.is_infinite(pre_c) || is_ext(pre_c)) { surf = true; break; } } while (++pre_c != pre_d);
-        if (!surf) continue;
-        auto circ = A.incident_cells(e), done = circ; double best_mu = 1e30; Facet best_f; bool found = false; FacetSet checked;
-        do {
-            Cell_handle c = circ; for (int i = 0; i < 4; i++) {
-                if (c->vertex(i) == u || c->vertex(i) == v) continue;
-                std::array<Vertex_handle, 3> fvh; int fi = 0; for (int j = 0; j < 4; j++) if (j != i) fvh[fi++] = c->vertex(j);
-                if (!checked.insert(make_facet_key(fvh[0], fvh[1], fvh[2])).second) continue;
-                Cell_handle c2 = c->neighbor(i); if (A.is_infinite(c) || A.is_infinite(c2) || (!is_ext(c) && !is_ext(c2))) continue;
-                double mu = CGAL::to_double(sq_radius_ortho(fvh[0]->point(), fvh[1]->point(), fvh[2]->point()));
-                if (mu < best_mu) { best_mu = mu; best_f = Facet(c, i); found = true; }
-            }
-        } while (++circ != done);
-        if (found) { add_facet(best_f); }
-    }
-
-    // Pinched vertex repair
-    auto get_v_info = [&](Vertex_handle v, const std::vector<size_t>& findices, std::vector<std::vector<size_t>>& comp_flist) {
-        std::unordered_map<Vertex_handle, std::unordered_set<Vertex_handle, PtrHash>, PtrHash> ladj; std::unordered_set<Vertex_handle, PtrHash> lverts;
-        for (size_t fi : findices) {
-            auto& fvh = face_verts[fi]; Vertex_handle u = nullptr, w = nullptr;
-            for (int k = 0; k < 3; k++) if (fvh[k] != v) { if (u == nullptr) u = fvh[k]; else w = fvh[k]; }
-            if (u != nullptr && w != nullptr) { ladj[u].insert(w); ladj[w].insert(u); lverts.insert(u); lverts.insert(w); }
+      if (A.classify(*fit) == Fixed_alpha_shape::EXTERIOR) {
+        Cell_handle c1 = fit->first;
+        Cell_handle c2 = c1->neighbor(fit->second);
+        auto it1 = cell_to_id.find(c1);
+        auto it2 = cell_to_id.find(c2);
+        if (it1 != cell_to_id.end() && it2 != cell_to_id.end()) {
+          uf_union(it1->second, it2->second);
         }
-        int ncomps = 0; std::unordered_map<Vertex_handle, int, PtrHash> vcomp;
-        for (auto u : lverts) { if (vcomp.count(u)) continue; std::vector<Vertex_handle> q = {u}; vcomp[u] = ncomps; while (!q.empty()) { auto c = q.back(); q.pop_back(); for (auto nb : ladj[c]) if (!vcomp.count(nb)) { vcomp[nb] = ncomps; q.push_back(nb); } } ncomps++; }
-        if (ncomps <= 1) return 1;
-        comp_flist.assign(ncomps, {}); for (size_t fi : findices) { auto& fvh = face_verts[fi]; for (int k = 0; k < 3; k++) if (fvh[k] != v && vcomp.count(fvh[k])) { comp_flist[vcomp[fvh[k]]].push_back(fi); break; } }
-        std::vector<Cell_handle> extv; std::list<Cell_handle> inc; A.incident_cells(v, std::back_inserter(inc)); for (auto c : inc) if (is_ext(c)) extv.push_back(c);
-        std::unordered_set<Cell_handle, PtrHash> eset(extv.begin(), extv.end()); int nxt = 0; std::unordered_map<Cell_handle, int, PtrHash> ecomp;
-        for (auto s : extv) { if (ecomp.count(s)) continue; std::vector<Cell_handle> q = {s}; ecomp[s] = nxt; while (!q.empty()) { auto c = q.back(); q.pop_back(); int vi = c->index(v); for (int i = 0; i < 4; i++) if (i != vi) { auto nb = c->neighbor(i); if (eset.count(nb) && !ecomp.count(nb)) { ecomp[nb] = nxt; q.push_back(nb); } } } nxt++; }
-        return (nxt == 1) ? 2 : 0;
+      }
+    }
+
+    // OPT #5: is_ext as vector<bool>
+    std::vector<bool> ext_from_infinite(n_ext, false);
+    if (inf_id != -1) {
+      int inf_root = uf_find(inf_id);
+      for (int id = 0; id < n_ext; ++id) {
+        if (uf_find(id) == inf_root) {
+          ext_from_infinite[id] = true;
+        }
+      }
+    }
+
+    auto is_ext = [&](Cell_handle c) -> bool {
+      auto it = cell_to_id.find(c);
+      if (it == cell_to_id.end()) return false;
+      return ext_from_infinite[it->second];
     };
 
-    std::unordered_map<Vertex_handle, std::vector<size_t>, PtrHash> v2f;
-    for (size_t i = 0; i < face_verts.size(); i++) for (auto& vh : face_verts[i]) v2f[vh].push_back(i);
-    for (auto& [v, findices] : v2f) {
-        std::vector<std::vector<size_t>> comp_flist; int info = get_v_info(v, findices, comp_flist);
-        if (info != 2) continue;
-        int ncomps = comp_flist.size(); FacetSet checked; struct Cand { int c1, c2; double mu; Facet f; }; std::vector<Cand> cands;
-        std::list<Cell_handle> inc; A.incident_cells(v, std::back_inserter(inc));
-        for (auto c : inc) {
-            int vi = c->index(v); for (int o = 0; o < 4; o++) {
-                if (o == vi || A.is_infinite(Facet(c, o)) || (!is_ext(c) && !is_ext(c->neighbor(o)))) continue;
-                std::array<Vertex_handle, 3> fvh; int idx = 0; for (int i = 0; i < 4; i++) if (i != o) fvh[idx++] = c->vertex(i);
-                if (!checked.insert(make_facet_key(fvh[0], fvh[1], fvh[2])).second) continue;
-                Vertex_handle u = nullptr, w = nullptr; for (int k = 0; k < 3; k++) if (fvh[k] != v) { if (u == nullptr) u = fvh[k]; else w = fvh[k]; }
-                if (u == nullptr || w == nullptr) continue;
-                int c_u = -1, c_w = -1; for (int i = 0; i < ncomps; i++) for (size_t fi : comp_flist[i]) { auto& fv = face_verts[fi]; if (fv[0] == u || fv[1] == u || fv[2] == u) c_u = i; if (fv[0] == w || fv[1] == w || fv[2] == w) c_w = i; }
-                if (c_u != -1 && c_w != -1 && c_u != c_w) { double mu = 0; try { mu = CGAL::to_double(sq_radius_ortho(fvh[0]->point(), fvh[1]->point(), fvh[2]->point())); } catch (...) {} cands.push_back({c_u, c_w, mu, Facet(c, o)}); }
-            }
-        }
-        std::sort(cands.begin(), cands.end(), [](const auto& a, const auto& b) { return a.mu < b.mu; });
-        std::vector<int> bp(ncomps); std::iota(bp.begin(), bp.end(), 0);
-        auto bf = [&](int x) { while (bp[x] != x) { bp[x] = bp[bp[x]]; x = bp[x]; } return x; };
-        for (const auto& b : cands) { int p1 = bf(b.c1), p2 = bf(b.c2); if (p1 != p2) { bp[p1] = p2; add_facet(b.f); } }
+    auto is_valid_facet = [&](const Facet &f) {
+      Cell_handle c1 = f.first;
+      Cell_handle c2 = c1->neighbor(f.second);
+      bool e1 = is_ext(c1);
+      bool e2 = is_ext(c2);
+      auto cls = A.classify(f);
+      if (e1 != e2)
+        return true;
+      if (e1 && e2 && cls == Fixed_alpha_shape::SINGULAR &&
+          allowed.count(Fixed_alpha_shape::SINGULAR))
+        return true;
+      return false;
+    };
+
+    UBB_DS ubb(A);
+    UBB_Builder builder;
+    builder(ubb, 2);
+
+    using UBB_Face = decltype(ubb.faces_begin());
+    using UBB_Halfedge = decltype(ubb.halfedges_begin());
+    using UBB_Vertex = decltype(ubb.vertices_begin());
+
+    // Étape 1 : Détection des boules multi-patches (extérieur uniquement)
+    std::unordered_map<Vertex_handle, std::vector<UBB_Face>, PtrHash>
+        ball_to_patches;
+    for (auto fit = ubb.faces_begin(); fit != ubb.faces_end(); ++fit) {
+      UBB_Face p = fit;
+      if (!p->is_exterior())
+        continue;
+      ball_to_patches[p->get_dual_simplex()].push_back(p);
     }
 
-    std::unordered_map<Vertex_handle, int, PtrHash> vidx; std::vector<Vertex_handle> vlist;
-    for (auto v : used_vertices) { vidx[v] = vlist.size(); vlist.push_back(v); }
-    size_t nv = vlist.size(), nf = face_verts.size();
-    py::array_t<float> vout({nv, 3UL}); py::array_t<int32_t> fout({nf, 3UL});
-    auto vb = vout.mutable_unchecked<2>(); auto fb = fout.mutable_unchecked<2>();
-    for (size_t i = 0; i < nv; i++) { auto p = vlist[i]->point().point(); vb(i,0)=(float)p.x(); vb(i,1)=(float)p.y(); vb(i,2)=(float)p.z(); }
-    for (size_t i = 0; i < nf; i++) { auto& vh = face_verts[i]; fb(i,0)=vidx[vh[0]]; fb(i,1)=vidx[vh[1]]; fb(i,2)=vidx[vh[2]]; }
-    return std::make_tuple(vout, fout);
-    } catch (const std::exception& e) { throw std::runtime_error(std::string("CGAL Error: ") + e.what()); }
+    std::unordered_set<Vertex_handle, PtrHash> M;
+    for (const auto &kv : ball_to_patches) {
+      if (kv.second.size() > 1) {
+        M.insert(kv.first);
+      }
+    }
+
+    // Étape 2 : Duplication des vertex
+    std::vector<Vertex_handle> tilde_V;
+    std::unordered_map<Vertex_handle, int, PtrHash> ac_to_idx;
+    std::unordered_map<UBB_Face, int, PtrHash> p_to_idx;
+
+    for (auto vit = A.finite_vertices_begin(); vit != A.finite_vertices_end();
+         ++vit) {
+      if (M.count(vit) == 0) {
+        ac_to_idx[vit] = tilde_V.size();
+        tilde_V.push_back(vit);
+      }
+    }
+
+    for (const auto &kv : ball_to_patches) {
+      Vertex_handle c = kv.first;
+      if (M.count(c)) {
+        for (auto p : kv.second) {
+          p_to_idx[p] = tilde_V.size();
+          tilde_V.push_back(c);
+        }
+      }
+    }
+
+    auto get_patch_index = [&](UBB_Face patch) -> int {
+      if (!patch->is_exterior())
+        return -1;
+      Vertex_handle v = patch->get_dual_simplex();
+      if (M.count(v)) {
+        auto it = p_to_idx.find(patch);
+        return (it == p_to_idx.end()) ? -1 : it->second;
+      }
+      auto it = ac_to_idx.find(v);
+      return (it == ac_to_idx.end()) ? -1 : it->second;
+    };
+
+    struct Tri {
+      int v[3];
+      bool operator==(const Tri &o) const {
+        return (v[0] == o.v[0] && v[1] == o.v[1] && v[2] == o.v[2]);
+      }
+    };
+    struct TriHash {
+      size_t operator()(const Tri &t) const {
+        return t.v[0] ^ (t.v[1] * 2654435761ULL) ^ (t.v[2] * 40503ULL);
+      }
+    };
+
+    std::vector<std::array<int, 3>> tilde_F;
+    std::vector<uint8_t> tilde_face_types;
+
+    // OPT #2: single unordered_map replaces set + map
+    std::unordered_map<Tri, size_t, TriHash> tri_to_index;
+    int n_tilde_V = static_cast<int>(tilde_V.size());
+
+    auto add_triangle = [&](int v1, int v2, int v3, uint8_t ftype) {
+      if (v1 < 0 || v1 >= n_tilde_V ||
+          v2 < 0 || v2 >= n_tilde_V ||
+          v3 < 0 || v3 >= n_tilde_V)
+        return;
+
+      Tri t;
+      t.v[0] = v1;
+      t.v[1] = v2;
+      t.v[2] = v3;
+      std::sort(t.v, t.v + 3);
+
+      auto [it, inserted] = tri_to_index.try_emplace(t, tilde_F.size());
+      if (inserted) {
+        tilde_F.push_back({v1, v2, v3});
+        tilde_face_types.push_back(ftype);
+      } else {
+        tilde_face_types[it->second] =
+            std::max<uint8_t>(tilde_face_types[it->second], ftype);
+      }
+    };
+
+    // Extraction of original non-M faces
+    for (auto fit = A.finite_facets_begin(); fit != A.finite_facets_end();
+         ++fit) {
+      if (!is_valid_facet(*fit))
+        continue;
+
+      Cell_handle c1 = fit->first;
+      int opp = fit->second;
+      int vidx = 0;
+      Vertex_handle v[3];
+      for (int i = 0; i < 4; i++) {
+        if (i != opp)
+          v[vidx++] = c1->vertex(i);
+      }
+
+      if (M.count(v[0]) == 0 && M.count(v[1]) == 0 && M.count(v[2]) == 0) {
+        if (ac_to_idx.count(v[0]) && ac_to_idx.count(v[1]) &&
+            ac_to_idx.count(v[2])) {
+          Cell_handle c2 = c1->neighbor(fit->second);
+          Cell_handle ext_cell = is_ext(c1) ? c1 : c2;
+          int opp_ext = ext_cell == c1 ? fit->second : c2->index(c1);
+          int idx1 = (opp_ext + 1) & 3;
+          int idx2 = (opp_ext + 2) & 3;
+          int idx3 = (opp_ext + 3) & 3;
+          if ((opp_ext % 2) == 1)
+            std::swap(idx2, idx3);
+
+          int out_v1 = ac_to_idx[ext_cell->vertex(idx1)];
+          int out_v2 = ac_to_idx[ext_cell->vertex(idx2)];
+          int out_v3 = ac_to_idx[ext_cell->vertex(idx3)];
+          add_triangle(out_v1, out_v2, out_v3, static_cast<uint8_t>(0));
+        }
+      }
+    }
+
+    // Étape 3 : Reconstruction des edges et faces (extérieur uniquement)
+    for (Vertex_handle c : M) {
+      for (auto p : ball_to_patches[c]) {
+        if (!p->is_exterior())
+          continue;
+
+        std::vector<UBB_Halfedge> boundaries;
+        if (p->halfedge() != UBB_Halfedge()) {
+          boundaries.push_back(p->halfedge());
+        }
+        for (auto hit = ubb.holes_begin(p); hit != ubb.holes_end(p); ++hit) {
+          if (*hit != UBB_Halfedge()) {
+            boundaries.push_back(*hit);
+          }
+        }
+
+        for (auto start_a : boundaries) {
+          auto a = start_a;
+          do {
+            auto v_sbl = a->vertex();
+            if (v_sbl == UBB_Vertex()) {
+              a = a->next();
+              continue;
+            }
+
+            Facet f_ac = v_sbl->get_dual_simplex();
+            if (!is_valid_facet(f_ac)) {
+              a = a->next();
+              continue;
+            }
+
+            auto opp_a = a->opposite();
+            if (opp_a == UBB_Halfedge()) {
+              a = a->next();
+              continue;
+            }
+            auto p_prime = opp_a->face();
+            if (p_prime == UBB_Face() || !p_prime->is_exterior()) {
+              a = a->next();
+              continue;
+            }
+
+            auto a_next = a->next();
+            if (a_next == UBB_Halfedge()) {
+              a = a->next();
+              continue;
+            }
+
+            auto opp_next = a_next->opposite();
+            if (opp_next == UBB_Halfedge()) {
+              a = a->next();
+              continue;
+            }
+
+            auto p_sec = opp_next->face();
+            if (p_sec == UBB_Face() || !p_sec->is_exterior()) {
+              a = a->next();
+              continue;
+            }
+
+            int v_p = get_patch_index(p);
+            int v_pprime = get_patch_index(p_prime);
+            int v_psec = get_patch_index(p_sec);
+
+            if (v_p >= 0 && v_pprime >= 0 && v_psec >= 0) {
+              add_triangle(v_p, v_pprime, v_psec, static_cast<uint8_t>(2));
+            }
+
+            a = a->next();
+          } while (a != start_a && a != UBB_Halfedge());
+        }
+      }
+    }
+
+    // Clean up orphan vertices by only outputting those referenced by faces
+    std::vector<int> old_to_new(tilde_V.size(), -1);
+    std::vector<Vertex_handle> final_V;
+
+    for (const auto &tri : tilde_F) {
+      for (int k = 0; k < 3; k++) {
+        int old_v = tri[k];
+        if (old_to_new[old_v] == -1) {
+          old_to_new[old_v] = final_V.size();
+          final_V.push_back(tilde_V[old_v]);
+        }
+      }
+    }
+
+    // Output to numpy arrays
+    size_t nv = final_V.size();
+    size_t nf = tilde_F.size();
+
+    py::array_t<float> vout({nv, 3UL});
+    auto vb = vout.mutable_unchecked<2>();
+    for (size_t i = 0; i < nv; i++) {
+      auto pt = final_V[i]->point().point();
+      vb(i, 0) = static_cast<float>(pt.x());
+      vb(i, 1) = static_cast<float>(pt.y());
+      vb(i, 2) = static_cast<float>(pt.z());
+    }
+
+    py::array_t<int32_t> fout({nf, 3UL});
+    auto fb = fout.mutable_unchecked<2>();
+    for (size_t i = 0; i < nf; i++) {
+      fb(i, 0) = old_to_new[tilde_F[i][0]];
+      fb(i, 1) = old_to_new[tilde_F[i][1]];
+      fb(i, 2) = old_to_new[tilde_F[i][2]];
+    }
+
+    if (return_face_types) {
+      py::array_t<uint8_t> tout({nf});
+      auto tb = tout.mutable_unchecked<1>();
+      for (size_t i = 0; i < nf; i++) {
+        tb(i) = tilde_face_types[i];
+      }
+      return py::make_tuple(vout, fout, tout);
+    }
+
+    return py::make_tuple(vout, fout);
+  } catch (const std::exception &e) {
+    throw std::runtime_error(std::string("CGAL Error: ") + e.what());
+  }
 }
 
 PYBIND11_MODULE(cgal_alpha, m) {
-    m.def("compute_alpha_complex_from_atoms", &compute_alpha_complex_from_atoms,
+  m.def("compute_alpha_complex_from_atoms", &compute_alpha_complex_from_atoms,
         py::arg("positions"), py::arg("radii"), py::arg("alpha"),
-        py::arg("probe_radius")=1.4f, py::arg("filter")="singular+regular",
+        py::arg("probe_radius") = 1.4f, py::arg("filter") = "singular+regular",
+        py::arg("return_face_types") = false,
         R"doc(
+Compute a surface triangle mesh from weighted atomic spheres using a CGAL fixed alpha shape.
+The output applies singular-edge repair.
+
 Args:
     positions: numpy array of shape (N, 3), float32 - atom centers
     radii: numpy array of shape (N,), float32 - atom VDW radii
