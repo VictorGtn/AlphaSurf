@@ -4,14 +4,88 @@ MaSIF-Ligand dataset using the base protein infrastructure.
 
 import os
 import pickle
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+from alphasurf.protein.protein import Protein
+from alphasurf.protein.protein_loader import ProteinLoader
+from torch.utils.data import Dataset
 from torch_geometric.data import Data
 
-from alphasurf.protein.protein_loader import ProteinLoader
-from alphasurf.tasks.base import BaseProteinDataset
+
+class BaseProteinDataset(Dataset):
+    """
+    Base dataset handling protein loading with integrated transforms.
+
+    This class provides the core data loading logic that can be reused
+    across different tasks. Task-specific datasets inherit from this
+    and override __getitem__ to add labels and task-specific processing.
+
+    Transforms (noise, patch extraction) are applied DURING protein loading,
+    not after, ensuring that computed features reflect the transformed geometry.
+    """
+
+    def __init__(
+        self,
+        names: List[str],
+        protein_loader: ProteinLoader,
+        apply_noise: bool = False,
+        post_transforms: Optional[List[Callable[[Protein], Optional[Protein]]]] = None,
+    ):
+        """
+        Args:
+            names: List of protein/pocket names to load
+            protein_loader: ProteinLoader instance (handles on-fly/disk loading)
+            apply_noise: If True, apply noise augmentation during loading
+            post_transforms: Optional transforms to apply AFTER loading
+                           (for task-specific processing, not geometry changes)
+        """
+        self.names = names
+        self.protein_loader = protein_loader
+        self.apply_noise = apply_noise
+        self.post_transforms = post_transforms or []
+
+    def __len__(self) -> int:
+        return len(self.names)
+
+    def get_protein(self, idx: int) -> Optional[Protein]:
+        """
+        Load protein at index with transforms applied during loading.
+
+        Args:
+            idx: Dataset index
+
+        Returns:
+            Protein object or None if loading fails
+        """
+        name = self.names[idx]
+        protein = self.protein_loader.load(name, apply_noise=self.apply_noise)
+
+        if protein is None:
+            return None
+
+        for transform in self.post_transforms:
+            protein = transform(protein)
+            if protein is None:
+                return None
+
+        return protein
+
+    def __getitem__(self, idx: int):
+        """
+        Get a protein at index.
+
+        Override this in task-specific datasets to add labels and metadata.
+
+        Returns:
+            Protein.to_data() or None if loading fails
+        """
+        protein = self.get_protein(idx)
+        if protein is None:
+            return None
+        return protein.to_data()
+
 
 LIGAND_TYPES = ["ADP", "COA", "FAD", "HEM", "NAD", "NAP", "SAM"]
 LIGAND_TO_IDX = {lig: idx for idx, lig in enumerate(LIGAND_TYPES)}
@@ -104,6 +178,8 @@ class MasifLigandDataset(BaseProteinDataset):
 
         protein = self.get_protein(idx)
         if protein is None:
+            return None
+        if not protein.has_graph() or not protein.has_surface():
             return None
 
         data = protein.to_data()

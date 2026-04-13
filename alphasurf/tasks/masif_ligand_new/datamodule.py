@@ -6,8 +6,6 @@ import os
 from typing import Optional
 
 import pytorch_lightning as pl
-from torch.utils.data import DataLoader
-
 from alphasurf.protein.protein_loader import ProteinLoader
 from alphasurf.protein.transforms import NoiseAugmentor, PatchExtractor
 from alphasurf.tasks.masif_ligand_new.dataset import (
@@ -15,6 +13,7 @@ from alphasurf.tasks.masif_ligand_new.dataset import (
     load_ligand_data,
 )
 from alphasurf.utils.data_utils import AtomBatch, update_model_input_dim
+from torch.utils.data import DataLoader
 
 
 class MasifLigandDataModule(pl.LightningDataModule):
@@ -155,6 +154,7 @@ class MasifLigandDataModule(pl.LightningDataModule):
                 "use_pymesh",
                 "use_whole_surfaces",
                 "precomputed_patches_dir",
+                "nanoshaper_grid_scale",
             ]:
                 if hasattr(on_fly_cfg, key):
                     setattr(merged, key, getattr(on_fly_cfg, key))
@@ -197,6 +197,7 @@ class MasifLigandDataModule(pl.LightningDataModule):
             args["persistent_workers"] = getattr(
                 loader_cfg, "persistent_workers", False
             )
+            args["multiprocessing_context"] = "forkserver"
 
         return args
 
