@@ -17,7 +17,7 @@ Official implementation of AlphaSurf, extending [AtomSurf](https://arxiv.org/abs
 
 AlphaSurf is a protein structure encoder that jointly encodes graphs and surfaces, with on-the-fly alpha complex surface generation during training.
 
-<img src="paper/surface.jpg">
+<img src="paper/surfaces.jpg">
 
 ## Installation
 
