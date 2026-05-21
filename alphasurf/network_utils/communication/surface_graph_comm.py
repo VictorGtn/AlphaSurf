@@ -1,7 +1,7 @@
 import torch.nn as nn
 
 # project
-from .passing_utils import compute_bipartite_graphs
+from .passing_utils import compute_bipartite_graphs, compute_residue_bipartite
 from .utils_blocks import IdentityLayer
 
 
@@ -18,6 +18,7 @@ class SurfaceGraphCommunication(nn.Module):
         sigma=2.5,
         use_knn=False,
         num_gdf=16,
+        pooling_mode="distance",
         **kwargs,
     ):
         super().__init__()
@@ -35,6 +36,7 @@ class SurfaceGraphCommunication(nn.Module):
         self.sigma = sigma
         self.use_knn = use_knn
         self.num_gdf = num_gdf
+        self.pooling_mode = pooling_mode
 
     def forward(self, surface=None, graph=None):
         if surface is None or graph is None:
@@ -93,13 +95,21 @@ class SurfaceGraphCommunication(nn.Module):
 
     def compute_graph(self, surface, graph):
         if "bp_gs" not in surface or "bp_sg" not in surface:
-            bp_gs, bp_sg = compute_bipartite_graphs(
-                surface,
-                graph,
-                neigh_th=self.neigh_thresh,
-                use_knn=self.use_knn,
-                num_gdf=self.num_gdf,
-            )
+            if self.pooling_mode == "residue":
+                bp_gs, bp_sg = compute_residue_bipartite(
+                    surface,
+                    graph,
+                    num_gdf=self.num_gdf,
+                    neigh_th=self.neigh_thresh,
+                )
+            else:
+                bp_gs, bp_sg = compute_bipartite_graphs(
+                    surface,
+                    graph,
+                    neigh_th=self.neigh_thresh,
+                    use_knn=self.use_knn,
+                    num_gdf=self.num_gdf,
+                )
             surface["bp_gs"], surface["bp_sg"] = bp_gs, bp_sg
         else:
             bp_gs, bp_sg = surface.bp_gs, surface.bp_sg

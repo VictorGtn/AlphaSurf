@@ -1,20 +1,21 @@
 """
 PyTorch Lightning module for PINDER-Pair training.
 
-Uses epoch-level AUROC: accumulates all logits/labels across the epoch,
-then computes a single global AUROC. This avoids per-batch averaging which
-significantly inflates the metric with small/variable batch sizes.
+Per-system AUROC: accumulates logits/labels per system across the epoch,
+then computes AUROC per system and reports mean/median/std.
 """
 
 import logging
+import os
+import time
 
+import numpy as np
 import torch
-from alphasurf.tasks.pinder_pair.loss import PinderPairLoss
+from alphasurf.tasks.pinder_pair.loss import FocalLoss, PinderPairLoss
 from alphasurf.tasks.pinder_pair.model import PinderPairNet, _offset_and_concat
 from alphasurf.utils.learning_utils import AtomPLModule
 from alphasurf.utils.metrics import compute_accuracy, compute_auroc
-
-# from torch_geometric.nn import global_mean_pool # Removed as protein-level pooling is no longer used
+from sklearn.metrics import balanced_accuracy_score, roc_auc_score
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +31,16 @@ class PinderPairModule(AtomPLModule):
         super().__init__()
         self.save_hyperparameters()
 
-        # New Custom Loss (Simplified)
-        self.criterion = PinderPairLoss(
-            lambda_site=getattr(cfg, "lambda_site", 4.0),
-            lambda_norm=getattr(cfg, "lambda_norm", 1.0),
-            gamma=getattr(cfg, "gamma", 2.0),
-        )
+        self.loss_mode = getattr(cfg, "loss_mode", "metric")
+
+        if self.loss_mode == "focal":
+            self.criterion = FocalLoss(gamma=getattr(cfg, "gamma", 2.0))
+        else:
+            self.criterion = PinderPairLoss(
+                lambda_site=getattr(cfg, "lambda_site", 4.0),
+                lambda_norm=getattr(cfg, "lambda_norm", 1.0),
+                gamma=getattr(cfg, "gamma", 2.0),
+            )
 
         self.model = PinderPairNet(cfg_encoder=cfg.encoder, cfg_head=cfg.cfg_head)
 
@@ -72,13 +77,48 @@ class PinderPairModule(AtomPLModule):
         if batch is None or batch.num_graphs < self.hparams.cfg.min_batch_size:
             return None, None, None, {}
 
-        # Get pair labels and flatten
         if isinstance(batch.label, list):
             labels = torch.cat(batch.label)
         else:
             labels = batch.label
         labels = labels.view(-1)
 
+        if self.loss_mode == "focal":
+            return self._step_focal(batch, labels)
+        else:
+            return self._step_metric(batch, labels)
+
+    def _step_focal(self, batch, labels):
+        """Focal mode: pair classification with focal loss on MLP heads."""
+        out = self.model(batch)
+        graph_out = out["graph"]
+
+        # Graph pair loss
+        pair_logits = graph_out["pair_logit"].squeeze(-1)
+        loss_graph = self.criterion(pair_logits, labels.float())
+
+        # Surface pair loss
+        loss_surf = torch.tensor(0.0, device=labels.device)
+        surf_out = out["surface"]
+        if surf_out is not None and hasattr(batch, "surface_label"):
+            s_labels = batch.surface_label
+            if isinstance(s_labels, list):
+                s_labels = torch.cat(s_labels)
+            s_labels = s_labels.view(-1).to(pair_logits.device)
+            surf_pair_logits = surf_out["pair_logit"].squeeze(-1)
+            loss_surf = self.criterion(surf_pair_logits, s_labels.float())
+
+        surface_loss_weight = getattr(self.hparams.cfg, "surface_loss_weight", 1.0)
+        total_loss = loss_graph + surface_loss_weight * loss_surf
+
+        loss_dict = {
+            "loss_pair_graph": loss_graph,
+            "loss_pair_surf": loss_surf,
+        }
+
+        return total_loss, pair_logits, labels, loss_dict
+
+    def _step_metric(self, batch, labels):
         # Forward pass
         out = self.model(batch)
 
@@ -185,9 +225,62 @@ class PinderPairModule(AtomPLModule):
 
         return total_loss, logits, labels, loss_dict_graph
 
+    def _timing_enabled(self):
+        return os.environ.get("TIMING", "0") == "1"
+
+    def on_train_batch_start(self, batch, batch_idx):
+        if self._timing_enabled():
+            if not hasattr(self, "_timing_reset"):
+                from alphasurf.utils.timing_stats import reset
+
+                reset()
+                self._timing_reset = True
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            self._train_t0 = time.perf_counter()
+
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        if not self._timing_enabled():
+            return
+        if batch is None:
+            return
+        if hasattr(self, "_train_t0"):
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            elapsed = time.perf_counter() - self._train_t0
+            from alphasurf.utils.timing_stats import record
+
+            record("train_fwd_bwd", elapsed)
+            n_systems = batch["graph_1"].num_graphs
+            n_proteins = n_systems * 2
+            per_protein = elapsed / n_proteins
+            record("batch_size", n_systems)
+            record("train_per_protein", per_protein)
+            self.log(
+                "timing/train_fwd_bwd",
+                elapsed,
+                on_step=True,
+                on_epoch=False,
+                prog_bar=False,
+                batch_size=1,
+            )
+            self.log(
+                "timing/train_per_protein",
+                per_protein,
+                on_step=True,
+                on_epoch=False,
+                prog_bar=False,
+                batch_size=1,
+            )
+            if (batch_idx + 1) % 100 == 0:
+                from alphasurf.utils.timing_stats import print_summary
+
+                print(f"\n[Timing] batch {batch_idx + 1} (systems={n_systems}):")
+                print_summary()
+
     def training_step(self, batch, batch_idx):
-        # We need a surface criterion
-        if not hasattr(self, "surface_criterion"):
+        # Lazy init surface criterion (metric mode only)
+        if self.loss_mode == "metric" and not hasattr(self, "surface_criterion"):
             self.surface_criterion = PinderPairLoss(
                 lambda_site=self.criterion.lambda_site,
                 lambda_norm=self.criterion.lambda_norm,
@@ -224,6 +317,11 @@ class PinderPairModule(AtomPLModule):
 
         return loss
 
+    def on_train_end(self):
+        from alphasurf.utils.timing_stats import print_summary
+
+        print_summary()
+
     # ── Validation ──────────────────────────────────────────────
 
     def on_validation_epoch_start(self):
@@ -234,8 +332,8 @@ class PinderPairModule(AtomPLModule):
         self._test_val_labels = []
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0):
-        # Lazy init surface criterion for val too
-        if not hasattr(self, "surface_criterion"):
+        # Lazy init surface criterion (metric mode only)
+        if self.loss_mode == "metric" and not hasattr(self, "surface_criterion"):
             self.surface_criterion = PinderPairLoss(
                 lambda_site=self.criterion.lambda_site,
                 lambda_norm=self.criterion.lambda_norm,
@@ -312,10 +410,11 @@ class PinderPairModule(AtomPLModule):
     def on_test_epoch_start(self):
         self._test_logits.clear()
         self._test_labels.clear()
+        self._test_per_system = []
 
     def test_step(self, batch, batch_idx):
-        # Lazy init surface criterion for test too
-        if not hasattr(self, "surface_criterion"):
+        # Lazy init surface criterion (metric mode only)
+        if self.loss_mode == "metric" and not hasattr(self, "surface_criterion"):
             self.surface_criterion = PinderPairLoss(
                 lambda_site=self.criterion.lambda_site,
                 lambda_norm=self.criterion.lambda_norm,
@@ -340,17 +439,78 @@ class PinderPairModule(AtomPLModule):
         self._test_logits.append(logits.detach().cpu())
         self._test_labels.append(labels.detach().cpu())
 
+        # Accumulate per-system for per-system AUROC
+        if isinstance(batch.label, list):
+            per_system_labels = [l.reshape(-1) for l in batch.label]
+            sys_ids = (
+                batch.system_id
+                if hasattr(batch, "system_id")
+                else [None] * len(per_system_labels)
+            )
+            if isinstance(sys_ids, str):
+                sys_ids = [sys_ids]
+
+            offset = 0
+            for si, sys_labels in enumerate(per_system_labels):
+                n_pairs = len(sys_labels)
+                sys_logits = logits[offset : offset + n_pairs].detach().cpu()
+                sys_lab = sys_labels.detach().cpu()
+                sid = sys_ids[si] if si < len(sys_ids) else f"unknown_{batch_idx}_{si}"
+                self._test_per_system.append((sid, sys_logits, sys_lab))
+                offset += n_pairs
+
     def on_test_epoch_end(self):
-        if not self._test_logits:
+        # Per-system AUROC + balanced accuracy + hetero/homo stratification
+        system_aurocs = []
+        system_baccs = []
+        homo_aurocs = []
+        hetero_aurocs = []
+
+        for sid, sys_logits, sys_labels in self._test_per_system:
+            logits_np = sys_logits.numpy().ravel()
+            labels_np = sys_labels.numpy().astype(int).ravel()
+            n_pos = labels_np.sum()
+            n_neg = len(labels_np) - n_pos
+            if n_pos > 0 and n_neg > 0:
+                auc = roc_auc_score(labels_np, logits_np)
+                system_aurocs.append(auc)
+                preds = (logits_np > 0).astype(int)
+                system_baccs.append(balanced_accuracy_score(labels_np, preds))
+                # Hetero/homodimer stratification
+                if sid and "--" in sid:
+                    parts = sid.split("--")
+                    r_uniprot = parts[0].split("_")[-1]
+                    l_uniprot = parts[1].split("_")[-1]
+                    if r_uniprot == l_uniprot:
+                        homo_aurocs.append(auc)
+                    else:
+                        hetero_aurocs.append(auc)
+
+        if system_aurocs:
+            aurocs = np.array(system_aurocs)
+            baccs = np.array(system_baccs)
+            self.log("auroc/test", aurocs.mean(), prog_bar=True)
+            self.log("auroc/test_mean", aurocs.mean())
+            self.log("auroc/test_median", float(np.median(aurocs)))
+            self.log("auroc/test_std", aurocs.std())
+            self.log("auroc/test_n_systems", float(len(aurocs)))
+            self.log("bacc/test_mean", baccs.mean())
+            self.log("bacc/test_median", float(np.median(baccs)))
+            if homo_aurocs:
+                self.log("auroc/test_homo_mean", float(np.mean(homo_aurocs)))
+                self.log("auroc/test_n_homo", float(len(homo_aurocs)))
+            if hetero_aurocs:
+                self.log("auroc/test_hetero_mean", float(np.mean(hetero_aurocs)))
+                self.log("auroc/test_n_hetero", float(len(hetero_aurocs)))
+        elif self._test_logits:
+            # Fallback to global AUROC if no per-system data
+            all_logits = torch.cat(self._test_logits)
+            all_labels = torch.cat(self._test_labels)
+            auroc = compute_auroc(all_logits, all_labels)
+            self.log("auroc/test", auroc, prog_bar=True)
+        else:
             self.log("auroc/test", 0.5, prog_bar=True)
-            return
-
-        all_logits = torch.cat(self._test_logits)
-        all_labels = torch.cat(self._test_labels)
-
-        auroc = compute_auroc(all_logits, all_labels)
-
-        self.log("auroc/test", auroc, prog_bar=True)
 
         self._test_logits.clear()
         self._test_labels.clear()
+        self._test_per_system.clear()

@@ -8,57 +8,57 @@
 
 # Block layers
 identity:
-  _target_: atomsurf.network_utils.utils_blocks.IdentityLayer
+  _target_: alphasurf.network_utils.utils_blocks.IdentityLayer
 
 linear_halver:
-  _target_: atomsurf.network_utils.communication.utils_blocks.LinearWrapper
-  in_features: ${model_hdim}
+  _target_: alphasurf.network_utils.communication.utils_blocks.LinearWrapper
+  in_features: -1
   out_features: ${eval:'${model_hdim} // 2'}
 
 2layer_input:
-  _target_: atomsurf.network_utils.communication.utils_blocks.HMR2LayerMLP
-  dim_in: ${model_hdim}
+  _target_: alphasurf.network_utils.communication.utils_blocks.HMR2LayerMLP
+  dim_in: -1
   dim_mid: ${model_hdim}
   dim_out: ${model_hdim}
   dropout: ${model_dropout}
 
 2layer_input_chunk:
-  _target_: atomsurf.network_utils.communication.utils_blocks.HMR2LayerMLPChunk
-  dim_in: ${model_hdim}
+  _target_: alphasurf.network_utils.communication.utils_blocks.HMR2LayerMLPChunk
+  dim_in: -1
   hdim: ${model_hdim}
   dropout: ${model_dropout}
 
 2layer_bigbigsmall:
-  _target_: atomsurf.network_utils.communication.utils_blocks.HMR2LayerMLP
+  _target_: alphasurf.network_utils.communication.utils_blocks.HMR2LayerMLP
   dim_in: ${eval:'${model_hdim} * 2'}
   dim_mid: ${model_hdim}
   dim_out: ${model_hdim}
   dropout: ${model_dropout}
 
 cat_merge:
-  _target_: atomsurf.network_utils.communication.utils_blocks.CatMergeBlock
+  _target_: alphasurf.network_utils.communication.utils_blocks.CatMergeBlock
   net: ${2layer_bigbigsmall}
 
 cat_post_proc:
-  _target_: atomsurf.network_utils.communication.utils_blocks.CatPostProcessBlock
+  _target_: alphasurf.network_utils.communication.utils_blocks.CatPostProcessBlock
   in_dim: ${model_hdim}
   out_dim: ${model_hdim}
 
 return_processed:
-  _target_: atomsurf.network_utils.communication.utils_blocks.ReturnProcessedBlock
+  _target_: alphasurf.network_utils.communication.utils_blocks.ReturnProcessedBlock
 
 # MP Layers
 no_param_agg:
-  _target_: atomsurf.network_utils.communication.utils_blocks.NoParamAggregate
+  _target_: alphasurf.network_utils.communication.utils_blocks.NoParamAggregate
   aggr: add
   add_self_loops: false
   fill_value: mean
 
 identity_mp:
-  _target_: atomsurf.network_utils.communication.utils_blocks.IdentityMP
+  _target_: alphasurf.network_utils.communication.utils_blocks.IdentityMP
 
 gat_mp:
-  _target_: atomsurf.network_utils.communication.utils_blocks.GraphconvWrapper
+  _target_: alphasurf.network_utils.communication.utils_blocks.GraphconvWrapper
   dim_in: ${eval:'${model_hdim} // 2'}
   dim_out: ${eval:'${model_hdim} // 2'}
   use_gat: true
@@ -67,7 +67,7 @@ gat_mp:
   fill_value: "mean"
 
 gvp_mp:
-  _target_: atomsurf.network_utils.communication.utils_blocks.GVPWrapper
+  _target_: alphasurf.network_utils.communication.utils_blocks.GVPWrapper
   dim_in: ${eval:'${model_hdim} // 2'}
   dim_out: ${eval:'${model_hdim} // 2'}
   n_layers: ${gvp_n_layers}
@@ -76,14 +76,14 @@ gvp_mp:
   use_normals: ${gvp_use_normal}
 
 hmr_mp:
-  _target_: atomsurf.network_utils.communication.utils_blocks.HMRWrapper
+  _target_: alphasurf.network_utils.communication.utils_blocks.HMRWrapper
   dim_in: ${eval:'${model_hdim} // 2'}
   dim_out: ${eval:'${model_hdim} // 2'}
   num_gdf: 16
 
 #  Double nets are useful for input processing, since we use more hidden dims there
 gvp_mp_double:
-  _target_: atomsurf.network_utils.communication.utils_blocks.GVPWrapper
+  _target_: alphasurf.network_utils.communication.utils_blocks.GVPWrapper
   dim_in: ${model_hdim}
   dim_out: ${model_hdim}
   n_layers: ${gvp_n_layers}
@@ -92,7 +92,7 @@ gvp_mp_double:
   use_normals: ${gvp_use_normal}
 
 hmr_mp_double:
-  _target_: atomsurf.network_utils.communication.utils_blocks.HMRWrapper
+  _target_: alphasurf.network_utils.communication.utils_blocks.HMRWrapper
   dim_in: ${model_hdim}
   dim_out: ${model_hdim}
   num_gdf: 16

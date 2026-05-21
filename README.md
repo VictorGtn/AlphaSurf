@@ -8,11 +8,10 @@ Official implementation of AlphaSurf, extending [AtomSurf](https://arxiv.org/abs
 - [Installation](#installation)
   - [Environment setup](#environment-setup)
   - [CGAL alpha complex bindings](#cgal-alpha-complex-bindings)
-- [On-the-fly training (MasifLigand)](#on-the-fly-training-masifligand)
-  - [Overview](#overview)
-  - [Quick start](#quick-start)
-  - [Parameters](#parameters)
-  - [Full example](#full-example)
+- [Inference](#inference)
+- [Tasks](#tasks)
+  - [MasifLigand](#masifligand)
+  - [PINDER-Pair](#pinder-pair)
 
 ## Description
 
@@ -24,46 +23,21 @@ AlphaSurf is a protein structure encoder that jointly encodes graphs and surface
 
 ### Environment setup
 
-#### Use within a container
-
-For convenience, a definition file to be used with Singularity/Apptainer is provided in `atomsurf.def`.
-You need to build the image first, and then freely use it:
 ```bash
-apptainer build --fakeroot atomsurf.sif atomsurf.def
-apptainer run atomsurf.sif <your-command>
-```
-#### Direct installation (no container)
-
-The first thing you will need is an environment.
-
-```bash
-conda create -n atomsurf -y
-conda activate atomsurf
-conda install python=3.8
+conda create -n alphasurf python=3.10 -y
+conda activate alphasurf
 ```
 
-Now let's install the torch/pyg dependencies !
-
-For GPU support, we recommend using conda:
+Install PyTorch and PyG (CUDA 11.8):
 
 ```bash
-conda install cudatoolkit=11.7 -c nvidia
-conda install pytorch=1.13 pytorch-cuda=11.7 -c pytorch -c nvidia
-conda install pyg=2.3.0 pytorch-scatter pytorch-sparse pytorch-spline-conv pytorch-cluster -c pyg
-pip install pyg-lib==0.4.0 -f https://data.pyg.org/whl/torch-1.13.0+cu117.html
-python -c "import torch; print(torch.cuda.is_available())"
-# This should return True
+pip install torch==2.4.1+cu118 torchvision==0.19.1+cu118 torchaudio==2.4.1+cu118 --index-url https://download.pytorch.org/whl/cu118
+pip install torch_geometric==2.6.1
+pip install torch_scatter torch_sparse torch_spline_conv torch_cluster -f https://data.pyg.org/whl/torch-2.4.1+cu118.html
+pip install pyg-lib==0.4.0 -f https://data.pyg.org/whl/torch-2.4.1+cu118.html
 ```
 
-Otherwise (for cpu install), pip is simpler. Using the --no-cache-dir can help avoid installation problems:
-
-```bash
-pip install --no-cache-dir torch==1.13.1+cpu --extra-index-url https://download.pytorch.org/whl/cpu
-pip install --no-cache-dir torch_scatter torch_sparse torch_spline_conv torch_cluster pyg_lib -f https://data.pyg.org/whl/torch-1.13.1+cpu.html
-pip install --no-cache-dir torch_geometric==2.3.0 -f https://data.pyg.org/whl/torch-1.13.1+cpu.html
-```
-
-Finally, let's install other dependencies, in particular diffusion-net:
+Install the remaining dependencies:
 
 ```bash
 pip install git+https://github.com/pvnieo/diffusion-net-plus.git
@@ -72,14 +46,14 @@ pip install -r requirements.txt
 
 ### CGAL alpha complex bindings
 
-On-the-fly surface generation with the `alpha_complex` method requires CGAL Python bindings. These are located in `cgal_alpha_bindings/`.
+On-the-fly surface generation requires CGAL Python bindings. These are located in `cgal_alpha_bindings/`.
 
 #### Dependencies
 
 - CGAL 5.x+
 - GMP, MPFR
 - pybind11
-- Python 3.8+
+- Python 3.10+
 - CMake 3.16+
 
 #### Build
@@ -93,7 +67,7 @@ pip install pybind11
 cd cgal_alpha_bindings
 mkdir build && cd build
 cmake ..
-make -j$(nproc)
+make cgal_alpha_algo2 -j$(nproc)
 ```
 
 **macOS (Homebrew)**
@@ -105,7 +79,7 @@ pip install pybind11
 cd cgal_alpha_bindings
 mkdir build && cd build
 cmake ..
-make -j$(sysctl -n hw.ncpu)
+make cgal_alpha_algo2 -j$(sysctl -n hw.ncpu)
 ```
 
 **Conda**
@@ -116,93 +90,100 @@ conda install -c conda-forge cgal-cpp pybind11
 cd cgal_alpha_bindings
 mkdir build && cd build
 cmake ..
-make -j8
+make cgal_alpha_algo2 -j8
 ```
 
 #### Making the bindings available
 
-The code auto-detects the bindings relative to the source tree. If you need to override the path (e.g. in SLURM jobs with multiprocessing workers), set:
+After building, the compiled `.so` file lands in `cgal_alpha_bindings/build/`. When you import `cgal_alpha` in Python, it needs to find that `.so` on `sys.path`. The code does this automatically by looking for `cgal_alpha_bindings/build/` relative to the source tree.
+
+This works out of the box when running from the repo. However, some environments override the working directory or `sys.path` — for example SLURM jobs with `multiprocessing` workers using the `spawn` or `forkserver` start method. In that case each worker process starts fresh and may not inherit the path setup. To handle this, set the environment variable before launching your job:
 
 ```bash
 export CGAL_BINDINGS_DIR=/path/to/cgal_alpha_bindings/build
 export PYTHONPATH="$CGAL_BINDINGS_DIR:$PYTHONPATH"
 ```
 
-## On-the-fly training (MasifLigand)
+### Curvature extension
 
-### Overview
-
-Instead of preprocessing surfaces to disk, on-the-fly training generates surfaces and graphs during training. This enables training with different surface methods (`msms` or `alpha_complex`) without re-preprocessing.
-
-The entry point is `train_on_fly.py` in `atomsurf/tasks/masif_ligand/` (as opposed to `train.py` for disk-based training).
-
-### Quick start
-
-From `atomsurf/tasks/masif_ligand/`:
+The `cpp_curvature` module provides a C++ extension for computing principal curvatures on surface meshes. It also needs to be compiled after setting up the environment:
 
 ```bash
-python train_on_fly.py \
+cd cpp_curvature
+python build.py
+```
+
+This requires `pybind11` and `eigen` headers (both already available if you installed the CGAL bindings above).
+
+### Compatibility symlink
+
+The provided checkpoint references `atomsurf.*` import paths. Create a symlink so both names resolve:
+
+```bash
+cd alphasurf
+ln -s alphasurf atomsurf
+```
+
+## Inference
+
+Embed a trained model's encoder on a single protein to get per-residue graph embeddings and per-vertex surface embeddings.
+
+**Location:** `alphasurf/tasks/inference/`
+
+A trained checkpoint is available at `alphasurf/tasks/pinder_pair/ckpt/last.ckpt`. This model was trained on the PINDER dataset for classifying residue pairs as interacting or not.
+
+```bash
+cd alphasurf/tasks/inference
+
+python embed.py --ckpt ../pinder_pair/ckpt/last.ckpt --pdb protein.pdb
+```
+
+Output is a `.pt` file containing `graph_embedding` (N_residues x D), `surface_embedding` (N_verts x D), `graph_node_pos`, and `surface_verts`.
+
+## Tasks
+
+### MasifLigand
+
+Prediction of ligand binding sites on protein surfaces. Given a protein structure, the model classifies surface patches by ligand type (7 classes).
+
+**Location:** `alphasurf/tasks/masif_ligand_new/`
+
+Supports both on-the-fly and disk-based training. On-the-fly mode generates surfaces and graphs during training, allowing experimentation with different surface methods without re-preprocessing.
+
+```bash
+cd alphasurf/tasks/masif_ligand_new
+
+# On-the-fly training with alpha complex surfaces
+python train.py \
   data_dir=/path/to/masif_ligand \
   on_fly.surface_method=alpha_complex \
   on_fly.alpha_value=0 \
   on_fly.face_reduction_rate=1.0
+
+# Or via SLURM
+sbatch train.sh
 ```
 
-Or submit via SLURM using the provided script:
+### PINDER-Pair
+
+Protein-protein interaction prediction on the [PINDER](https://pinder.org/) dataset. Given a receptor and ligand protein, the model predicts per-residue interaction probabilities (which residue pairs form the interface) and per-residue binding site scores.
+
+**Location:** `alphasurf/tasks/pinder_pair/`
+
+Supports both on-the-fly and disk-based training. On-the-fly mode generates surfaces and graphs during training. Three test settings are available: holo (bound structures), apo (unbound experimental), and af2 (AlphaFold2 predicted).
 
 ```bash
-sbatch train_onfly.sh
-```
+cd alphasurf/tasks/pinder_pair
 
-Environment variables can be used to override defaults in `train_onfly.sh`:
-
-```bash
-SURFACE_METHOD=alpha_complex ALPHA_VALUE=0 sbatch train_onfly.sh
-```
-
-### Parameters
-
-All on-the-fly parameters live under the `on_fly` config group and can be overridden on the command line via Hydra.
-
-#### Surface generation
-
-| Parameter | Default | Description |
-|---|---|---|
-| `on_fly.surface_method` | `msms` | Surface method: `msms` or `alpha_complex` |
-| `on_fly.alpha_value` | `0.1` | Alpha value for alpha complex (0 = tightest fit) |
-| `on_fly.face_reduction_rate` | `0.1` | Mesh simplification rate (1.0 = no reduction) |
-| `on_fly.max_vert_number` | `10000000` | Maximum vertices per surface |
-| `on_fly.use_pymesh` | `false` | Use PyMesh for mesh cleaning |
-
-#### Patch extraction
-
-| Parameter | Default | Description |
-|---|---|---|
-| `on_fly.use_whole_surfaces` | `false` | If `true`, use full protein surfaces. If `false`, extract patches around binding sites |
-| `on_fly.patch_radius` | `6.0` | Distance threshold (angstroms) for including vertices in a patch |
-| `on_fly.precomputed_patches_dir` | `null` | Path to precomputed MSMS patches (optional, speeds up `msms` mode) |
-
-#### ESM embeddings
-
-| Parameter | Default | Description |
-|---|---|---|
-| `on_fly.esm_dir` | `null` | Directory containing precomputed `{name}_esm.pt` files. If `null`, ESM is computed on-the-fly |
-
-### Full example
-
-```bash
-python train_on_fly.py \
-  data_dir=/path/to/masif_ligand \
+# On-the-fly training
+python train.py \
+  data_dir=/path/to/pinder \
   on_fly.surface_method=alpha_complex \
-  on_fly.alpha_value=0 \
   on_fly.face_reduction_rate=1.0 \
-  on_fly.use_whole_surfaces=False \
-  on_fly.patch_radius=8.0 \
-  on_fly.esm_dir=/path/to/masif_ligand/esm \
-  on_fly.noise_mode=none \
-  cfg_surface.use_whole_surfaces=False \
+  on_fly.use_whole_surfaces=True \
+  cfg_surface.use_whole_surfaces=True \
   cfg_graph.use_graphs=True \
-  cfg_graph.use_esm=True \
+  cfg_graph.use_esm=False \
   encoder=pronet_gvpencoder.yaml \
   optimizer.lr=0.0001 \
   scheduler=reduce_lr_on_plateau \
@@ -210,6 +191,9 @@ python train_on_fly.py \
   loader.batch_size=4 \
   loader.num_workers=8 \
   loader.pin_memory=false \
-  loader.persistent_workers=true \
-  device=0
+  loader.persistent_workers=true
+
+# Disk-based training (requires precompute.py first)
+python precompute.py data_dir=/path/to/pinder
+python train.py data_dir=/path/to/pinder on_fly=null
 ```

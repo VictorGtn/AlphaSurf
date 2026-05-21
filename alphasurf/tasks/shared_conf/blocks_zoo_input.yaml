@@ -1,5 +1,5 @@
 input_encoder_hmr:
-  _target_: atomsurf.network_utils.communication.surface_graph_comm.SurfaceGraphCommunication
+  _target_: alphasurf.network_utils.communication.surface_graph_comm.SurfaceGraphCommunication
   s_pre_block: ${2layer_input}
   g_pre_block: ${2layer_input_chunk}
   bp_sg_block: ${identity_mp}
@@ -8,7 +8,7 @@ input_encoder_hmr:
   g_post_block: ${return_processed}
 
 input_encoder_bihmr:
-  _target_: atomsurf.network_utils.communication.surface_graph_comm.SurfaceGraphCommunication
+  _target_: alphasurf.network_utils.communication.surface_graph_comm.SurfaceGraphCommunication
   s_pre_block: ${2layer_input_chunk}
   g_pre_block: ${2layer_input_chunk}
   bp_sg_block: ${hmr_mp_double}
@@ -17,7 +17,17 @@ input_encoder_bihmr:
   g_post_block: ${cat_merge}
 
 input_encoder_gvp:
-  _target_: atomsurf.network_utils.communication.surface_graph_comm.SurfaceGraphCommunication
+  _target_: alphasurf.network_utils.communication.surface_graph_comm.SurfaceGraphCommunication
+  s_pre_block: ${2layer_input}
+  g_pre_block: ${2layer_input}
+  bp_sg_block: ${gvp_mp_double}
+  bp_gs_block: ${gvp_mp_double}
+  s_post_block: ${cat_merge}
+  g_post_block: ${cat_merge}
+
+input_encoder_gvp_residue:
+  _target_: alphasurf.network_utils.communication.surface_graph_comm.SurfaceGraphCommunication
+  pooling_mode: residue
   s_pre_block: ${2layer_input}
   g_pre_block: ${2layer_input}
   bp_sg_block: ${gvp_mp_double}

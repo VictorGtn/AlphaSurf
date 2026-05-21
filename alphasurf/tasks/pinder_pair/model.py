@@ -73,9 +73,19 @@ class PinderPairNet(nn.Module):
             nn.Linear(encoded_dims, 1),
         )
 
-        # We use the raw embeddings for metric learning,
-        # but we could add a projection head here if needed.
-        # For now, following the plan to use encoder outputs.
+        # MLP Pair Heads (for focal mode)
+        self.pair_head_graph = nn.Sequential(
+            nn.Linear(encoded_dims * 2, encoded_dims),
+            nn.ReLU(),
+            nn.Dropout(p=cfg_head.dropout),
+            nn.Linear(encoded_dims, 1),
+        )
+        self.pair_head_surface = nn.Sequential(
+            nn.Linear(encoded_dims * 2, encoded_dims),
+            nn.ReLU(),
+            nn.Dropout(p=cfg_head.dropout),
+            nn.Linear(encoded_dims, 1),
+        )
 
     def forward(self, batch):
         # Encode both proteins with shared encoder
@@ -98,6 +108,9 @@ class PinderPairNet(nn.Module):
 
         emb_left = graph_1.x[idx_left]
         emb_right = graph_2.x[idx_right]
+
+        # Pair logits via MLP head
+        pair_logit_graph = self.pair_head_graph(torch.cat([emb_left, emb_right], dim=1))
 
         # Use indexing to get site predictions for the pairs (if needed for debugging)
         # site_pred_left = site_pred_1[idx_left]
@@ -136,8 +149,15 @@ class PinderPairNet(nn.Module):
                 batch.surface_idx_right, base_r_surf, batch.surface_label
             )
 
-            processed_left_surf = surface_1.x[surf_idx_l]
-            processed_right_surf = surface_2.x[surf_idx_r]
+            if surf_idx_l.numel() == 0:
+                has_surface_pairs = False
+            else:
+                processed_left_surf = surface_1.x[surf_idx_l]
+                processed_right_surf = surface_2.x[surf_idx_r]
+
+                pair_logit_surface = self.pair_head_surface(
+                    torch.cat([processed_left_surf, processed_right_surf], dim=1)
+                )
 
         # Prepare output dictionary
         outputs = {}
@@ -148,6 +168,7 @@ class PinderPairNet(nn.Module):
             "emb_right": emb_right,
             "site_pred_1": site_pred_1,
             "site_pred_2": site_pred_2,
+            "pair_logit": pair_logit_graph,
         }
 
         # Surface outputs (only if pairs were computed)
@@ -157,6 +178,7 @@ class PinderPairNet(nn.Module):
                 "emb_right": processed_right_surf,
                 "site_pred_1": surf_site_pred_1,
                 "site_pred_2": surf_site_pred_2,
+                "pair_logit": pair_logit_surface,
             }
         else:
             outputs["surface"] = None

@@ -174,6 +174,7 @@ class ProteinLoader:
 
         if self.graph_dir is not None:
             graph_path = os.path.join(self.graph_dir, f"{protein_name}.pt")
+            print(f"[DISK] graph: {graph_path} exists={os.path.exists(graph_path)}")
             if os.path.exists(graph_path):
                 try:
                     graph = torch.load(graph_path, weights_only=False)
@@ -185,12 +186,13 @@ class ProteinLoader:
 
         # Expand features (critical for creating .x attribute for batching)
         if surface is not None:
-            with torch.no_grad():
-                surface.expand_features(
-                    remove_feats=True,
-                    feature_keys=self._surface_feat_keys,
-                    oh_keys=self._surface_oh_keys,
-                )
+            if hasattr(surface, "features") and surface.features is not None:
+                with torch.no_grad():
+                    surface.expand_features(
+                        remove_feats=True,
+                        feature_keys=self._surface_feat_keys,
+                        oh_keys=self._surface_oh_keys,
+                    )
 
         if graph is not None:
             if "node_len" not in graph.keys():
@@ -202,22 +204,28 @@ class ProteinLoader:
                 if self.graph_config
                 else False
             )
-            if use_esm:
+            if use_esm and hasattr(graph, "features") and graph.features is not None:
                 esm_feats = self._load_esm_embedding(protein_name)
                 if esm_feats is not None:
                     graph.features.add_named_features("esm_feats", esm_feats)
 
-            with torch.no_grad():
-                # Determine keys to use
-                feat_keys = self._graph_feat_keys
-                if use_esm and feat_keys != "all" and esm_feats is not None:
-                    feat_keys = list(feat_keys) + ["esm_feats"]
+            if hasattr(graph, "features") and graph.features is not None:
+                with torch.no_grad():
+                    # Determine keys to use
+                    feat_keys = self._graph_feat_keys
+                    if (
+                        use_esm
+                        and feat_keys != "all"
+                        and hasattr(graph, "features")
+                        and esm_feats is not None
+                    ):
+                        feat_keys = list(feat_keys) + ["esm_feats"]
 
-                graph.expand_features(
-                    remove_feats=True,
-                    feature_keys=feat_keys,
-                    oh_keys=self._graph_oh_keys,
-                )
+                    graph.expand_features(
+                        remove_feats=True,
+                        feature_keys=feat_keys,
+                        oh_keys=self._graph_oh_keys,
+                    )
 
         # Populate metadata from graph if available (for disk mode full-atom interface)
         metadata = {}
@@ -377,13 +385,18 @@ class ProteinLoader:
         use_pymesh = getattr(cfg, "use_pymesh", False)
         use_whole_surfaces = getattr(cfg, "use_whole_surfaces", True)
         precomputed_patches_dir = getattr(cfg, "precomputed_patches_dir", None)
-        use_robust_laplacian = getattr(cfg, "use_robust_laplacian", False)
         use_igl_normals = getattr(cfg, "use_igl_normals", False)
-        nanoshaper_grid_scale = getattr(cfg, "nanoshaper_grid_scale", 2.0)
+        nanoshaper_grid_scale = getattr(cfg, "nanoshaper_grid_scale", 0.3)
+        edtsurf_grid_scale = getattr(cfg, "edtsurf_grid_scale", 0.5)
+        use_poisson = getattr(cfg, "use_poisson", False)
+        poisson_high_precision = getattr(cfg, "poisson_high_precision", True)
 
         try:
             extra_kwargs = {}
-            if surface_method == "alpha_complex" and parsed_arrays is not None:
+            if (
+                surface_method in ("alpha_complex", "nanoshaper")
+                and parsed_arrays is not None
+            ):
                 extra_kwargs["atom_pos"] = parsed_arrays[5]
                 extra_kwargs["atom_radius"] = parsed_arrays[7]
 
@@ -426,10 +439,15 @@ class ProteinLoader:
                             atom_radius=extra_kwargs.get("atom_radius"),
                         )
                     elif surface_method == "edtsurf":
-                        verts, faces = pdb_to_edtsurf(pdb_path)
+                        verts, faces = pdb_to_edtsurf(
+                            pdb_path, grid_scale=edtsurf_grid_scale
+                        )
                     elif surface_method == "nanoshaper":
                         verts, faces = pdb_to_nanoshaper(
-                            pdb_path, grid_scale=nanoshaper_grid_scale
+                            pdb_path,
+                            grid_scale=nanoshaper_grid_scale,
+                            atom_pos=extra_kwargs.get("atom_pos"),
+                            atom_radius=extra_kwargs.get("atom_radius"),
                         )
                     else:
                         raise ValueError(f"Unknown surface method: {surface_method}")
@@ -462,8 +480,9 @@ class ProteinLoader:
                     use_pymesh=use_pymesh,
                     surface_method=surface_method,
                     min_vert_number=min_vert_number,
-                    use_robust_laplacian=use_robust_laplacian,
                     use_igl_normals=use_igl_normals,
+                    use_poisson=use_poisson,
+                    poisson_high_precision=poisson_high_precision,
                 )
 
                 surface.add_geom_feats()
@@ -487,10 +506,15 @@ class ProteinLoader:
                         atom_radius=extra_kwargs.get("atom_radius"),
                     )
                 elif surface_method == "edtsurf":
-                    verts, faces = pdb_to_edtsurf(pdb_path)
+                    verts, faces = pdb_to_edtsurf(
+                        pdb_path, grid_scale=edtsurf_grid_scale
+                    )
                 elif surface_method == "nanoshaper":
                     verts, faces = pdb_to_nanoshaper(
-                        pdb_path, grid_scale=nanoshaper_grid_scale
+                        pdb_path,
+                        grid_scale=nanoshaper_grid_scale,
+                        atom_pos=extra_kwargs.get("atom_pos"),
+                        atom_radius=extra_kwargs.get("atom_radius"),
                     )
                 else:
                     raise ValueError(f"Unknown surface method: {surface_method}")
@@ -511,11 +535,28 @@ class ProteinLoader:
                     use_pymesh=use_pymesh,
                     surface_method=surface_method,
                     min_vert_number=min_vert_number,
-                    use_robust_laplacian=use_robust_laplacian,
                     use_igl_normals=use_igl_normals,
+                    use_poisson=use_poisson,
+                    poisson_high_precision=poisson_high_precision,
                 )
 
                 surface.add_geom_feats()
+
+            # Compute vertex-to-residue mapping + atom types
+            if parsed_arrays is not None and surface is not None:
+                atom_pos_np = parsed_arrays[5]
+                atom_res_map_np = parsed_arrays[2]
+                atom_types_np = parsed_arrays[4]
+                if atom_pos_np is not None and len(atom_pos_np) > 0:
+                    verts_t = torch.from_numpy(surface.verts).float()
+                    atom_pos_t = torch.from_numpy(atom_pos_np).float()
+                    dists = torch.cdist(verts_t, atom_pos_t)
+                    vert_atom_ids = dists.argmin(dim=1)
+                    atom_res_map = torch.from_numpy(atom_res_map_np).long()
+                    surface.vert_res_ids = atom_res_map[vert_atom_ids]
+                    surface.vert_atom_types = torch.from_numpy(
+                        atom_types_np[vert_atom_ids.numpy()]
+                    ).long()
 
             surface.from_numpy()
 

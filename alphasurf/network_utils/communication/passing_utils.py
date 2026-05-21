@@ -135,3 +135,68 @@ def compute_bipartite_graphs(
             surfaces, graphs, neighbors_g, mode="gs", num_gdf=num_gdf, neigh_th=neigh_th
         )
         return bipartite_graphsurf, bipartite_surfgraph
+
+
+NUM_ATOM_TYPES = 12  # H, C, N, O, S, F, P, Cl, Se, Br, I, UNK (see graphs.py:20-33)
+
+
+def compute_residue_bipartite(surfaces, graphs, num_gdf=16, neigh_th=8):
+    """
+    Compute residue-based bipartite graph between surface and graph.
+    Each surface vertex connects to exactly one graph node (its residue).
+    Same return type as compute_bipartite_graphs, with added atom-type edge features.
+    """
+    with torch.no_grad():
+        surface_sizes = list(surfaces.n_verts.detach().cpu().numpy())
+        graph_sizes = list(graphs.node_len.detach().cpu().numpy())
+        vert_res_ids = surfaces.vert_res_ids
+        vert_atom_types = surfaces.vert_atom_types
+
+        sg_edges = []
+        gs_edges = []
+        offset_surf, offset_graph = 0, 0
+
+        for i in range(len(surface_sizes)):
+            n_surf = surface_sizes[i]
+            n_graph = graph_sizes[i]
+
+            vrids = vert_res_ids[offset_surf : offset_surf + n_surf]
+            vrids_global = vrids + offset_graph
+
+            surf_idx = torch.arange(
+                offset_surf, offset_surf + n_surf, device=vrids.device
+            )
+            sg_edges.append(torch.stack([surf_idx, vrids_global]))
+            gs_edges.append(torch.stack([vrids_global, surf_idx]))
+
+            offset_surf += n_surf
+            offset_graph += n_graph
+
+        neighbors_sg = torch.cat(sg_edges, dim=1).long()
+        neighbors_gs = torch.cat(gs_edges, dim=1).long()
+
+        bipartite_surfgraph = BPGraphBatch(
+            surfaces,
+            graphs,
+            neighbors_sg,
+            mode="sg",
+            num_gdf=num_gdf,
+            neigh_th=neigh_th,
+        )
+        bipartite_graphsurf = BPGraphBatch(
+            surfaces,
+            graphs,
+            neighbors_gs,
+            mode="gs",
+            num_gdf=num_gdf,
+            neigh_th=neigh_th,
+        )
+
+        # Atom-type one-hot as edge feature (one edge per vertex, same order)
+        atom_type_onehot = torch.nn.functional.one_hot(
+            vert_atom_types, num_classes=NUM_ATOM_TYPES
+        ).float()
+        bipartite_surfgraph.bp_graph.edge_atom_type = atom_type_onehot
+        bipartite_graphsurf.bp_graph.edge_atom_type = atom_type_onehot
+
+        return bipartite_graphsurf, bipartite_surfgraph

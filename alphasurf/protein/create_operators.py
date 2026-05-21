@@ -7,6 +7,7 @@ import potpourri3d as pp3d
 import scipy
 import scipy.sparse.linalg as sla
 import scipy.spatial
+import torch
 from scipy.sparse import coo_matrix
 from scipy.sparse.linalg import eigsh
 
@@ -14,7 +15,6 @@ script_dir = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.join(script_dir, "..", ".."))
 
 import alphasurf.utils.torch_utils as diff_utils  # noqa: E402
-import robust_laplacian  # noqa: E402
 
 """
 In this file, we define functions to make the following transformations :
@@ -158,32 +158,71 @@ def face_normals(verts, faces, normalized=True):
 
 
 def mesh_vertex_normals(verts, faces):
-    face_n = face_normals(verts, faces)
+    # normalized=False leads to mesh vertex normals that are area-weighted
+    face_n = face_normals(verts, faces, normalized=False)
     vertex_normals = np.zeros_like(verts)
     for i in range(3):
         np.add.at(vertex_normals, faces[:, i], face_n)
     norm = np.linalg.norm(vertex_normals, axis=-1, keepdims=True)
-    vertex_normals = vertex_normals / norm
+    with np.errstate(invalid="ignore"):
+        vertex_normals = vertex_normals / norm
     return vertex_normals
 
 
-def vertex_normals(verts, faces, permissive=False):
+def vertex_normals(verts, faces, permissive=False, use_igl=False, name=""):
+    if use_igl:
+        import igl
+
+        return igl.per_vertex_normals(verts, faces)
+
+    V, F = verts.shape[0], faces.shape[0]
+
+    # --- Compute normals ---
     normals = mesh_vertex_normals(verts, faces)
 
-    # if any are NaN, wiggle slightly and recompute
+    # if any are NaN, diagnose and attempt fix
     bad_normals_mask = np.isnan(normals).any(axis=1, keepdims=True)
     bad_normals = bad_normals_mask.any()
     if bad_normals:
-        if not permissive:
-            raise ValueError(
-                "Some normals are nan, indicating problems with the mesh and potential ulterior "
-                "segmentation fault later in the code."
+        # Accumulate face normals per vertex (area-weighted)
+        face_n = face_normals(verts, faces, normalized=False)
+        raw_vn = np.zeros_like(verts)
+        for i in range(3):
+            np.add.at(raw_vn, faces[:, i], face_n)
+        raw_vn_norms = np.linalg.norm(raw_vn, axis=1)
+
+        # Fix: cancellation
+        cancel_mask = raw_vn_norms < 1e-10
+        bad_flat = np.isnan(normals).any(axis=1)
+        fix_mask = cancel_mask & bad_flat
+        unfixable = (~cancel_mask) & bad_flat
+        if unfixable.any():
+            uidxs = np.where(unfixable)[0]
+            print(
+                f"[NORMALS]{name} {len(uidxs)} unfixable normals out of {bad_flat.sum()} total NaN"
             )
-        bbox = np.amax(verts, axis=0) - np.amin(verts, axis=0)
-        scale = np.linalg.norm(bbox) * 1e-4
-        wiggle = (np.random.RandomState(seed=777).rand(*verts.shape) - 0.5) * scale
-        wiggle_verts = verts + bad_normals_mask * wiggle
-        normals = mesh_vertex_normals(wiggle_verts, faces)
+            for idx in uidxs[:5]:
+                face_of_vert = np.where((faces == idx).any(axis=1))[0]
+                print(
+                    f"  vert {idx}: coord={verts[idx]} accum={raw_vn[idx]} norm={raw_vn_norms[idx]:.2e} adj_faces={len(face_of_vert)}"
+                )
+            raise ValueError(f"Unfixable normals for {len(uidxs)} vertices{name}")
+        if fix_mask.any():
+            flat_verts = faces.ravel()
+            flat_normals = np.repeat(face_n, 3, axis=0)
+            mask = fix_mask[flat_verts]
+            normals[flat_verts[mask]] = flat_normals[mask]
+            bad_normals_mask = np.isnan(normals).any(axis=1, keepdims=True)
+            bad_normals = bad_normals_mask.any()
+        if bad_normals:
+            if not permissive:
+                raise ValueError("Issue with some normals")
+
+            bbox = np.amax(verts, axis=0) - np.amin(verts, axis=0)
+            scale = np.linalg.norm(bbox) * 1e-4
+            wiggle = (np.random.RandomState(seed=777).rand(*verts.shape) - 0.5) * scale
+            wiggle_verts = verts + bad_normals_mask * wiggle
+            normals = mesh_vertex_normals(wiggle_verts, faces)
 
     # if still NaN assign random normals (probably means unreferenced verts in mesh)
     bad_normals_mask = np.isnan(normals).any(axis=1)
@@ -317,7 +356,6 @@ def compute_operators(
     k_eig=128,
     normals=None,
     use_fem_decomp=False,
-    use_robust_laplacian=False,
 ):
     """
     Builds spectral operators for a mesh/point cloud. Constructs mass matrix, eigenvalues/vectors for Laplacian, and gradient matrix.
@@ -344,17 +382,13 @@ def compute_operators(
 
     # Clamp k_eig for small meshes (eigsh requires k < n_verts)
     n_verts = verts.shape[0]
-    k_eig = min(k_eig, int((n_verts - 1) / 5))
+    k_eig = min(k_eig, int((n_verts - 1) / 3))
     if k_eig < 1:
         raise ValueError(
             f"Mesh too small: {n_verts}, need at least {k_eig} eigenvectors"
         )
     # Build the scalar Laplacian
-    if use_robust_laplacian:
-        print("DEBUG: Using robust_laplacian")
-        L, M = robust_laplacian.mesh_laplacian(verts, faces)
-    else:
-        L = pp3d.cotan_laplacian(verts, faces, denom_eps=1e-10)
+    L = pp3d.cotan_laplacian(verts, faces, denom_eps=1e-10)
 
     if np.isnan(L.data).any():
         raise RuntimeError("NaN Laplace matrix")
@@ -364,20 +398,12 @@ def compute_operators(
 
     # === Compute the eigenbasis
     if not use_fem_decomp:
-        if use_robust_laplacian:
-            massvec = M.diagonal()
-            # M is already a sparse matrix, so use it directly
-            M_mat = M
-            if np.isnan(massvec).any():
-                raise RuntimeError("NaN mass matrix")
-            massvec = scipy.sparse.diags(massvec)
-        else:
-            massvec = pp3d.vertex_areas(verts, faces)
-            massvec += eps * np.mean(massvec)
-            if np.isnan(massvec).any():
-                raise RuntimeError("NaN mass matrix")
-            massvec = scipy.sparse.diags(massvec)
-            M_mat = massvec
+        massvec = pp3d.vertex_areas(verts, faces)
+        massvec += eps * np.mean(massvec)
+        if np.isnan(massvec).any():
+            raise RuntimeError("NaN mass matrix")
+        massvec = scipy.sparse.diags(massvec)
+        M_mat = massvec
 
         # Prepare matrices
         L_eigsh = (L + scipy.sparse.identity(L.shape[0]) * eps).tocsc()
@@ -386,9 +412,6 @@ def compute_operators(
         failcount = 0
         while True:
             try:
-                # We would be happy here to lower tol or maxiter since we don't need these to be super precise,
-                # but for some reason those parameters seem to have no effect
-                # for robust laplacian we have the full Mass matrix.
                 evals, evecs = sla.eigsh(L_eigsh, k=k_eig, M=M_mat, sigma=eigs_sigma)
 
                 # Clip off any eigenvalues that end up slightly negative due to numerical weirdness
@@ -440,7 +463,6 @@ def get_operators(
     normals=None,
     recompute=False,
     use_fem_decomp=False,
-    use_robust_laplacian=True,
 ):
     """
     We remove the hashing util and add a filename for the npz instead.
@@ -452,7 +474,6 @@ def get_operators(
             k_eig,
             normals=normals,
             use_fem_decomp=use_fem_decomp,
-            use_robust_laplacian=use_robust_laplacian,
         )
 
         np.savez(
@@ -481,7 +502,70 @@ def get_operators(
         )
 
 
-def load_operators(npzfile):
+def compute_poisson_operators(verts, faces, high_precision=True):
+    """
+    Builds PoissonNet operators for a mesh using torch_mesh_ops CUDA kernels.
+    Numpy in / torch out.
+    Arguments:
+      - verts: (V,3) vertex positions (numpy or torch)
+      - faces: (F,3) face indices (numpy or torch)
+      - high_precision: use float64 intermediates for operator construction
+    Returns:
+      - poisson_vert_mass: (1, V) lumped vertex masses
+      - poisson_L: sparse COO Laplacian tensor (picklable, for deferred solver construction)
+      - poisson_G: (1, 2F, V) intrinsic gradient operator
+      - poisson_M: (1, 2F) interleaved face areas
+    """
+    import torch_mesh_ops as TMO
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    V = torch.as_tensor(verts, dtype=torch.float32).to(device)
+    F = torch.as_tensor(faces, dtype=torch.long).to(device)
+    V = V.unsqueeze(0).contiguous()
+    F = F.unsqueeze(0).contiguous()
+
+    vert_mass = TMO.vertex_mass_batched(V, F, 1e-8).float()
+    face_areas = TMO.face_areas_batched(V, F).float()
+    edge_lengths = TMO.edge_lengths_batched(V, F)
+    G = TMO.intrinsic_gradient_batched(edge_lengths, F).float()
+    M = torch.repeat_interleave(face_areas, 2, dim=-1)
+
+    L = TMO.cotangent_laplacian_batched(V, F, 1e-10).float()
+    L = L[0].cpu().coalesce()
+
+    return vert_mass.cpu(), L, G.cpu(), M.cpu()
+
+
+def build_poisson_solver(L, device=None):
+    """Reconstruct CholeskySolverF from a sparse COO Laplacian."""
+    import cholespy
+
+    if device is not None:
+        L = L.to(device)
+    nV = L.shape[-1]
+    eps = 1e-6
+    for _ in range(5):
+        L = L.coalesce()
+        try:
+            return cholespy.CholeskySolverF(
+                n_rows=L.shape[-1],
+                ii=L.indices()[0],
+                jj=L.indices()[1],
+                x=L.values(),
+                type=cholespy.MatrixType.COO,
+            )
+        except Exception:
+            eps *= 10.0
+            sparse_eps_diag = torch.sparse.spdiags(
+                eps * torch.ones(nV, device=L.device),
+                torch.zeros(1, dtype=torch.long, device=L.device),
+                (nV, nV),
+            )
+            L = (L + sparse_eps_diag).coalesce()
+    raise RuntimeError("Failed to create Cholesky solver")
+
+
+def load_operators(npz_file):
     """
     We remove the hashing util and add a filename for the npz instead.
     """

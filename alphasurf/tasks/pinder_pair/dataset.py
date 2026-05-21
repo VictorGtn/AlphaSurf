@@ -79,7 +79,11 @@ def load_pinder_split(
             df = pd.read_csv(csv_path)
             if max_systems is not None:
                 df = df.iloc[:max_systems]
-            return _df_to_systems(df)
+            systems = _df_to_systems(df)
+            for s in systems:
+                if not s.get("setting"):
+                    s["setting"] = test_setting
+            return systems
 
     # Try split-specific CSV
     csv_path = data_dir / f"systems_{split}.csv"
@@ -227,6 +231,7 @@ def _df_to_systems(df) -> List[Dict]:
                 "receptor_id": row.get("receptor_id", f"{system_id}_R"),
                 "ligand_id": row.get("ligand_id", f"{system_id}_L"),
                 "setting": row.get("setting"),
+                "split": row.get("split"),
                 # Allow pre-computed paths if in CSV
                 "receptor_path": row.get("receptor_path"),
                 "ligand_path": row.get("ligand_path"),
@@ -260,6 +265,7 @@ class PinderPairDataset(Dataset):
         # Legacy/Compatibility argument
         interface_distance: float = 8.0,
         surface_neg_to_pos_ratio: float = 10.0,
+        interface_dir: Optional[str] = None,
     ):
         """
         Args:
@@ -271,6 +277,7 @@ class PinderPairDataset(Dataset):
             max_pos_per_pair: Maximum positive pairs per system (-1 for all)
             interface_distance_graph: Distance threshold (Å) for residue graph interface
             interface_distance_surface: Distance threshold (Å) for surface mesh interface
+            interface_dir: Directory with precomputed interface pairs (disk mode)
         """
         self.systems = systems
         self.protein_loader = protein_loader
@@ -283,9 +290,32 @@ class PinderPairDataset(Dataset):
         self.interface_distance_surface = interface_distance_surface
 
         self.surface_neg_to_pos_ratio = surface_neg_to_pos_ratio
+        self.interface_dir = interface_dir
+
+        # Cache clean interface pairs when using noise (keyed by system ID)
+        self._interface_cache = {}
 
     def __len__(self) -> int:
         return len(self.systems)
+
+    def _load_precomputed_interface(self, system_id: str):
+        """Load precomputed interface pairs from disk."""
+        if self.interface_dir is None:
+            return None
+        path = os.path.join(self.interface_dir, f"{system_id}.pt")
+        if not os.path.exists(path):
+            return None
+        try:
+            return torch.load(path, weights_only=True)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _neg_pairs_from_complement(
+        pos_pairs: np.ndarray, n1: int, n2: int
+    ) -> np.ndarray:
+        """Generate all (i, j) pairs NOT in pos_pairs, without cdist."""
+        return _generate_negative_pairs(pos_pairs, n1, n2)
 
     def _get_pdb_path(self, system: Dict, protein_type: str) -> str:
         """Get PDB path for receptor or ligand."""
@@ -492,17 +522,108 @@ class PinderPairDataset(Dataset):
 
         return idx_left, idx_right, labels
 
-    def __getitem__(self, idx: int) -> Optional[Data]:
-        system = self.systems[idx]
-
-        # Load both proteins
+    def _compute_clean_pairs(self, system, receptor_path, ligand_path):
+        """Load clean proteins and compute interface pairs for caching."""
         receptor_name = system.get("receptor_id", f"{system['id']}_R")
         ligand_name = system.get("ligand_id", f"{system['id']}_L")
 
-        # Resolve paths (either from system dict or default logic)
+        clean_1 = self.protein_loader.load(
+            receptor_name, pdb_path=receptor_path, apply_noise=False
+        )
+        clean_2 = self.protein_loader.load(
+            ligand_name, pdb_path=ligand_path, apply_noise=False
+        )
+
+        if clean_1 is None or clean_2 is None:
+            return None
+        if not clean_1.has_graph() or not clean_2.has_graph():
+            return None
+
+        g1_len = len(clean_1.graph.node_pos)
+        g2_len = len(clean_2.graph.node_pos)
+        if g1_len < 20 or g2_len < 20:
+            return None
+
+        # Graph interface
+        has_atom_data_1 = (
+            "atom_pos" in clean_1.metadata and "atom_res_map" in clean_1.metadata
+        )
+        has_atom_data_2 = (
+            "atom_pos" in clean_2.metadata and "atom_res_map" in clean_2.metadata
+        )
+
+        if has_atom_data_1 and has_atom_data_2:
+            pos_pairs, neg_pairs = self._compute_interface_full_atom(
+                clean_1.metadata["atom_pos"],
+                clean_2.metadata["atom_pos"],
+                clean_1.metadata["atom_res_map"],
+                clean_2.metadata["atom_res_map"],
+                threshold=self.interface_distance_graph,
+            )
+        else:
+            pos_pairs, neg_pairs = self._compute_interface(
+                clean_1.graph.node_pos,
+                clean_2.graph.node_pos,
+                threshold=self.interface_distance_graph,
+            )
+
+        if pos_pairs.shape[1] < 5:
+            return None
+
+        # Surface interface
+        surf_pos_1 = getattr(clean_1.surface, "verts", None)
+        surf_pos_2 = getattr(clean_2.surface, "verts", None)
+        surf_pos_pairs = np.empty((2, 0))
+        surf_neg_pairs = np.empty((2, 0))
+
+        if surf_pos_1 is not None and surf_pos_2 is not None:
+            if len(surf_pos_1) >= 20 and len(surf_pos_2) >= 20:
+                surf_pos_pairs, surf_neg_pairs = self._compute_interface(
+                    surf_pos_1, surf_pos_2, threshold=self.interface_distance_surface
+                )
+
+        return {
+            "pos_pairs": pos_pairs,
+            "neg_pairs": neg_pairs,
+            "surf_pos_pairs": surf_pos_pairs,
+            "surf_neg_pairs": surf_neg_pairs,
+        }
+
+    def _get_item(self, idx: int) -> Optional[Data]:
+        system = self.systems[idx]
+
+        # Resolve paths
         receptor_path = self._get_pdb_path(system, "receptor")
         ligand_path = self._get_pdb_path(system, "ligand")
 
+        # Check if noise is actually enabled (noise_mode=none means no actual noise)
+        _noise_augmentor = getattr(self.protein_loader, "noise_augmentor", None)
+        _noise_actually_enabled = _noise_augmentor is not None and getattr(
+            _noise_augmentor, "enabled", False
+        )
+
+        # Get interface pairs (cached on clean structures when noise is active)
+        if self.apply_noise and _noise_actually_enabled:
+            sid = system["id"]
+            if sid not in self._interface_cache:
+                pairs = self._compute_clean_pairs(system, receptor_path, ligand_path)
+                if pairs is None:
+                    return None
+                self._interface_cache[sid] = pairs
+            pairs = self._interface_cache[sid]
+            pos_pairs = pairs["pos_pairs"]
+            neg_pairs = pairs["neg_pairs"]
+            surf_pos_pairs = pairs["surf_pos_pairs"]
+            surf_neg_pairs = pairs["surf_neg_pairs"]
+
+        # Load proteins (with noise for training, without for eval)
+        # In disk mode, test systems use setting suffix to match precomputed filenames
+        setting = system.get("setting")
+        receptor_name = system.get("receptor_id", f"{system['id']}_R")
+        ligand_name = system.get("ligand_id", f"{system['id']}_L")
+        if setting:
+            receptor_name = f"{receptor_name}_{setting}"
+            ligand_name = f"{ligand_name}_{setting}"
         protein_1 = self.protein_loader.load(
             receptor_name, pdb_path=receptor_path, apply_noise=self.apply_noise
         )
@@ -511,111 +632,103 @@ class PinderPairDataset(Dataset):
         )
 
         if protein_1 is None or protein_2 is None:
-            # print(
-            #     f"DEBUG: protein_1 or protein_2 is None for {receptor_name}/{ligand_name}"
-            # )
             return None
 
-        # Validate sizes
         if not protein_1.has_graph() or not protein_2.has_graph():
-            # print(f"DEBUG: missing graph for {receptor_name}/{ligand_name}")
+            return None
+
+        if protein_1.surface is None or protein_2.surface is None:
             return None
 
         g1_len = len(protein_1.graph.node_pos)
         g2_len = len(protein_2.graph.node_pos)
 
         if g1_len < 20 or g2_len < 20:
-            # print(f"DEBUG: proteins too small: {g1_len}/{g2_len}")
             return None
 
-        # Compute interface using full atom distances
-        # Check if atom-level data is available in metadata
-        has_atom_data_1 = (
-            "atom_pos" in protein_1.metadata and "atom_res_map" in protein_1.metadata
-        )
-        has_atom_data_2 = (
-            "atom_pos" in protein_2.metadata and "atom_res_map" in protein_2.metadata
-        )
+        # Compute interface pairs if not using cache (no actual noise or eval mode)
+        if not (self.apply_noise and _noise_actually_enabled):
+            precomputed = self._load_precomputed_interface(system["id"])
 
-        if has_atom_data_1 and has_atom_data_2:
-            # Use full atom-atom distances
-            pos_pairs, neg_pairs = self._compute_interface_full_atom(
-                protein_1.metadata["atom_pos"],
-                protein_2.metadata["atom_pos"],
-                protein_1.metadata["atom_res_map"],
-                protein_2.metadata["atom_res_map"],
-                threshold=self.interface_distance_graph,
-            )
-        else:
-            # Fallback to CA-based distances
-            logger.debug("Using CA-based distances for %s", system["id"])
-            pos_pairs, neg_pairs = self._compute_interface(
-                protein_1.graph.node_pos,
-                protein_2.graph.node_pos,
-                threshold=self.interface_distance_graph,
-            )
+            if precomputed is not None:
+                pos_pairs = precomputed["graph_pos_pairs"].numpy()
+                neg_pairs = _generate_negative_pairs(
+                    pos_pairs,
+                    int(precomputed["graph_n_res1"]),
+                    int(precomputed["graph_n_res2"]),
+                )
 
-        if pos_pairs.shape[1] < 5:
-            logger.debug(
-                "Too few interface pairs for graph: %d in %s",
-                pos_pairs.shape[1],
-                system["id"],
-            )
-            return None
+                if pos_pairs.shape[1] < 5:
+                    return None
 
-        # Sample residue pairs
+                surf_pos_pairs = precomputed["surf_pos_pairs"].numpy()
+                surf_n1 = int(precomputed["surf_n1"])
+                surf_n2 = int(precomputed["surf_n2"])
+                if surf_pos_pairs.shape[1] > 0 and surf_n1 > 0 and surf_n2 > 0:
+                    surf_neg_pairs = self._neg_pairs_from_complement(
+                        surf_pos_pairs, surf_n1, surf_n2
+                    )
+                else:
+                    surf_pos_pairs = np.empty((2, 0))
+                    surf_neg_pairs = np.empty((2, 0))
+            else:
+                has_atom_data_1 = (
+                    "atom_pos" in protein_1.metadata
+                    and "atom_res_map" in protein_1.metadata
+                )
+                has_atom_data_2 = (
+                    "atom_pos" in protein_2.metadata
+                    and "atom_res_map" in protein_2.metadata
+                )
+
+                if has_atom_data_1 and has_atom_data_2:
+                    pos_pairs, neg_pairs = self._compute_interface_full_atom(
+                        protein_1.metadata["atom_pos"],
+                        protein_2.metadata["atom_pos"],
+                        protein_1.metadata["atom_res_map"],
+                        protein_2.metadata["atom_res_map"],
+                        threshold=self.interface_distance_graph,
+                    )
+                else:
+                    pos_pairs, neg_pairs = self._compute_interface(
+                        protein_1.graph.node_pos,
+                        protein_2.graph.node_pos,
+                        threshold=self.interface_distance_graph,
+                    )
+
+                if pos_pairs.shape[1] < 5:
+                    return None
+
+                surf_pos_1 = getattr(protein_1.surface, "verts", None)
+                surf_pos_2 = getattr(protein_2.surface, "verts", None)
+                surf_pos_pairs = np.empty((2, 0))
+                surf_neg_pairs = np.empty((2, 0))
+                if surf_pos_1 is not None and surf_pos_2 is not None:
+                    if len(surf_pos_1) >= 20 and len(surf_pos_2) >= 20:
+                        surf_pos_pairs, surf_neg_pairs = self._compute_interface(
+                            surf_pos_1,
+                            surf_pos_2,
+                            threshold=self.interface_distance_surface,
+                        )
+
+        # Sample graph pairs
         idx_left, idx_right, labels = self._sample_pairs(pos_pairs, neg_pairs)
         if idx_left is None:
-            # print(f"DEBUG: _sample_pairs returned None")
             return None
 
-        # Compute and Sample Surface Pairs
-        # Use simple cdist on surface points
-        surf_pos_1 = getattr(protein_1.surface, "verts", None)
-        if surf_pos_1 is None:
-            # Surface generation failed, skip this sample
-            return None
-
-        surf_pos_2 = getattr(protein_2.surface, "verts", None)
-        if surf_pos_2 is None:
-            # Surface generation failed, skip this sample
-            return None
-
-        # Check minimum surface size
-        if len(surf_pos_1) < 20 or len(surf_pos_2) < 20:
-            # print(f"DEBUG: surfaces too small: {len(surf_pos_1)}/{len(surf_pos_2)}")
-            return None
-
-        # Surface interface uses same interface_distance
-        surf_pos_pairs, surf_neg_pairs = self._compute_interface(
-            surf_pos_1, surf_pos_2, threshold=self.interface_distance_surface
-        )
-
-        if surf_pos_pairs.shape[1] < 5:
-            # Check if graphs are disconnected
-            n_comp_1 = self._count_graph_components(protein_1.graph)
-            n_comp_2 = self._count_graph_components(protein_2.graph)
-            logger.debug(
-                "Too few surface interface pairs: %d, verts: %d/%d, components: %d/%d, system: %s",
-                surf_pos_pairs.shape[1],
-                len(surf_pos_1),
-                len(surf_pos_2),
-                n_comp_1,
-                n_comp_2,
-                system["id"],
+        # Sample surface pairs
+        if surf_pos_pairs.shape[1] >= 5:
+            surf_idx_left, surf_idx_right, surf_labels = self._sample_pairs(
+                surf_pos_pairs,
+                surf_neg_pairs,
+                neg_to_pos_ratio=getattr(self, "surface_neg_to_pos_ratio", 10.0),
+                max_pos=-1,
             )
-            return None
-
-        surf_idx_left, surf_idx_right, surf_labels = self._sample_pairs(
-            surf_pos_pairs,
-            surf_neg_pairs,
-            neg_to_pos_ratio=getattr(self, "surface_neg_to_pos_ratio", 10.0),
-            max_pos=-1,  # Always use all surface positives if possible
-        )
-
-        if surf_idx_left is None:
-            # Fallback if no surface interaction found (rare but possible depending on threshold)
-            # Create empty tensors to avoid crashing batching
+            if surf_idx_left is None:
+                surf_idx_left = torch.tensor([], dtype=torch.long)
+                surf_idx_right = torch.tensor([], dtype=torch.long)
+                surf_labels = torch.tensor([], dtype=torch.float)
+        else:
             surf_idx_left = torch.tensor([], dtype=torch.long)
             surf_idx_right = torch.tensor([], dtype=torch.long)
             surf_labels = torch.tensor([], dtype=torch.float)
@@ -639,6 +752,17 @@ class PinderPairDataset(Dataset):
             g2_len=g2_len,
             system_id=system["id"],
         )
+
+    def __getitem__(self, idx: int) -> Optional[Data]:
+        result = self._get_item(idx)
+        if result is not None:
+            return result
+        for offset in range(1, len(self)):
+            next_idx = (idx + offset) % len(self)
+            result = self._get_item(next_idx)
+            if result is not None:
+                return result
+        return None
 
 
 class PinderAlignedDataset(PinderPairDataset):
@@ -710,9 +834,11 @@ class PinderAlignedDataset(PinderPairDataset):
             match = re.search(r"([A-Za-z]+)", parts[1])
             if match:
                 res_type = match.group(1)
-                # use Biopython to handle 3-letter -> 1-letter if needed
-                # seq1 can handle "GLY" -> "G", "G" -> "G", "MSE" -> "M", etc.
-                res_code = SeqUtils.seq1(res_type)
+                # If already 1-letter, use directly; otherwise convert 3-letter -> 1-letter
+                if len(res_type) == 1:
+                    res_code = res_type
+                else:
+                    res_code = SeqUtils.seq1(res_type)
             else:
                 res_code = "X"
 
@@ -763,6 +889,8 @@ class PinderAlignedDataset(PinderPairDataset):
         if target_r is None or target_l is None:
             return None
         if not target_r.has_graph() or not target_l.has_graph():
+            return None
+        if target_r.surface is None or target_l.surface is None:
             return None
 
         # 2. Check if we need alignment

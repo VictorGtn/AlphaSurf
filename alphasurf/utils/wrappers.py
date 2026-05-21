@@ -1,22 +1,21 @@
 import os
-from torch_geometric.data import Data
 
-from alphasurf.utils.data_utils import SurfaceLoader, GraphLoader
-from alphasurf.network_utils.communication.utils_blocks import (
-    HMR2LayerMLP,
-    CatMergeBlock,
-    GVPWrapper,
-)
-from alphasurf.network_utils.communication.utils_blocks import (
-    CatPostProcessBlock,
-    LinearWrapper,
-)
+from alphasurf.network_utils import ProNet
 from alphasurf.network_utils.communication.surface_graph_comm import (
     SurfaceGraphCommunication,
 )
-from alphasurf.network_utils import ProNet
+from alphasurf.network_utils.communication.utils_blocks import (
+    CatMergeBlock,
+    CatPostProcessBlock,
+    GVPWrapper,
+    HMR2LayerMLP,
+    LinearWrapper,
+)
+from alphasurf.network_utils.misc_arch.poissonnet import PoissonNetBlock
+from alphasurf.networks import ProteinEncoder, ProteinEncoderBlock
+from alphasurf.utils.data_utils import GraphLoader, SurfaceLoader
 from diffusion_net import DiffusionNetBlock
-from alphasurf.networks import ProteinEncoderBlock, ProteinEncoder
+from torch_geometric.data import Data
 
 
 class DefaultLoader:
@@ -93,24 +92,28 @@ def get_default_input(in_dim_surface, in_dim_graph, model_dim=128, dropout=0.1):
     return input_block
 
 
-def get_middle_block(model_dim=128, dropout=0.1):
+def get_middle_block(model_dim=128, dropout=0.1, surface_encoder="diffusion"):
     """
     Input goes through a surface and a graph encoder,
     then each feature is compacted, exchanged with a message passing and aggregated back
     :param model_dim:
     :param dropout:
+    :param surface_encoder: "diffusion" or "poisson"
     :return:
     """
     # Encoders
     half_dim = model_dim // 2
-    diff_net = DiffusionNetBlock(
-        C_width=model_dim,
-        dropout=dropout,
-        use_bn=False,
-        use_layernorm=True,
-        init_time=10,
-        init_std=10,
-    )
+    if surface_encoder == "poisson":
+        surface_enc = PoissonNetBlock(C_width=model_dim, dropout=dropout)
+    else:
+        surface_enc = DiffusionNetBlock(
+            C_width=model_dim,
+            dropout=dropout,
+            use_bn=False,
+            use_layernorm=True,
+            init_time=10,
+            init_std=10,
+        )
     pronet = ProNet(hidden_channels=model_dim, mid_emb=half_dim, dropout=0.1)
 
     # Mid-encoder
@@ -143,13 +146,18 @@ def get_middle_block(model_dim=128, dropout=0.1):
         g_post_block=g_post_block,
     )
     middle_block = ProteinEncoderBlock(
-        surface_encoder=diff_net, graph_encoder=pronet, message_passing=mp_block
+        surface_encoder=surface_enc, graph_encoder=pronet, message_passing=mp_block
     )
     return middle_block
 
 
 def get_default_model(
-    in_dim_surface, in_dim_graph, model_dim=128, dropout=0.1, n_block=4
+    in_dim_surface,
+    in_dim_graph,
+    model_dim=128,
+    dropout=0.1,
+    n_block=4,
+    surface_encoder="diffusion",
 ):
     """
     The default alphasurf construct leverages an input encoding block along with four middle blocks
@@ -158,6 +166,7 @@ def get_default_model(
     :param model_dim:
     :param dropout:
     :param n_block:
+    :param surface_encoder: "diffusion" or "poisson"
     :return:
     """
     block_list = [
@@ -166,5 +175,9 @@ def get_default_model(
         )
     ]
     for _ in range(n_block):
-        block_list.append(get_middle_block(model_dim=model_dim, dropout=dropout))
+        block_list.append(
+            get_middle_block(
+                model_dim=model_dim, dropout=dropout, surface_encoder=surface_encoder
+            )
+        )
     return ProteinEncoder.from_blocks_list(block_list=block_list)

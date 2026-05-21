@@ -43,6 +43,24 @@ class PinderPairDataModule(pl.LightningDataModule):
                 test_setting=self.test_setting if split == "test" else None,
             )
 
+        # Merge holo reference paths into test systems for apo/af2 alignment
+        if self.test_setting in ["apo", "af2"]:
+            holo_systems = load_pinder_split(
+                data_dir, split="test", test_setting="holo"
+            )
+            holo_map = {s["id"]: s for s in holo_systems}
+            merged = 0
+            for s in self.systems["test"]:
+                if s["id"] in holo_map:
+                    s["holo_receptor_path"] = holo_map[s["id"]].get("receptor_path")
+                    s["holo_ligand_path"] = holo_map[s["id"]].get("ligand_path")
+                    s["holo_receptor_id"] = holo_map[s["id"]].get("receptor_id")
+                    s["holo_ligand_id"] = holo_map[s["id"]].get("ligand_id")
+                    merged += 1
+            print(
+                f"Merged Holo paths for {merged}/{len(self.systems['test'])} test systems."
+            )
+
         # Build protein loader (one shared loader for all splits)
         self.protein_loader = self._build_protein_loader(cfg)
 
@@ -59,6 +77,9 @@ class PinderPairDataModule(pl.LightningDataModule):
             cfg, "interface_distance_surface", self.interface_distance
         )
 
+        # Precomputed interface directory (disk mode)
+        self.interface_dir = self._resolve_interface_dir(cfg)
+
         # DataLoader args
         self.loader_args = self._build_loader_args(cfg)
 
@@ -74,6 +95,18 @@ class PinderPairDataModule(pl.LightningDataModule):
         update_model_input_dim(
             cfg, dataset_temp=temp_dataset, gkey="graph_1", skey="surface_1"
         )
+
+    @staticmethod
+    def _resolve_interface_dir(cfg) -> Optional[str]:
+        """Resolve precomputed interface directory from config."""
+        cfg_interface = getattr(cfg, "cfg_interface", None)
+        if cfg_interface is None:
+            return None
+        data_dir = getattr(cfg_interface, "data_dir", cfg.data_dir)
+        data_name = getattr(cfg_interface, "data_name", None)
+        if data_name is None:
+            return None
+        return os.path.join(data_dir, data_name)
 
     def _build_protein_loader(self, cfg) -> ProteinLoader:
         """Build ProteinLoader with appropriate configuration."""
@@ -97,6 +130,8 @@ class PinderPairDataModule(pl.LightningDataModule):
         # Merge configs
         surface_config = self._merge_config(cfg.cfg_surface, on_fly_cfg)
         graph_config = self._merge_config(cfg.cfg_graph, on_fly_cfg)
+
+        surface_config.use_poisson = "poisson" in cfg.encoder.name
 
         return ProteinLoader(
             mode=mode,
@@ -177,6 +212,7 @@ class PinderPairDataModule(pl.LightningDataModule):
             interface_distance_graph=self.interface_distance_graph,
             interface_distance_surface=self.interface_distance_surface,
             surface_neg_to_pos_ratio=self.surface_neg_to_pos_ratio,
+            interface_dir=self.interface_dir,
         )
 
     def train_dataloader(self) -> DataLoader:

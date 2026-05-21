@@ -17,4 +17,4 @@ gvp_vector_gate: false
 gvp_n_layers: 3
 gvp_use_angles: True
 
-dmasif_config: /cluster/CBIO/data2/vgertner/atomsurf/atomsurf/atomsurf/tasks/shared_conf/config.yml
+dmasif_config: /cluster/CBIO/data2/vgertner/alphasurf/alphasurf/alphasurf/tasks/shared_conf/config.yml

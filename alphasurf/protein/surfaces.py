@@ -65,6 +65,10 @@ class SurfaceObject(Data, FeaturesHolder):
         gradX=None,
         gradY=None,
         vnormals=None,
+        poisson_vert_mass=None,
+        poisson_L=None,
+        poisson_G=None,
+        poisson_M=None,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -81,6 +85,11 @@ class SurfaceObject(Data, FeaturesHolder):
         self.gradY = gradY
         self.k_eig = len(evals) if evals is not None else 0
         self.set_vnormals(vnormals)
+
+        self.poisson_vert_mass = poisson_vert_mass
+        self.poisson_L = poisson_L
+        self.poisson_G = poisson_G
+        self.poisson_M = poisson_M
 
         if features is None:
             self.features = Features(num_nodes=self.n_verts)
@@ -235,19 +244,20 @@ class SurfaceObject(Data, FeaturesHolder):
         max_vert_number=50000,
         face_reduction_rate=1.0,
         use_fem_decomp=False,
-        use_robust_laplacian=False,
         use_pymesh=False,
         out_ply_path=None,
         surface_method="msms",
         obj_name=None,
         use_igl_normals=False,
+        use_poisson=False,
+        poisson_high_precision=True,
     ):
         from alphasurf.protein.create_operators import compute_operators, vertex_normals
         from alphasurf.protein.create_surface import mesh_simplification
         from alphasurf.utils.timing_stats import Timer
 
         verts = diff_utils.toNP(verts)
-        faces = diff_utils.toNP(faces).astype(int)
+        faces = diff_utils.toNP(faces).astype(np.int32)
         with Timer("mesh_processing"):
             verts, faces, drop_ratio, drop_ratio_vertex = mesh_simplification(
                 verts=verts,
@@ -260,7 +270,9 @@ class SurfaceObject(Data, FeaturesHolder):
                 surface_method=surface_method,
                 obj_name=obj_name,
             )
-        vnormals = vertex_normals(verts, faces, use_igl=use_igl_normals)
+        vnormals = vertex_normals(
+            verts, faces, use_igl=use_igl_normals, name=f" {obj_name}"
+        )
 
         with Timer("compute_operators"):
             frames, massvec, L, evals, evecs, gradX, gradY = compute_operators(
@@ -268,8 +280,22 @@ class SurfaceObject(Data, FeaturesHolder):
                 faces,
                 normals=vnormals,
                 use_fem_decomp=use_fem_decomp,
-                use_robust_laplacian=use_robust_laplacian,
             )
+
+        poisson_kwargs = {}
+        if use_poisson:
+            from alphasurf.protein.create_operators import compute_poisson_operators
+
+            with Timer("compute_poisson_operators"):
+                p_vert_mass, p_L, p_G, p_M = compute_poisson_operators(
+                    verts, faces, high_precision=poisson_high_precision
+                )
+            poisson_kwargs = {
+                "poisson_vert_mass": p_vert_mass,
+                "poisson_L": p_L,
+                "poisson_G": p_G,
+                "poisson_M": p_M,
+            }
 
         surface = cls(
             verts=verts,
@@ -281,6 +307,7 @@ class SurfaceObject(Data, FeaturesHolder):
             gradX=gradX,
             gradY=gradY,
             vnormals=vnormals,
+            **poisson_kwargs,
         )
         surface.drop_ratio = drop_ratio
         surface.drop_ratio_vertex = drop_ratio_vertex
@@ -394,8 +421,28 @@ class SurfaceBatch(Batch):
                     else:
                         pyg_tensor = tensor_coo
                     surface[key] = pyg_tensor
+
+        # Extract poisson operators before batching (they have face-dependent
+        # shapes that prevent torch.cat across surfaces)
+        poisson_keys = ["poisson_vert_mass", "poisson_L", "poisson_G", "poisson_M"]
+        poisson_ops = []
+        for surface in data_list:
+            ops = {}
+            for key in poisson_keys:
+                if hasattr(surface, key):
+                    ops[key] = getattr(surface, key)
+                    delattr(surface, key)
+            poisson_ops.append(ops)
+
         batch = Batch.from_data_list(data_list)
         batch = batch.contiguous()
+
+        # Reattach poisson operators as lists after contiguous() to avoid
+        # calling .contiguous() on non-tensor objects (e.g. Cholesky solvers)
+        for key in poisson_keys:
+            values = [ops.get(key) for ops in poisson_ops if key in ops]
+            if values:
+                setattr(batch, key, values)
         surface_batch = cls()
         surface_batch.__dict__.update(batch.__dict__)
         return surface_batch

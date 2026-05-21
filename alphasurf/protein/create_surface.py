@@ -21,7 +21,7 @@ if _cgal_bindings_dir is None:
 
 sys.path.insert(0, _cgal_bindings_dir)
 print(f"[CGAL] Loading bindings from: {_cgal_bindings_dir}")
-import cgal_alpha  # ty:ignore[unresolved-import] # noqa: E402
+import cgal_alpha_algo2 as cgal_alpha  # ty:ignore[unresolved-import] # noqa: E402
 
 print(f"[CGAL] Successfully loaded: {cgal_alpha.__file__}")
 from alphasurf.protein.graphs import parse_pdb_path  # noqa: E402
@@ -309,7 +309,7 @@ def pdb_to_alpha_complex(
             )
 
         with Timer("sbl_alpha_complex"):
-            verts, faces = cgal_alpha.compute_alpha_complex_from_atoms(
+            verts, faces = cgal_alpha.compute_alpha_complex_algo2_from_atoms(
                 atom_pos.astype(np.float32),
                 atom_radius.astype(np.float32),
                 float(alpha_value),
@@ -503,7 +503,7 @@ def mesh_simplification(
     # o3d.io.write_triangle_mesh(big_name, mesh)
     # save_debug_ply(mesh, base_name, "00_initial_mesh")
     # Clean with open3d
-    if surface_method == "msms":
+    if surface_method != "alpha_complex":
         mesh.remove_non_manifold_edges()
     # save_debug_ply(mesh, base_name, "01_after_remove_non_manifold_edges")
     if surface_method != "alpha_complex":
@@ -529,28 +529,32 @@ def mesh_simplification(
     drop_ratio_vertex = 0.0
 
     if not use_pymesh:
-        triangle_clusters, cluster_n_triangles, _ = mesh.cluster_connected_triangles()
-        triangle_clusters = np.asarray(triangle_clusters)
-        cluster_n_triangles = np.asarray(cluster_n_triangles)
-
         if surface_method == "alpha_complex":
-            # Vertex-sharing clustering (experiment): run on the same pre-filter faces
-            # so both drop_ratios are comparable against the same baseline.
             vc_clusters, vc_cluster_n = cluster_triangles_by_vertex_sharing(
                 np.asarray(mesh.triangles)
             )
-            if len(vc_cluster_n) > 1:
-                vc_largest = np.argmax(vc_cluster_n)
-                vc_dropped = np.sum(vc_clusters != vc_largest)
-                drop_ratio_vertex = vc_dropped / len(vc_clusters)
+            vc_clusters = np.asarray(vc_clusters)
+            vc_cluster_n = np.asarray(vc_cluster_n)
 
-            largest_cluster_idx = np.argmax(cluster_n_triangles)
-            triangles_to_remove = triangle_clusters != largest_cluster_idx
+            largest_cluster_size = np.max(vc_cluster_n)
+            cutoff = int(0.01 * largest_cluster_size)
+            assert (
+                (vc_cluster_n >= cutoff).sum() == 1
+            ), f"Vertex cluster n triangles: {vc_cluster_n}, cutoff: {cutoff}"
+
+            triangles_to_remove = vc_cluster_n[vc_clusters] < cutoff
             dropped_faces = np.sum(triangles_to_remove)
+            drop_ratio_vertex = dropped_faces / len(vc_clusters)
             mesh.remove_triangles_by_mask(triangles_to_remove)
             mesh.remove_unreferenced_vertices()
             mesh.remove_degenerate_triangles()
         else:
+            triangle_clusters, cluster_n_triangles, _ = (
+                mesh.cluster_connected_triangles()
+            )
+            triangle_clusters = np.asarray(triangle_clusters)
+            cluster_n_triangles = np.asarray(cluster_n_triangles)
+
             largest_cluster_size = np.max(cluster_n_triangles)
             cutoff = int(0.01 * largest_cluster_size)
             assert (
@@ -563,8 +567,18 @@ def mesh_simplification(
             mesh.remove_unreferenced_vertices()
             mesh.remove_degenerate_triangles()
 
-        total_faces = len(triangle_clusters)
-        drop_ratio = dropped_faces / total_faces if total_faces > 0 else 0.0
+        total_faces = (
+            len(vc_clusters)
+            if surface_method == "alpha_complex"
+            else len(triangle_clusters)
+        )
+        drop_ratio = (
+            drop_ratio_vertex
+            if surface_method == "alpha_complex"
+            else dropped_faces / total_faces
+            if total_faces > 0
+            else 0.0
+        )
 
         if drop_ratio > 0.1:
             msg = f"WARNING: Dropped {drop_ratio:.1%} of faces in component filtering"
@@ -663,7 +677,7 @@ def mesh_simplification(
     return verts_out, faces_out, drop_ratio, drop_ratio_vertex
 
 
-def pdb_to_edtsurf(pdb_path):
+def pdb_to_edtsurf(pdb_path, grid_scale=0.5):
     """Generate molecular surface using EDTSurf."""
     EDTSURF_BIN = str(Path(__file__).resolve().parents[3] / "EDTSurf" / "EDTSurf")
     out_base = os.path.join(tempfile.gettempdir(), f"edtsurf_{os.getpid()}")
@@ -682,14 +696,17 @@ def pdb_to_edtsurf(pdb_path):
                 "-p",
                 "1.4",
                 "-f",
-                "0.5",
+                str(grid_scale),
             ],
             capture_output=True,
             text=True,
             timeout=300,
         )
         if not os.path.exists(ply_file):
-            raise RuntimeError(f"EDTSurf produced no output: {result.stdout[-200:]}")
+            raise RuntimeError(
+                f"EDTSurf produced no output (exit={result.returncode}): "
+                f"stdout={result.stdout[-200:]}, stderr={result.stderr[-200:]}"
+            )
 
         mesh = trimesh.load(ply_file, process=False)
         verts = np.array(mesh.vertices, dtype=np.float32)
@@ -702,39 +719,29 @@ def pdb_to_edtsurf(pdb_path):
 
 
 def _parse_off(off_path):
-    """Parse OFF mesh file (NanoShaper output format)."""
     with open(off_path, "r") as f:
-        lines = f.readlines()
-
-    # Strip comments and blank lines, keeping only data lines
-    data_lines = [
-        line.strip()
-        for line in lines
-        if line.strip() and not line.strip().startswith("#")
-    ]
-
-    d = 0
-    if data_lines[d].startswith("OFF"):
-        d += 1
-    n_verts, n_faces, _ = map(int, data_lines[d].split())
-    d += 1
-
-    verts = np.zeros((n_verts, 3), dtype=np.float32)
-    for i in range(n_verts):
-        verts[i] = [float(x) for x in data_lines[d].split()[:3]]
-        d += 1
-
-    faces = np.zeros((n_faces, 3), dtype=np.int32)
-    for i in range(n_faces):
-        parts = data_lines[d].split()
-        if int(parts[0]) == 3:
-            faces[i] = [int(parts[1]), int(parts[2]), int(parts[3])]
-        d += 1
-
+        line = f.readline()
+        if line.startswith("OFF"):
+            line = f.readline()
+        while line.startswith("#") or line.strip() == "":
+            line = f.readline()
+        n_verts, n_faces, _ = map(int, line.split())
+        verts = np.loadtxt(
+            f, max_rows=n_verts, dtype=np.float32, usecols=(0, 1, 2), ndmin=2
+        )
+        faces = np.loadtxt(
+            f, max_rows=n_faces, dtype=np.int32, usecols=(1, 2, 3), ndmin=2
+        )
     return verts, faces
 
 
-def pdb_to_nanoshaper(pdb_path, probe_radius=1.4, grid_scale=2.0):
+def pdb_to_nanoshaper(
+    pdb_path,
+    probe_radius=1.4,
+    grid_scale=0.3,
+    atom_pos=None,
+    atom_radius=None,
+):
     """Generate SES molecular surface using NanoShaper."""
     NANOSHAPER_BIN = str(
         Path(__file__).resolve().parents[3]
@@ -743,28 +750,28 @@ def pdb_to_nanoshaper(pdb_path, probe_radius=1.4, grid_scale=2.0):
         / "NanoShaper"
     )
 
-    script_dir = os.path.dirname(os.path.realpath(__file__))
-    binary_base_path = os.path.abspath(os.path.join(script_dir, "..", "..", "bin"))
-    system = platform.system()
-    if system == "Darwin":
-        platform_dir = "msms_macos"
-    elif system == "Linux":
-        platform_dir = "msms_linux"
-    else:
-        raise RuntimeError(f"Unsupported platform: {system}")
-    binary_path = os.path.join(binary_base_path, platform_dir)
-    pdb2xyzr_path = os.path.abspath(os.path.join(binary_path, "pdb_to_xyzr"))
-
     work_dir = tempfile.mkdtemp(prefix="nanoshaper_")
     xyzr_file = os.path.join(work_dir, "atoms.xyzr")
     conf_file = os.path.join(work_dir, "conf.prm")
     off_file = os.path.join(work_dir, "triangulatedSurf.off")
 
     try:
-        with open(xyzr_file, "w") as f:
-            subprocess.run(
-                [pdb2xyzr_path, pdb_path], stdout=f, cwd=binary_path, check=True
+        if atom_pos is None or atom_radius is None:
+            parsed_data = parse_pdb_path(pdb_path, use_pqr=False)
+            atom_pos = parsed_data[5]
+            atom_radius = parsed_data[7]
+
+        if atom_pos is None or atom_radius is None:
+            raise RuntimeError(
+                f"Could not parse atom positions or radii for {pdb_path}"
             )
+
+        with open(xyzr_file, "w") as f:
+            for i in range(len(atom_pos)):
+                f.write(
+                    f"{atom_pos[i, 0]:.6f} {atom_pos[i, 1]:.6f} "
+                    f"{atom_pos[i, 2]:.6f} {atom_radius[i]:.6f}\n"
+                )
 
         conf = (
             f"Compute_Vertex_Normals = true\n"
@@ -778,7 +785,7 @@ def pdb_to_nanoshaper(pdb_path, probe_radius=1.4, grid_scale=2.0):
             f"Tri2Balls = false\n"
             f"Surface = ses\n"
             f"Smooth_Mesh = true\n"
-            f"Number_thread = 4\n"
+            f"Number_thread = 1\n"
             f"Skin_Surface_Parameter = 0.45\n"
             f"Blobbyness = -2.5\n"
             f"Skip_Mem_CleanUp = true\n"
@@ -788,8 +795,8 @@ def pdb_to_nanoshaper(pdb_path, probe_radius=1.4, grid_scale=2.0):
             f"Max_Num_Atoms = -1\n"
             f"Domain_Shrinkage = 1.0\n"
             f"Optimize_Grids = true\n"
-            f"Cavity_Detection_Filling = false\n"
-            f"Conditional_Volume_Filling_Value = 11.4\n"
+            f"Cavity_Detection_Filling = true\n"
+            f"Conditional_Volume_Filling_Value = 99999.0\n"
             f"Keep_Water_Shaped_Cavities = false\n"
             f"Probe_Radius = {probe_radius}\n"
             f"Max_Probes_Self_Intersections = 100\n"
@@ -812,7 +819,10 @@ def pdb_to_nanoshaper(pdb_path, probe_radius=1.4, grid_scale=2.0):
         )
 
         if not os.path.exists(off_file):
-            raise RuntimeError(f"NanoShaper produced no output: {result.stderr[-300:]}")
+            raise RuntimeError(
+                f"NanoShaper produced no output (exit={result.returncode}): "
+                f"stdout={result.stdout[-300:]}, stderr={result.stderr[-300:]}"
+            )
 
         verts, faces = _parse_off(off_file)
         return verts, faces
@@ -830,6 +840,7 @@ def get_surface(
     surface_method="msms",
     sbl_exe_path=None,
     alpha_value=0.1,
+    edtsurf_grid_scale=0.5,
 ):
     # # Check that msms and with_min gives the right output
     if surface_method == "msms":
@@ -839,7 +850,7 @@ def get_surface(
             pdb_path, sbl_exe_path=sbl_exe_path, alpha_value=alpha_value
         )
     elif surface_method == "edtsurf":
-        verts, faces = pdb_to_edtsurf(pdb_path)
+        verts, faces = pdb_to_edtsurf(pdb_path, grid_scale=edtsurf_grid_scale)
     elif surface_method == "nanoshaper":
         verts, faces = pdb_to_nanoshaper(pdb_path)
     else:

@@ -221,8 +221,13 @@ class LinearWrapper(nn.Linear):
 class HMR2LayerMLP(nn.Module):
     def __init__(self, dim_in, dim_mid, dim_out, dropout):
         super().__init__()
+        if dim_in == -1 or dim_in is None:
+            layer1 = nn.LazyLinear(dim_mid)
+        else:
+            layer1 = nn.Linear(dim_in, dim_mid)
+
         self.net = nn.Sequential(
-            nn.Linear(dim_in, dim_mid),
+            layer1,
             nn.Dropout(dropout),
             nn.BatchNorm1d(dim_mid),
             nn.SiLU(),
