@@ -6,12 +6,12 @@ Official implementation of AlphaSurf, extending [AtomSurf](https://arxiv.org/abs
 
 - [Description](#description)
 - [Installation](#installation)
-  - [Environment setup](#environment-setup)
-  - [CGAL alpha complex bindings](#cgal-alpha-complex-bindings)
+    - [Environment setup](#environment-setup)
+    - [CGAL alpha complex bindings](#cgal-alpha-complex-bindings)
 - [Inference](#inference)
 - [Tasks](#tasks)
-  - [MasifLigand](#masifligand)
-  - [PINDER-Pair](#pinder-pair)
+    - [MasifLigand](#masifligand)
+    - [PINDER-Pair](#pinder-pair)
 
 ## Description
 
@@ -106,23 +106,14 @@ export PYTHONPATH="$CGAL_BINDINGS_DIR:$PYTHONPATH"
 
 ### Curvature extension
 
-The `cpp_curvature` module provides a C++ extension for computing principal curvatures on surface meshes. It also needs to be compiled after setting up the environment:
+The `cpp_curvature` module computes principal curvatures on alpha complex surfaces. It is exactly the same as `igl.per_vertex_normals` but takes custom vertex normals as input (computed by the alpha complex pipeline). It is required for using alpha complex surfaces.
 
 ```bash
 cd cpp_curvature
 python build.py
 ```
 
-This requires `pybind11` and `eigen` headers (both already available if you installed the CGAL bindings above).
-
-### Compatibility symlink
-
-The provided checkpoint references `atomsurf.*` import paths. Create a symlink so both names resolve:
-
-```bash
-cd alphasurf
-ln -s alphasurf atomsurf
-```
+The `eigen` headers are already available from the `cgal-cpp` conda install, and `pybind11` was installed earlier.
 
 ## Inference
 
@@ -131,6 +122,15 @@ Embed a trained model's encoder on a single protein to get per-residue graph emb
 **Location:** `alphasurf/tasks/inference/`
 
 A trained checkpoint is available at `alphasurf/tasks/pinder_pair/ckpt/last.ckpt`. This model was trained on the PINDER dataset for classifying residue pairs as interacting or not.
+
+The provided checkpoint references `atomsurf.*` import paths. Create a symlink so both names resolve:
+
+```bash
+cd alphasurf/alphasurf
+ln -s alphasurf atomsurf
+```
+
+Then run:
 
 ```bash
 cd alphasurf/tasks/inference
