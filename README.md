@@ -123,10 +123,9 @@ Embed a trained model's encoder on a single protein to get per-residue graph emb
 
 A trained checkpoint is available at `alphasurf/tasks/pinder_pair/ckpt/last.ckpt`. This model was trained on the PINDER dataset for classifying residue pairs as interacting or not.
 
-The provided checkpoint references `atomsurf.*` import paths. Create a symlink so both names resolve:
+The provided checkpoint references `atomsurf.*` import paths. A symlink `atomsurf -> alphasurf` is included in the repo. If it was not restored (e.g. on Windows), recreate it from the repo root:
 
 ```bash
-cd alphasurf/alphasurf
 ln -s alphasurf atomsurf
 ```
 
