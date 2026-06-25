@@ -1,10 +1,9 @@
 # AlphaSurf
 
 [![OpenReview](https://img.shields.io/badge/OpenReview-rBjKl58v54-b31b1b)](https://openreview.net/pdf?id=rBjKl58v54)
-[![AtomSurf](https://img.shields.io/badge/extends-AtomSurf-blue)](https://arxiv.org/abs/2309.16519)
 
-Official implementation of AlphaSurf, published at the LMRL workshop, ICLR 2026. Extends [AtomSurf](https://arxiv.org/abs/2309.16519) with on-the-fly alpha complex surface generation.
 
+Official implementation of AlphaSurf (published at the [LMRL workshop, ICLR 2026](https://openreview.net/pdf?id=rBjKl58v54)), extending [AtomSurf](https://arxiv.org/abs/2309.16519) with on-the-fly alpha complex surface generation.
 ## Table of Contents
 
 - [Description](#description)
