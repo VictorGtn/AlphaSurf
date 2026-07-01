@@ -252,12 +252,17 @@ class PinderPairDataset(Dataset):
     Similar to PIP but uses PINDER dataset format.
     """
 
+    # "atom": map atom-level interface pairs to surface vertices at cache time
+    # "full_atom": cache atom-level pairs, remap to vertices at __getitem__ time (survives mesh changes)
+    # "residue": map residue-level interface pairs to surface vertices (via vert_atom_ids -> atom_res_map)
+    # "dist": compute vertex-vertex distance pairs on surface
+    SURFACE_LABEL_MODE = "atom"
+
     def __init__(
         self,
         systems: List[Dict],
         protein_loader: ProteinLoader,
         pdb_dir: str,
-        apply_noise: bool = False,
         neg_to_pos_ratio: float = 1.0,
         max_pos_per_pair: int = -1,
         interface_distance_graph: float = 8.0,
@@ -270,9 +275,10 @@ class PinderPairDataset(Dataset):
         """
         Args:
             systems: List of system dicts from load_pinder_split()
-            protein_loader: ProteinLoader instance
+            protein_loader: ProteinLoader instance. If its noise_augmentor is
+                enabled, __getitem__ noise is active and prepopulate_interface_cache
+                caches clean interface pairs to be redrawn each draw.
             pdb_dir: Directory containing PDB files
-            apply_noise: Whether to apply noise augmentation
             neg_to_pos_ratio: Ratio of negative to positive residue pairs to sample
             max_pos_per_pair: Maximum positive pairs per system (-1 for all)
             interface_distance_graph: Distance threshold (Å) for residue graph interface
@@ -282,7 +288,6 @@ class PinderPairDataset(Dataset):
         self.systems = systems
         self.protein_loader = protein_loader
         self.pdb_dir = pdb_dir
-        self.apply_noise = apply_noise
         self.neg_to_pos_ratio = neg_to_pos_ratio
         self.max_pos_per_pair = max_pos_per_pair
 
@@ -294,6 +299,45 @@ class PinderPairDataset(Dataset):
 
         # Cache clean interface pairs when using noise (keyed by system ID)
         self._interface_cache = {}
+
+    @property
+    def _noise_enabled(self) -> bool:
+        augmentor = getattr(self.protein_loader, "noise_augmentor", None)
+        return augmentor is not None and augmentor.enabled
+
+    def prepopulate_interface_cache(self):
+        """Pre-populate interface cache for all systems in the main process.
+
+        Called before DataLoader spawns workers so that forked workers
+        inherit a fully populated cache via copy-on-write, avoiding
+        concurrent CGAL + operator generation in each worker.
+        """
+        if not self._noise_enabled:
+            return
+        if self.SURFACE_LABEL_MODE == "dist":
+            # dist mode bypasses the interface cache entirely (recomputes on
+            # the loaded sample each draw), so pre-population is wasted work.
+            return
+
+        print(
+            f"[Cache] Pre-populating interface cache for {len(self.systems)} systems..."
+        )
+        cached = 0
+        for i, system in enumerate(self.systems):
+            sid = system["id"]
+            if sid in self._interface_cache:
+                continue
+            receptor_path = self._get_pdb_path(system, "receptor")
+            ligand_path = self._get_pdb_path(system, "ligand")
+            pairs = self._compute_clean_pairs(system, receptor_path, ligand_path)
+            if pairs is not None:
+                self._interface_cache[sid] = pairs
+                cached += 1
+            if (i + 1) % 500 == 0:
+                print(
+                    f"[Cache] {i + 1}/{len(self.systems)} processed ({cached} cached)"
+                )
+        print(f"[Cache] Done. {cached}/{len(self.systems)} systems cached.")
 
     def __len__(self) -> int:
         return len(self.systems)
@@ -463,7 +507,161 @@ class PinderPairDataset(Dataset):
         n_res2 = int(res_map_2.max() + 1)
         neg_pairs = _generate_negative_pairs(pos_pairs, n_res1, n_res2)
 
-        return pos_pairs, neg_pairs
+        # Also return raw atom pairs (for full_atom surface label mode)
+        atom_pairs = torch.stack([atom_i, atom_j]).numpy()  # (2, M)
+
+        return pos_pairs, neg_pairs, atom_pairs
+
+    @staticmethod
+    def _atom_pairs_to_vertex_pairs(
+        atom_pos_pairs: np.ndarray,
+        vert_atom_ids_1: np.ndarray,
+        vert_atom_ids_2: np.ndarray,
+    ) -> np.ndarray:
+        """Map atom-level interface pairs to vertex-level pairs."""
+        atom_to_vert_1 = {}
+        for v, a in enumerate(vert_atom_ids_1):
+            if a >= 0:
+                atom_to_vert_1[int(a)] = v
+        atom_to_vert_2 = {}
+        for v, a in enumerate(vert_atom_ids_2):
+            if a >= 0:
+                atom_to_vert_2[int(a)] = v
+
+        all_pairs = []
+        for k in range(atom_pos_pairs.shape[1]):
+            vi = atom_to_vert_1.get(int(atom_pos_pairs[0, k]))
+            vj = atom_to_vert_2.get(int(atom_pos_pairs[1, k]))
+            if vi is not None and vj is not None:
+                all_pairs.append([vi, vj])
+
+        if all_pairs:
+            return np.array(all_pairs, dtype=np.int64).T
+        return np.empty((2, 0), dtype=np.int64)
+
+    @staticmethod
+    def _residue_pairs_to_vertex_pairs(
+        res_pairs: np.ndarray,
+        vert_res_ids_1: np.ndarray,
+        vert_res_ids_2: np.ndarray,
+    ) -> np.ndarray:
+        """Map residue-level interface pairs to vertex-level pairs."""
+        res_to_vert_1 = {}
+        for v, r in enumerate(vert_res_ids_1):
+            if r >= 0:
+                res_to_vert_1.setdefault(int(r), []).append(v)
+        res_to_vert_2 = {}
+        for v, r in enumerate(vert_res_ids_2):
+            if r >= 0:
+                res_to_vert_2.setdefault(int(r), []).append(v)
+
+        all_pairs = []
+        for k in range(res_pairs.shape[1]):
+            vi_list = res_to_vert_1.get(int(res_pairs[0, k]), [])
+            vj_list = res_to_vert_2.get(int(res_pairs[1, k]), [])
+            for vi in vi_list:
+                for vj in vj_list:
+                    all_pairs.append([vi, vj])
+
+        if all_pairs:
+            return np.array(all_pairs, dtype=np.int64).T
+        return np.empty((2, 0), dtype=np.int64)
+
+    @staticmethod
+    def _remap_atom_pairs_to_verts(
+        atom_pairs: np.ndarray,
+        surface_1,
+        surface_2,
+    ) -> np.ndarray:
+        """Remap cached atom-level pairs to vertex indices on actual surfaces.
+
+        Unlike _atom_pairs_to_vertex_pairs which takes pre-extracted vert_atom_ids arrays,
+        this extracts vert_atom_ids directly from surface objects, making it suitable
+        for deferred mapping (e.g. on noised surfaces).
+        """
+        vaid_1 = getattr(surface_1, "vert_atom_ids", None)
+        vaid_2 = getattr(surface_2, "vert_atom_ids", None)
+        if vaid_1 is None or vaid_2 is None:
+            return np.empty((2, 0), dtype=np.int64)
+
+        aid_1 = vaid_1.numpy() if isinstance(vaid_1, torch.Tensor) else vaid_1
+        aid_2 = vaid_2.numpy() if isinstance(vaid_2, torch.Tensor) else vaid_2
+
+        atom_to_vert_1 = {}
+        for v, a in enumerate(aid_1):
+            if a >= 0:
+                atom_to_vert_1[int(a)] = v
+        atom_to_vert_2 = {}
+        for v, a in enumerate(aid_2):
+            if a >= 0:
+                atom_to_vert_2[int(a)] = v
+
+        all_pairs = []
+        for k in range(atom_pairs.shape[1]):
+            vi = atom_to_vert_1.get(int(atom_pairs[0, k]))
+            vj = atom_to_vert_2.get(int(atom_pairs[1, k]))
+            if vi is not None and vj is not None:
+                all_pairs.append([vi, vj])
+
+        if all_pairs:
+            return np.array(all_pairs, dtype=np.int64).T
+        return np.empty((2, 0), dtype=np.int64)
+
+    def _sample_pairs_with_lazy_neg(
+        self,
+        pos_pairs: np.ndarray,
+        n1: int,
+        n2: int,
+        neg_to_pos_ratio: float = None,
+        max_pos: int = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Sample positive pairs and generate negative indices on-the-fly."""
+        ratio = (
+            neg_to_pos_ratio if neg_to_pos_ratio is not None else self.neg_to_pos_ratio
+        )
+        max_p = max_pos if max_pos is not None else self.max_pos_per_pair
+
+        num_pos = pos_pairs.shape[1]
+        if num_pos == 0:
+            return None, None, None
+
+        num_pos_use = (
+            min(num_pos, max(1, int(num_pos / ratio)))
+            if max_p <= 0
+            else min(num_pos, max_p, int(num_pos / ratio))
+        )
+        num_pos_use = max(1, int(math.ceil(num_pos_use)))
+        num_neg_use = max(1, int(math.ceil(num_pos_use * ratio)))
+
+        pos_idx = np.random.choice(num_pos, size=num_pos_use, replace=False)
+        pos_sampled = pos_pairs[:, pos_idx]
+
+        # Generate negatives excluding positive pairs
+        pos_set = set(zip(pos_pairs[0].tolist(), pos_pairs[1].tolist()))
+        neg_i_list, neg_j_list = [], []
+        oversample = max(num_neg_use * 3, 1000)
+        while len(neg_i_list) < num_neg_use:
+            cand_i = np.random.randint(0, n1, size=oversample)
+            cand_j = np.random.randint(0, n2, size=oversample)
+            for i, j in zip(cand_i.tolist(), cand_j.tolist()):
+                if (i, j) not in pos_set:
+                    neg_i_list.append(i)
+                    neg_j_list.append(j)
+                    if len(neg_i_list) >= num_neg_use:
+                        break
+        neg_i = np.array(neg_i_list[:num_neg_use])
+        neg_j = np.array(neg_j_list[:num_neg_use])
+
+        idx_left = torch.from_numpy(np.concatenate([pos_sampled[0], neg_i]))
+        idx_right = torch.from_numpy(np.concatenate([pos_sampled[1], neg_j]))
+        labels = torch.cat(
+            [
+                torch.ones(num_pos_use),
+                torch.zeros(num_neg_use),
+            ]
+        )
+
+        return idx_left, idx_right, labels
 
     def _sample_pairs(
         self,
@@ -527,12 +725,8 @@ class PinderPairDataset(Dataset):
         receptor_name = system.get("receptor_id", f"{system['id']}_R")
         ligand_name = system.get("ligand_id", f"{system['id']}_L")
 
-        clean_1 = self.protein_loader.load(
-            receptor_name, pdb_path=receptor_path, apply_noise=False
-        )
-        clean_2 = self.protein_loader.load(
-            ligand_name, pdb_path=ligand_path, apply_noise=False
-        )
+        clean_1 = self.protein_loader.load_clean(receptor_name, pdb_path=receptor_path)
+        clean_2 = self.protein_loader.load_clean(ligand_name, pdb_path=ligand_path)
 
         if clean_1 is None or clean_2 is None:
             return None
@@ -545,91 +739,231 @@ class PinderPairDataset(Dataset):
             return None
 
         # Graph interface
-        has_atom_data_1 = (
+        assert (
             "atom_pos" in clean_1.metadata and "atom_res_map" in clean_1.metadata
-        )
-        has_atom_data_2 = (
+        ), f"Missing atom data for {system['id']} receptor"
+        assert (
             "atom_pos" in clean_2.metadata and "atom_res_map" in clean_2.metadata
-        )
+        ), f"Missing atom data for {system['id']} ligand"
 
-        if has_atom_data_1 and has_atom_data_2:
-            pos_pairs, neg_pairs = self._compute_interface_full_atom(
-                clean_1.metadata["atom_pos"],
-                clean_2.metadata["atom_pos"],
-                clean_1.metadata["atom_res_map"],
-                clean_2.metadata["atom_res_map"],
-                threshold=self.interface_distance_graph,
-            )
-        else:
-            pos_pairs, neg_pairs = self._compute_interface(
-                clean_1.graph.node_pos,
-                clean_2.graph.node_pos,
-                threshold=self.interface_distance_graph,
-            )
+        pos_pairs, neg_pairs, atom_pairs = self._compute_interface_full_atom(
+            clean_1.metadata["atom_pos"],
+            clean_2.metadata["atom_pos"],
+            clean_1.metadata["atom_res_map"],
+            clean_2.metadata["atom_res_map"],
+            threshold=self.interface_distance_graph,
+        )
 
         if pos_pairs.shape[1] < 5:
             return None
 
-        # Surface interface
-        surf_pos_1 = getattr(clean_1.surface, "verts", None)
-        surf_pos_2 = getattr(clean_2.surface, "verts", None)
-        surf_pos_pairs = np.empty((2, 0))
-        surf_neg_pairs = np.empty((2, 0))
+        if clean_1.surface is None or clean_2.surface is None:
+            return None
 
-        if surf_pos_1 is not None and surf_pos_2 is not None:
-            if len(surf_pos_1) >= 20 and len(surf_pos_2) >= 20:
-                surf_pos_pairs, surf_neg_pairs = self._compute_interface(
-                    surf_pos_1, surf_pos_2, threshold=self.interface_distance_surface
+        # Surface interface — cache positive pairs + dims, generate negatives on-the-fly
+        surf_pos_pairs = np.empty((2, 0))
+        surf_atom_pairs = None
+        surf_n1 = 0
+        surf_n2 = 0
+
+        if self.SURFACE_LABEL_MODE == "residue":
+            assert hasattr(
+                clean_1.surface, "vert_atom_ids"
+            ), f"{system['id']}: residue mode requires vert_atom_ids on surface"
+            assert hasattr(
+                clean_2.surface, "vert_atom_ids"
+            ), f"{system['id']}: residue mode requires vert_atom_ids on surface"
+            assert (
+                clean_1.metadata and "atom_res_map" in clean_1.metadata
+            ), f"{system['id']}: residue mode requires atom_res_map in metadata"
+            assert (
+                clean_2.metadata and "atom_res_map" in clean_2.metadata
+            ), f"{system['id']}: residue mode requires atom_res_map in metadata"
+
+            vert_aid_1 = clean_1.surface.vert_atom_ids
+            vert_aid_2 = clean_2.surface.vert_atom_ids
+            arm_1 = clean_1.metadata["atom_res_map"]
+            arm_2 = clean_2.metadata["atom_res_map"]
+
+            assert (
+                vert_aid_1 >= 0
+            ).any(), f"{system['id']}: receptor has no vert-atom matches"
+            assert (
+                vert_aid_2 >= 0
+            ).any(), f"{system['id']}: ligand has no vert-atom matches"
+
+            aid_1 = (
+                vert_aid_1.numpy()
+                if isinstance(vert_aid_1, torch.Tensor)
+                else vert_aid_1
+            )
+            aid_2 = (
+                vert_aid_2.numpy()
+                if isinstance(vert_aid_2, torch.Tensor)
+                else vert_aid_2
+            )
+            arm_1_np = arm_1.numpy() if isinstance(arm_1, torch.Tensor) else arm_1
+            arm_2_np = arm_2.numpy() if isinstance(arm_2, torch.Tensor) else arm_2
+
+            valid_1 = aid_1 >= 0
+            valid_2 = aid_2 >= 0
+            vrid_1 = np.full_like(aid_1, -1)
+            vrid_2 = np.full_like(aid_2, -1)
+            vrid_1[valid_1] = arm_1_np[aid_1[valid_1]]
+            vrid_2[valid_2] = arm_2_np[aid_2[valid_2]]
+
+            surf_pos_pairs = self._residue_pairs_to_vertex_pairs(
+                pos_pairs, vrid_1, vrid_2
+            )
+            surf_n1 = len(clean_1.surface.verts)
+            surf_n2 = len(clean_2.surface.verts)
+        elif self.SURFACE_LABEL_MODE == "atom":
+            assert hasattr(
+                clean_1.surface, "vert_atom_ids"
+            ), f"{system['id']}: atom mode requires vert_atom_ids on surface"
+            assert hasattr(
+                clean_2.surface, "vert_atom_ids"
+            ), f"{system['id']}: atom mode requires vert_atom_ids on surface"
+            assert (
+                clean_1.metadata and "atom_pos" in clean_1.metadata
+            ), f"{system['id']}: atom mode requires atom_pos in metadata"
+            assert (
+                clean_2.metadata and "atom_pos" in clean_2.metadata
+            ), f"{system['id']}: atom mode requires atom_pos in metadata"
+
+            vert_aid_1 = clean_1.surface.vert_atom_ids
+            vert_aid_2 = clean_2.surface.vert_atom_ids
+            atom_pos_1 = clean_1.metadata["atom_pos"]
+            atom_pos_2 = clean_2.metadata["atom_pos"]
+
+            assert (
+                vert_aid_1 >= 0
+            ).any(), f"{system['id']}: receptor has no vert-atom matches"
+            assert (
+                vert_aid_2 >= 0
+            ).any(), f"{system['id']}: ligand has no vert-atom matches"
+
+            atom_pos_pairs, _ = self._compute_interface(
+                atom_pos_1, atom_pos_2, threshold=self.interface_distance_surface
+            )
+            aid_1 = (
+                vert_aid_1.numpy()
+                if isinstance(vert_aid_1, torch.Tensor)
+                else vert_aid_1
+            )
+            aid_2 = (
+                vert_aid_2.numpy()
+                if isinstance(vert_aid_2, torch.Tensor)
+                else vert_aid_2
+            )
+            surf_pos_pairs = self._atom_pairs_to_vertex_pairs(
+                atom_pos_pairs, aid_1, aid_2
+            )
+            surf_n1 = len(clean_1.surface.verts)
+            surf_n2 = len(clean_2.surface.verts)
+        elif self.SURFACE_LABEL_MODE == "full_atom":
+            assert (
+                clean_1.metadata and "atom_pos" in clean_1.metadata
+            ), f"{system['id']}: full_atom mode requires atom_pos in metadata"
+            assert (
+                clean_2.metadata and "atom_pos" in clean_2.metadata
+            ), f"{system['id']}: full_atom mode requires atom_pos in metadata"
+            assert hasattr(
+                clean_1.surface, "vert_atom_ids"
+            ), f"{system['id']}: full_atom mode requires vert_atom_ids on surface"
+            assert hasattr(
+                clean_2.surface, "vert_atom_ids"
+            ), f"{system['id']}: full_atom mode requires vert_atom_ids on surface"
+            # Compute atom pairs from surface vertex distances (not graph atom distances)
+            surf_v1 = clean_1.surface.verts
+            surf_v2 = clean_2.surface.verts
+            if not isinstance(surf_v1, np.ndarray):
+                surf_v1 = np.asarray(surf_v1)
+            if not isinstance(surf_v2, np.ndarray):
+                surf_v2 = np.asarray(surf_v2)
+            if len(surf_v1) >= 20 and len(surf_v2) >= 20:
+                vtx_dists = torch.cdist(
+                    torch.from_numpy(surf_v1).float(),
+                    torch.from_numpy(surf_v2).float(),
                 )
+                vi, vj = torch.where(vtx_dists < self.interface_distance_surface)
+                vaid_1 = clean_1.surface.vert_atom_ids
+                vaid_2 = clean_2.surface.vert_atom_ids
+                vaid_1 = vaid_1.numpy() if isinstance(vaid_1, torch.Tensor) else vaid_1
+                vaid_2 = vaid_2.numpy() if isinstance(vaid_2, torch.Tensor) else vaid_2
+                _pairs = []
+                for k in range(len(vi)):
+                    a1 = vaid_1[vi[k].item()]
+                    a2 = vaid_2[vj[k].item()]
+                    if a1 >= 0 and a2 >= 0:
+                        _pairs.append([a1, a2])
+                if _pairs:
+                    surf_atom_pairs = np.unique(
+                        np.array(_pairs, dtype=np.int64).T, axis=1
+                    )
+                else:
+                    surf_atom_pairs = np.empty((2, 0), dtype=np.int64)
+            else:
+                surf_atom_pairs = np.empty((2, 0), dtype=np.int64)
+            surf_n1 = len(surf_v1)
+            surf_n2 = len(surf_v2)
+        elif self.SURFACE_LABEL_MODE == "dist":
+            surf_pos_1 = clean_1.surface.verts
+            surf_pos_2 = clean_2.surface.verts
+            surf_pos_pairs, _ = self._compute_interface(
+                surf_pos_1, surf_pos_2, threshold=self.interface_distance_surface
+            )
+            surf_n1 = len(clean_1.surface.verts)
+            surf_n2 = len(clean_2.surface.verts)
 
         return {
             "pos_pairs": pos_pairs,
             "neg_pairs": neg_pairs,
             "surf_pos_pairs": surf_pos_pairs,
-            "surf_neg_pairs": surf_neg_pairs,
+            "surf_atom_pairs": surf_atom_pairs,
+            "surf_n1": surf_n1,
+            "surf_n2": surf_n2,
         }
 
-    def _get_item(self, idx: int) -> Optional[Data]:
+    def __getitem__(self, idx: int) -> Optional[Data]:
         system = self.systems[idx]
 
         # Resolve paths
         receptor_path = self._get_pdb_path(system, "receptor")
         ligand_path = self._get_pdb_path(system, "ligand")
 
-        # Check if noise is actually enabled (noise_mode=none means no actual noise)
-        _noise_augmentor = getattr(self.protein_loader, "noise_augmentor", None)
-        _noise_actually_enabled = _noise_augmentor is not None and getattr(
-            _noise_augmentor, "enabled", False
-        )
-
         # Get interface pairs (cached on clean structures when noise is active)
-        if self.apply_noise and _noise_actually_enabled:
+        # dist mode bypasses the cache entirely and recomputes on the loaded sample.
+        if self._noise_enabled and self.SURFACE_LABEL_MODE != "dist":
             sid = system["id"]
             if sid not in self._interface_cache:
-                pairs = self._compute_clean_pairs(system, receptor_path, ligand_path)
-                if pairs is None:
-                    return None
-                self._interface_cache[sid] = pairs
+                precomputed = self._load_precomputed_interface(sid)
+                if precomputed is not None:
+                    self._interface_cache[sid] = {
+                        k: (v.numpy() if isinstance(v, torch.Tensor) else v)
+                        for k, v in precomputed.items()
+                    }
+                else:
+                    pairs = self._compute_clean_pairs(
+                        system, receptor_path, ligand_path
+                    )
+                    if pairs is None:
+                        return None
+                    self._interface_cache[sid] = pairs
             pairs = self._interface_cache[sid]
             pos_pairs = pairs["pos_pairs"]
             neg_pairs = pairs["neg_pairs"]
-            surf_pos_pairs = pairs["surf_pos_pairs"]
-            surf_neg_pairs = pairs["surf_neg_pairs"]
 
         # Load proteins (with noise for training, without for eval)
-        # In disk mode, test systems use setting suffix to match precomputed filenames
+        # In disk mode, test systems use setting suffix for precomputed filenames
         setting = system.get("setting")
         receptor_name = system.get("receptor_id", f"{system['id']}_R")
         ligand_name = system.get("ligand_id", f"{system['id']}_L")
         if setting:
             receptor_name = f"{receptor_name}_{setting}"
             ligand_name = f"{ligand_name}_{setting}"
-        protein_1 = self.protein_loader.load(
-            receptor_name, pdb_path=receptor_path, apply_noise=self.apply_noise
-        )
-        protein_2 = self.protein_loader.load(
-            ligand_name, pdb_path=ligand_path, apply_noise=self.apply_noise
-        )
+        protein_1 = self.protein_loader.load(receptor_name, pdb_path=receptor_path)
+        protein_2 = self.protein_loader.load(ligand_name, pdb_path=ligand_path)
 
         if protein_1 is None or protein_2 is None:
             return None
@@ -646,8 +980,36 @@ class PinderPairDataset(Dataset):
         if g1_len < 20 or g2_len < 20:
             return None
 
-        # Compute interface pairs if not using cache (no actual noise or eval mode)
-        if not (self.apply_noise and _noise_actually_enabled):
+        # --- Graph residue pairs ---
+        precomputed = None
+        if self.SURFACE_LABEL_MODE == "dist":
+            # dist mode: always compute fresh from the currently-loaded proteins.
+            # Under noise, metadata["atom_pos"] reflects the noised atoms (loader Edit).
+            assert (
+                "atom_pos" in protein_1.metadata
+                and "atom_res_map" in protein_1.metadata
+            ), f"Missing atom data for {system['id']} receptor"
+            assert (
+                "atom_pos" in protein_2.metadata
+                and "atom_res_map" in protein_2.metadata
+            ), f"Missing atom data for {system['id']} ligand"
+
+            pos_pairs, neg_pairs, _ = self._compute_interface_full_atom(
+                protein_1.metadata["atom_pos"],
+                protein_2.metadata["atom_pos"],
+                protein_1.metadata["atom_res_map"],
+                protein_2.metadata["atom_res_map"],
+                threshold=self.interface_distance_graph,
+            )
+
+            if pos_pairs.shape[1] < 5:
+                return None
+        elif self._noise_enabled:
+            # Cache already populated by the early block above
+            pairs = self._interface_cache[sid]
+            pos_pairs = pairs["pos_pairs"]
+            neg_pairs = pairs["neg_pairs"]
+        else:
             precomputed = self._load_precomputed_interface(system["id"])
 
             if precomputed is not None:
@@ -660,56 +1022,219 @@ class PinderPairDataset(Dataset):
 
                 if pos_pairs.shape[1] < 5:
                     return None
-
-                surf_pos_pairs = precomputed["surf_pos_pairs"].numpy()
-                surf_n1 = int(precomputed["surf_n1"])
-                surf_n2 = int(precomputed["surf_n2"])
-                if surf_pos_pairs.shape[1] > 0 and surf_n1 > 0 and surf_n2 > 0:
-                    surf_neg_pairs = self._neg_pairs_from_complement(
-                        surf_pos_pairs, surf_n1, surf_n2
-                    )
-                else:
-                    surf_pos_pairs = np.empty((2, 0))
-                    surf_neg_pairs = np.empty((2, 0))
             else:
-                has_atom_data_1 = (
+                assert (
                     "atom_pos" in protein_1.metadata
                     and "atom_res_map" in protein_1.metadata
-                )
-                has_atom_data_2 = (
+                ), f"Missing atom data for {system['id']} receptor"
+                assert (
                     "atom_pos" in protein_2.metadata
                     and "atom_res_map" in protein_2.metadata
-                )
+                ), f"Missing atom data for {system['id']} ligand"
 
-                if has_atom_data_1 and has_atom_data_2:
-                    pos_pairs, neg_pairs = self._compute_interface_full_atom(
-                        protein_1.metadata["atom_pos"],
-                        protein_2.metadata["atom_pos"],
-                        protein_1.metadata["atom_res_map"],
-                        protein_2.metadata["atom_res_map"],
-                        threshold=self.interface_distance_graph,
-                    )
-                else:
-                    pos_pairs, neg_pairs = self._compute_interface(
-                        protein_1.graph.node_pos,
-                        protein_2.graph.node_pos,
-                        threshold=self.interface_distance_graph,
-                    )
+                pos_pairs, neg_pairs, atom_pairs = self._compute_interface_full_atom(
+                    protein_1.metadata["atom_pos"],
+                    protein_2.metadata["atom_pos"],
+                    protein_1.metadata["atom_res_map"],
+                    protein_2.metadata["atom_res_map"],
+                    threshold=self.interface_distance_graph,
+                )
 
                 if pos_pairs.shape[1] < 5:
                     return None
 
-                surf_pos_1 = getattr(protein_1.surface, "verts", None)
-                surf_pos_2 = getattr(protein_2.surface, "verts", None)
-                surf_pos_pairs = np.empty((2, 0))
-                surf_neg_pairs = np.empty((2, 0))
-                if surf_pos_1 is not None and surf_pos_2 is not None:
-                    if len(surf_pos_1) >= 20 and len(surf_pos_2) >= 20:
-                        surf_pos_pairs, surf_neg_pairs = self._compute_interface(
-                            surf_pos_1,
-                            surf_pos_2,
-                            threshold=self.interface_distance_surface,
-                        )
+        # --- Surface vertex pairs ---
+        surf_pos_pairs = np.empty((2, 0))
+        surf_neg_pairs = np.empty((2, 0))
+        surf_n1 = 0
+        surf_n2 = 0
+
+        if self.SURFACE_LABEL_MODE == "dist":
+            # dist mode: always recompute on currently-loaded verts (clean or noised).
+            surf_pos_1 = protein_1.surface.verts
+            surf_pos_2 = protein_2.surface.verts
+            if len(surf_pos_1) >= 20 and len(surf_pos_2) >= 20:
+                surf_pos_pairs, _ = self._compute_interface(
+                    surf_pos_1,
+                    surf_pos_2,
+                    threshold=self.interface_distance_surface,
+                )
+            surf_n1 = len(surf_pos_1)
+            surf_n2 = len(surf_pos_2)
+        elif self._noise_enabled:
+            cached_surf = self._interface_cache.get(system["id"], {})
+            if self.SURFACE_LABEL_MODE == "full_atom":
+                surf_atom_pairs = cached_surf.get("surf_atom_pairs")
+                if surf_atom_pairs is not None:
+                    surf_pos_pairs = self._remap_atom_pairs_to_verts(
+                        surf_atom_pairs, protein_1.surface, protein_2.surface
+                    )
+                surf_n1 = len(protein_1.surface.verts)
+                surf_n2 = len(protein_2.surface.verts)
+            elif self.SURFACE_LABEL_MODE == "residue":
+                # Remap cached residue pairs to noised surface vertices
+                assert hasattr(
+                    protein_1.surface, "vert_atom_ids"
+                ), f"{system['id']}: residue mode requires vert_atom_ids"
+                assert hasattr(
+                    protein_2.surface, "vert_atom_ids"
+                ), f"{system['id']}: residue mode requires vert_atom_ids"
+                assert (
+                    protein_1.metadata and "atom_res_map" in protein_1.metadata
+                ), f"{system['id']}: residue mode requires atom_res_map"
+                assert (
+                    protein_2.metadata and "atom_res_map" in protein_2.metadata
+                ), f"{system['id']}: residue mode requires atom_res_map"
+
+                vert_aid_1 = protein_1.surface.vert_atom_ids
+                vert_aid_2 = protein_2.surface.vert_atom_ids
+                arm_1 = protein_1.metadata["atom_res_map"]
+                arm_2 = protein_2.metadata["atom_res_map"]
+
+                aid_1 = (
+                    vert_aid_1.numpy()
+                    if isinstance(vert_aid_1, torch.Tensor)
+                    else vert_aid_1
+                )
+                aid_2 = (
+                    vert_aid_2.numpy()
+                    if isinstance(vert_aid_2, torch.Tensor)
+                    else vert_aid_2
+                )
+                arm_1_np = arm_1.numpy() if isinstance(arm_1, torch.Tensor) else arm_1
+                arm_2_np = arm_2.numpy() if isinstance(arm_2, torch.Tensor) else arm_2
+
+                valid_1 = aid_1 >= 0
+                valid_2 = aid_2 >= 0
+                vrid_1 = np.full_like(aid_1, -1)
+                vrid_2 = np.full_like(aid_2, -1)
+                vrid_1[valid_1] = arm_1_np[aid_1[valid_1]]
+                vrid_2[valid_2] = arm_2_np[aid_2[valid_2]]
+
+                surf_pos_pairs = self._residue_pairs_to_vertex_pairs(
+                    cached_surf["pos_pairs"], vrid_1, vrid_2
+                )
+                surf_n1 = len(protein_1.surface.verts)
+                surf_n2 = len(protein_2.surface.verts)
+            else:
+                surf_pos_pairs = cached_surf.get("surf_pos_pairs", np.empty((2, 0)))
+                surf_n1 = cached_surf.get("surf_n1", 0)
+                surf_n2 = cached_surf.get("surf_n2", 0)
+        elif precomputed is not None:
+            surf_pos_pairs = precomputed["surf_pos_pairs"].numpy()
+            surf_n1 = int(precomputed["surf_n1"])
+            surf_n2 = int(precomputed["surf_n2"])
+            if surf_pos_pairs.shape[1] > 0 and surf_n1 > 0 and surf_n2 > 0:
+                surf_neg_pairs = self._neg_pairs_from_complement(
+                    surf_pos_pairs, surf_n1, surf_n2
+                )
+        else:
+            atom_pos_1 = (
+                protein_1.metadata.get("atom_pos") if protein_1.metadata else None
+            )
+            atom_pos_2 = (
+                protein_2.metadata.get("atom_pos") if protein_2.metadata else None
+            )
+
+            if self.SURFACE_LABEL_MODE == "residue":
+                assert hasattr(
+                    protein_1.surface, "vert_atom_ids"
+                ), f"{system['id']}: residue mode requires vert_atom_ids"
+                assert hasattr(
+                    protein_2.surface, "vert_atom_ids"
+                ), f"{system['id']}: residue mode requires vert_atom_ids"
+                assert (
+                    protein_1.metadata and "atom_res_map" in protein_1.metadata
+                ), f"{system['id']}: residue mode requires atom_res_map"
+                assert (
+                    protein_2.metadata and "atom_res_map" in protein_2.metadata
+                ), f"{system['id']}: residue mode requires atom_res_map"
+
+                vert_aid_1 = protein_1.surface.vert_atom_ids
+                vert_aid_2 = protein_2.surface.vert_atom_ids
+                arm_1 = protein_1.metadata["atom_res_map"]
+                arm_2 = protein_2.metadata["atom_res_map"]
+
+                aid_1 = (
+                    vert_aid_1.numpy()
+                    if isinstance(vert_aid_1, torch.Tensor)
+                    else vert_aid_1
+                )
+                aid_2 = (
+                    vert_aid_2.numpy()
+                    if isinstance(vert_aid_2, torch.Tensor)
+                    else vert_aid_2
+                )
+                arm_1_np = arm_1.numpy() if isinstance(arm_1, torch.Tensor) else arm_1
+                arm_2_np = arm_2.numpy() if isinstance(arm_2, torch.Tensor) else arm_2
+
+                valid_1 = aid_1 >= 0
+                valid_2 = aid_2 >= 0
+                vrid_1 = np.full_like(aid_1, -1)
+                vrid_2 = np.full_like(aid_2, -1)
+                vrid_1[valid_1] = arm_1_np[aid_1[valid_1]]
+                vrid_2[valid_2] = arm_2_np[aid_2[valid_2]]
+
+                surf_pos_pairs = self._residue_pairs_to_vertex_pairs(
+                    pos_pairs, vrid_1, vrid_2
+                )
+                surf_n1 = len(protein_1.surface.verts)
+                surf_n2 = len(protein_2.surface.verts)
+
+            elif self.SURFACE_LABEL_MODE == "atom":
+                assert hasattr(
+                    protein_1.surface, "vert_atom_ids"
+                ), f"{system['id']}: atom mode requires vert_atom_ids"
+                assert hasattr(
+                    protein_2.surface, "vert_atom_ids"
+                ), f"{system['id']}: atom mode requires vert_atom_ids"
+                assert (
+                    atom_pos_1 is not None
+                ), f"{system['id']}: atom mode requires atom_pos"
+                assert (
+                    atom_pos_2 is not None
+                ), f"{system['id']}: atom mode requires atom_pos"
+
+                vert_aid_1 = protein_1.surface.vert_atom_ids
+                vert_aid_2 = protein_2.surface.vert_atom_ids
+
+                atom_pos_pairs, _ = self._compute_interface(
+                    atom_pos_1,
+                    atom_pos_2,
+                    threshold=self.interface_distance_surface,
+                )
+                aid_1 = (
+                    vert_aid_1.numpy()
+                    if isinstance(vert_aid_1, torch.Tensor)
+                    else vert_aid_1
+                )
+                aid_2 = (
+                    vert_aid_2.numpy()
+                    if isinstance(vert_aid_2, torch.Tensor)
+                    else vert_aid_2
+                )
+                surf_pos_pairs = self._atom_pairs_to_vertex_pairs(
+                    atom_pos_pairs,
+                    aid_1,
+                    aid_2,
+                )
+                surf_n1 = len(protein_1.surface.verts)
+                surf_n2 = len(protein_2.surface.verts)
+
+            elif self.SURFACE_LABEL_MODE == "full_atom":
+                assert (
+                    atom_pos_1 is not None
+                ), f"{system['id']}: full_atom mode requires atom_pos"
+                assert (
+                    atom_pos_2 is not None
+                ), f"{system['id']}: full_atom mode requires atom_pos"
+
+                # Reuse atom pairs from graph interface (same threshold)
+                surf_pos_pairs = self._remap_atom_pairs_to_verts(
+                    atom_pairs, protein_1.surface, protein_2.surface
+                )
+                surf_n1 = len(protein_1.surface.verts)
+                surf_n2 = len(protein_2.surface.verts)
 
         # Sample graph pairs
         idx_left, idx_right, labels = self._sample_pairs(pos_pairs, neg_pairs)
@@ -718,12 +1243,27 @@ class PinderPairDataset(Dataset):
 
         # Sample surface pairs
         if surf_pos_pairs.shape[1] >= 5:
-            surf_idx_left, surf_idx_right, surf_labels = self._sample_pairs(
-                surf_pos_pairs,
-                surf_neg_pairs,
-                neg_to_pos_ratio=getattr(self, "surface_neg_to_pos_ratio", 10.0),
-                max_pos=-1,
-            )
+            use_lazy_neg = surf_neg_pairs.shape[1] == 0
+            if use_lazy_neg:
+                # Noise/residue mode: generate surface negatives on-the-fly
+                surf_idx_left, surf_idx_right, surf_labels = (
+                    self._sample_pairs_with_lazy_neg(
+                        surf_pos_pairs,
+                        surf_n1,
+                        surf_n2,
+                        neg_to_pos_ratio=getattr(
+                            self, "surface_neg_to_pos_ratio", 10.0
+                        ),
+                        max_pos=-1,
+                    )
+                )
+            else:
+                surf_idx_left, surf_idx_right, surf_labels = self._sample_pairs(
+                    surf_pos_pairs,
+                    surf_neg_pairs,
+                    neg_to_pos_ratio=getattr(self, "surface_neg_to_pos_ratio", 10.0),
+                    max_pos=-1,
+                )
             if surf_idx_left is None:
                 surf_idx_left = torch.tensor([], dtype=torch.long)
                 surf_idx_right = torch.tensor([], dtype=torch.long)
@@ -735,6 +1275,16 @@ class PinderPairDataset(Dataset):
 
         # Validate residue indices
         if idx_left.max() >= g1_len or idx_right.max() >= g2_len:
+            return None
+
+        # Validate surface vertex indices (joint noise can change vertex count)
+        s1_len = len(protein_1.surface.verts)
+        s2_len = len(protein_2.surface.verts)
+        if (
+            surf_idx_left.numel() > 0
+            and surf_idx_right.numel() > 0
+            and (surf_idx_left.max() >= s1_len or surf_idx_right.max() >= s2_len)
+        ):
             return None
 
         return Data(
@@ -752,17 +1302,6 @@ class PinderPairDataset(Dataset):
             g2_len=g2_len,
             system_id=system["id"],
         )
-
-    def __getitem__(self, idx: int) -> Optional[Data]:
-        result = self._get_item(idx)
-        if result is not None:
-            return result
-        for offset in range(1, len(self)):
-            next_idx = (idx + offset) % len(self)
-            result = self._get_item(next_idx)
-            if result is not None:
-                return result
-        return None
 
 
 class PinderAlignedDataset(PinderPairDataset):
@@ -879,11 +1418,12 @@ class PinderAlignedDataset(PinderPairDataset):
         target_r_path = self._get_pdb_path(system, "receptor")
         target_l_path = self._get_pdb_path(system, "ligand")
 
+        setting = system.get("setting", "holo")
         target_r = self.protein_loader.load(
-            f"{system['id']}_R_target", pdb_path=target_r_path, apply_noise=False
+            f"{system['id']}_R_{setting}", pdb_path=target_r_path
         )
         target_l = self.protein_loader.load(
-            f"{system['id']}_L_target", pdb_path=target_l_path, apply_noise=False
+            f"{system['id']}_L_{setting}", pdb_path=target_l_path
         )
 
         if target_r is None or target_l is None:
@@ -915,10 +1455,10 @@ class PinderAlignedDataset(PinderPairDataset):
             return None
 
         holo_r = self.protein_loader.load(
-            f"{system['id']}_R_holo", pdb_path=holo_r_path, apply_noise=False
+            f"{system['id']}_R_holo", pdb_path=holo_r_path
         )
         holo_l = self.protein_loader.load(
-            f"{system['id']}_L_holo", pdb_path=holo_l_path, apply_noise=False
+            f"{system['id']}_L_holo", pdb_path=holo_l_path
         )
 
         if holo_r is None or holo_l is None:
@@ -928,27 +1468,20 @@ class PinderAlignedDataset(PinderPairDataset):
 
         # 3. Compute Interface on Holo (Reference)
 
-        has_atom_data_1 = (
+        assert (
             "atom_pos" in holo_r.metadata and "atom_res_map" in holo_r.metadata
-        )
-        has_atom_data_2 = (
+        ), f"Missing atom data for {system['id']} holo receptor"
+        assert (
             "atom_pos" in holo_l.metadata and "atom_res_map" in holo_l.metadata
-        )
+        ), f"Missing atom data for {system['id']} holo ligand"
 
-        if has_atom_data_1 and has_atom_data_2:
-            pos_pairs_ref, _ = self._compute_interface_full_atom(
-                holo_r.metadata["atom_pos"],
-                holo_l.metadata["atom_pos"],
-                holo_r.metadata["atom_res_map"],
-                holo_l.metadata["atom_res_map"],
-                threshold=self.interface_distance_graph,
-            )
-        else:
-            pos_pairs_ref, _ = self._compute_interface(
-                holo_r.graph.node_pos,
-                holo_l.graph.node_pos,
-                threshold=self.interface_distance_graph,
-            )
+        pos_pairs_ref, _, _ = self._compute_interface_full_atom(
+            holo_r.metadata["atom_pos"],
+            holo_l.metadata["atom_pos"],
+            holo_r.metadata["atom_res_map"],
+            holo_l.metadata["atom_res_map"],
+            threshold=self.interface_distance_graph,
+        )
 
         if pos_pairs_ref.shape[1] < 1:
             return None
