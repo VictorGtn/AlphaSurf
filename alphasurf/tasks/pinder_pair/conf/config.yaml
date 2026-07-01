@@ -80,9 +80,6 @@ preprocessing:
     max_systems: null # Limit for debugging
     msms_exe_path: null # Auto-detect if null
     sbl_exe_path: null # Auto-detect if null
-    n_augmented_views: 1 # Number of augmented views per protein
-    augmentation_sigma: 0.3 # Noise sigma for augmentation
-    augmentation_noise_type: normal # normal or uniform
 
 # DataLoader
 loader:

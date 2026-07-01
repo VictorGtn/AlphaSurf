@@ -441,7 +441,7 @@ class PinderPairModule(AtomPLModule):
 
         # Accumulate per-system for per-system AUROC
         if isinstance(batch.label, list):
-            per_system_labels = [l.reshape(-1) for l in batch.label]
+            per_system_labels = [lab.reshape(-1) for lab in batch.label]
             sys_ids = (
                 batch.system_id
                 if hasattr(batch, "system_id")
@@ -465,6 +465,7 @@ class PinderPairModule(AtomPLModule):
         system_baccs = []
         homo_aurocs = []
         hetero_aurocs = []
+        per_system_rows = []
 
         for sid, sys_logits, sys_labels in self._test_per_system:
             logits_np = sys_logits.numpy().ravel()
@@ -475,16 +476,26 @@ class PinderPairModule(AtomPLModule):
                 auc = roc_auc_score(labels_np, logits_np)
                 system_aurocs.append(auc)
                 preds = (logits_np > 0).astype(int)
-                system_baccs.append(balanced_accuracy_score(labels_np, preds))
-                # Hetero/homodimer stratification
+                bacc = balanced_accuracy_score(labels_np, preds)
+                system_baccs.append(bacc)
+                is_homo = False
                 if sid and "--" in sid:
                     parts = sid.split("--")
                     r_uniprot = parts[0].split("_")[-1]
                     l_uniprot = parts[1].split("_")[-1]
                     if r_uniprot == l_uniprot:
                         homo_aurocs.append(auc)
+                        is_homo = True
                     else:
                         hetero_aurocs.append(auc)
+                per_system_rows.append(
+                    {
+                        "system_id": sid,
+                        "auroc": auc,
+                        "bacc": bacc,
+                        "is_homodimer": is_homo,
+                    }
+                )
 
         if system_aurocs:
             aurocs = np.array(system_aurocs)
@@ -510,6 +521,20 @@ class PinderPairModule(AtomPLModule):
             self.log("auroc/test", auroc, prog_bar=True)
         else:
             self.log("auroc/test", 0.5, prog_bar=True)
+
+        # Dump per-system results to CSV
+        dump_dir = getattr(self.hparams.cfg, "dump_per_system", None)
+        if dump_dir and per_system_rows:
+            import pandas as pd
+
+            os.makedirs(dump_dir, exist_ok=True)
+            test_setting = getattr(self.hparams.cfg, "test_setting", "unknown")
+            run_name = getattr(self.hparams.cfg, "run_name", "default")
+            csv_path = os.path.join(dump_dir, f"{run_name}_{test_setting}.csv")
+            pd.DataFrame(per_system_rows).to_csv(csv_path, index=False)
+            print(
+                f"  Dumped per-system results: {csv_path} ({len(per_system_rows)} systems)"
+            )
 
         self._test_logits.clear()
         self._test_labels.clear()

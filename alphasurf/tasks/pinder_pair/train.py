@@ -20,18 +20,20 @@ if CRASH_DEBUG_DIR:
 os.environ["PYTHONWARNINGS"] = "ignore::UserWarning"
 warnings.filterwarnings("ignore")
 
-import hydra
-import pytorch_lightning as pl
-import torch
-from omegaconf import OmegaConf
-from pytorch_lightning.loggers.tensorboard import TensorBoardLogger
+import hydra  # noqa: E402
+import pytorch_lightning as pl  # noqa: E402
+import torch  # noqa: E402
+from omegaconf import OmegaConf  # noqa: E402
+from pytorch_lightning.loggers.tensorboard import TensorBoardLogger  # noqa: E402
+
+torch.multiprocessing.set_sharing_strategy("file_system")
 
 if __name__ == "__main__":
     sys.path.append(str(Path(__file__).absolute().parents[3]))
 
-from alphasurf.tasks.pinder_pair.datamodule import PinderPairDataModule
-from alphasurf.tasks.pinder_pair.pl_model import PinderPairModule
-from alphasurf.utils.callbacks import CommandLoggerCallback, add_wandb_logger
+from alphasurf.tasks.pinder_pair.datamodule import PinderPairDataModule  # noqa: E402
+from alphasurf.tasks.pinder_pair.pl_model import PinderPairModule  # noqa: E402
+from alphasurf.utils.callbacks import CommandLoggerCallback, add_wandb_logger  # noqa: E402
 
 torch.set_num_threads(1)
 
@@ -89,14 +91,6 @@ def main(cfg=None):
             save_last=True,
             save_top_k=cfg.train.save_top_k,
             verbose=False,
-        ),
-        # Additional frequent checkpointing for crash resilience
-        pl.callbacks.ModelCheckpoint(
-            filename="step_{step:06d}",
-            dirpath=Path(tb_logger.log_dir) / "checkpoints",
-            every_n_train_steps=100,
-            save_top_k=-1,
-            save_last=True,
         ),
         pl.callbacks.EarlyStopping(
             monitor=cfg.train.to_monitor,
@@ -169,42 +163,77 @@ def main(cfg=None):
 
     trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt_path)
 
-    # Test
-    # Determine test settings to run
-    test_setting = getattr(cfg, "test_setting", "apo")
-    if test_setting == "all":
-        test_settings = ["holo", "apo", "af2"]
-    else:
-        test_settings = [test_setting]
+    # Test: per-system AUROC for holo/apo/af2 on best and last checkpoints
+    print(f"\n{'=' * 60}\nPOST-TRAINING EVALUATION\n{'=' * 60}")
 
-    print(f"\nRunning tests for settings: {test_settings}")
+    # Disable persistent workers for testing to avoid crash
+    OmegaConf.set_struct(cfg, False)
+    if hasattr(cfg, "loader"):
+        cfg.loader.persistent_workers = False
+    OmegaConf.set_struct(cfg, True)
 
-    for setting in test_settings:
-        print(f"\n{'=' * 40} TEST SETTING: {setting} {'=' * 40}")
+    for ckpt_label in ["best", "last"]:
+        print(f"\n{'=' * 50}\nCheckpoint: {ckpt_label}\n{'=' * 50}")
 
-        # Update config and recreate datamodule for this setting
-        OmegaConf.set_struct(cfg, False)
-        cfg.test_setting = setting
-        # Disable persistent workers for testing to avoid crash
-        # persistent_workers often causes issues on resume/re-init with KeOps
-        if hasattr(cfg, "loader"):
-            cfg.loader.persistent_workers = False
-        OmegaConf.set_struct(cfg, True)
+        ckpt_results = {}
+        for setting in ["holo", "apo", "af2"]:
+            print(f"\n--- {setting} ---")
+            OmegaConf.set_struct(cfg, False)
+            cfg.test_setting = setting
+            OmegaConf.set_struct(cfg, True)
 
-        # Re-initialize DataModule with new setting
-        test_datamodule = PinderPairDataModule(cfg)
+            test_datamodule = PinderPairDataModule(cfg)
+            results = trainer.test(
+                model, ckpt_path=ckpt_label, datamodule=test_datamodule
+            )
 
-        # Test Best
-        print(f"--- Testing BEST checkpoint ({setting}) ---")
-        results = trainer.test(model, ckpt_path="best", datamodule=test_datamodule)
-        auroc_best = results[0]["auroc/test"]
-        trainer.logger.log_metrics({f"auroc/test_best_{setting}": auroc_best})
+            if results:
+                r = results[0]
+                mean = r.get("auroc/test_mean", r.get("auroc/test", 0))
+                median = r.get("auroc/test_median", 0)
+                n_sys = r.get("auroc/test_n_systems", 0)
+                bacc_mean = r.get("bacc/test_mean", 0)
+                trainer.logger.log_metrics(
+                    {
+                        f"test_{ckpt_label}_{setting}_auroc_mean": mean,
+                        f"test_{ckpt_label}_{setting}_auroc_median": median,
+                        f"test_{ckpt_label}_{setting}_bacc_mean": bacc_mean,
+                    }
+                )
+                print(f"  AUROC: mean={mean:.4f}, median={median:.4f}, n={int(n_sys)}")
+                print(f"  BACC:  mean={bacc_mean:.4f}")
+                ckpt_results[setting] = {
+                    "auroc_mean": mean,
+                    "auroc_median": median,
+                    "bacc_mean": bacc_mean,
+                    "n_systems": int(n_sys),
+                    "n_homo": int(r.get("auroc/test_n_homo", 0)),
+                    "n_hetero": int(r.get("auroc/test_n_hetero", 0)),
+                    "auroc_homo_mean": r.get("auroc/test_homo_mean", float("nan")),
+                    "auroc_hetero_mean": r.get("auroc/test_hetero_mean", float("nan")),
+                }
 
-        # Test Last
-        print(f"--- Testing LAST checkpoint ({setting}) ---")
-        results = trainer.test(model, ckpt_path="last", datamodule=test_datamodule)
-        auroc_last = results[0]["auroc/test"]
-        trainer.logger.log_metrics({f"auroc/test_last_{setting}": auroc_last})
+        # Summary table
+        header = f"{'':^8} | {'AUROC mean':^10} | {'AUROC med':^10} | {'BACC mean':^10} | {'Homo':^10} | {'Hetero':^10} | {'N':^7}"
+        sep = "-" * len(header)
+        print(f"\n{'=' * len(header)}")
+        print(f"SUMMARY: {ckpt_label}")
+        print(sep)
+        print(header)
+        print(sep)
+        for setting in ["holo", "apo", "af2"]:
+            r = ckpt_results.get(setting)
+            if r is None:
+                print(
+                    f"{setting:^8} | {'N/A':^10} | {'N/A':^10} | {'N/A':^10} | {'N/A':^10} | {'N/A':^10} | {'0':^7}"
+                )
+            else:
+                homo = f"{r['auroc_homo_mean']:.4f}" if r["n_homo"] > 0 else "N/A"
+                hetero = f"{r['auroc_hetero_mean']:.4f}" if r["n_hetero"] > 0 else "N/A"
+                print(
+                    f"{setting:^8} | {r['auroc_mean']:.4f}    | {r['auroc_median']:.4f}    | {r['bacc_mean']:.4f}    | {homo:^10} | {hetero:^10} | {r['n_homo']}/{r['n_hetero']}"
+                )
+        print(sep)
 
 
 if __name__ == "__main__":

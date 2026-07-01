@@ -8,7 +8,6 @@ import sys
 import warnings
 from pathlib import Path
 
-# Add project root to path
 sys.path.append(str(Path(__file__).absolute().parents[3]))
 
 import hydra
@@ -22,113 +21,81 @@ from alphasurf.tasks.pinder_pair.dataset import (
     load_pinder_split,
 )
 from alphasurf.tasks.pinder_pair.pl_model import PinderPairModule
-from alphasurf.utils.data_utils import AtomBatch, update_model_input_dim
+from alphasurf.utils.data_utils import AtomBatch
 from omegaconf import OmegaConf
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import balanced_accuracy_score, roc_auc_score
 
-# Suppress warnings
 os.environ["PYTHONWARNINGS"] = "ignore::UserWarning"
 warnings.filterwarnings("ignore")
 
 
-@hydra.main(version_base=None, config_path="conf", config_name="config")
-def main(cfg=None):
-    # Enable evaluation resolver
-    OmegaConf.register_new_resolver("eval", eval)
-    OmegaConf.resolve(cfg)
+def _is_homodimer(system_id):
+    """Determine if a system is a homodimer from its ID (e.g. '8iyi__A1_Q6CVU4--8iyi__B1_Q6CVU4')."""
+    try:
+        parts = system_id.split("--")
+        if len(parts) != 2:
+            return False
+        r_uniprot = parts[0].split("_")[-1]
+        l_uniprot = parts[1].split("_")[-1]
+        return r_uniprot == l_uniprot
+    except Exception:
+        return False
 
-    pl.seed_everything(cfg.seed, workers=True)
 
-    test_setting = getattr(cfg, "test_setting", "apo")
-    print(
-        f"\n{'=' * 60}\nRUNNING PINDER-PAIR TEST (Setting: {test_setting})\n{'=' * 60}\n"
-    )
+def collate_fn(batch):
+    batch = [x for x in batch if x is not None]
+    if len(batch) == 0:
+        return None
+    return AtomBatch.from_data_list(batch)
 
-    # 1. Load Systems
+
+def setup_test_loader(cfg, test_setting):
+    """Create test DataLoader for a given setting (holo/apo/af2)."""
     data_dir = cfg.data_dir
-    eval_split = os.environ.get("EVAL_SPLIT", "test")
-    print(f"Loading {eval_split} split for setting: {test_setting}")
+    pdb_dir = os.path.join(data_dir, "pdb")
 
     target_systems = load_pinder_split(
-        data_dir,
-        split=eval_split,
-        test_setting=test_setting if eval_split == "test" else None,
-        max_systems=None,
+        data_dir, split="test", test_setting=test_setting
     )
-    print(f"Index loaded: {len(target_systems)} systems")
+    print(f"  {test_setting}: {len(target_systems)} systems")
 
-    # 2. Setup Dataset Class
     DatasetClass = PinderPairDataset
     if test_setting in ["apo", "af2"]:
-        print("Using PinderAlignedDataset for alignment based on Holo ground truth.")
         DatasetClass = PinderAlignedDataset
-
-        # Load Holo systems to get reference paths
-        print("Loading Holo reference paths...")
-        holo_systems = load_pinder_split(
-            data_dir, split="test", test_setting="holo", max_systems=None
-        )
+        holo_systems = load_pinder_split(data_dir, split="test", test_setting="holo")
         holo_map = {s["id"]: s for s in holo_systems}
-
-        # Merge Holo paths into target systems
-        merged_count = 0
         for s in target_systems:
             if s["id"] in holo_map:
                 s["holo_receptor_path"] = holo_map[s["id"]].get("receptor_path")
                 s["holo_ligand_path"] = holo_map[s["id"]].get("ligand_path")
                 s["holo_receptor_id"] = holo_map[s["id"]].get("receptor_id")
                 s["holo_ligand_id"] = holo_map[s["id"]].get("ligand_id")
-                merged_count += 1
-            else:
-                pass
-                # print(f"Warning: Holo reference not found for {s['id']}")
-
-        print(f"Merged Holo paths for {merged_count}/{len(target_systems)} systems.")
-
-    # 3. Initialize ProteinLoader MANUALLY (bypass DataModule)
-    print("Initializing ProteinLoader...")
 
     from alphasurf.utils.config_utils import merge_surface_config
 
     on_fly_cfg = getattr(cfg, "on_fly", None)
-    mode = "on_fly" if on_fly_cfg is not None else "disk"
-    pdb_dir = os.path.join(data_dir, "pdb")
-
-    surface_dir = None
-    graph_dir = None
-    if mode == "disk":
-        surface_dir = os.path.join(cfg.cfg_surface.data_dir, cfg.cfg_surface.data_name)
-        graph_dir = os.path.join(cfg.cfg_graph.data_dir, cfg.cfg_graph.data_name)
+    mode = "on_fly"
     esm_dir = getattr(cfg.cfg_graph, "esm_dir", None)
 
-    noise_augmentor = None  # No noise for test
-
     surface_config = merge_surface_config(cfg.cfg_surface, on_fly_cfg)
+    surface_config.use_poisson = "poisson" in cfg.encoder.name
     graph_config = merge_surface_config(cfg.cfg_graph, on_fly_cfg)
 
     protein_loader = ProteinLoader(
         mode=mode,
         pdb_dir=pdb_dir,
-        surface_dir=surface_dir,
-        graph_dir=graph_dir,
+        surface_dir=None,
+        graph_dir=None,
         esm_dir=esm_dir,
         surface_config=surface_config,
         graph_config=graph_config,
-        noise_augmentor=noise_augmentor,
+        noise_augmentor=None,
     )
 
-    # Create Dataset
-    print("=== DATASET PARAMS ===")
-    print(f"interface_distance_graph: {cfg.interface_distance_graph}")
-    print(f"interface_distance_surface: {cfg.interface_distance_surface}")
-    print(f"neg_to_pos_ratio: {cfg.neg_to_pos_ratio}")
-    print(f"surface_neg_to_pos_ratio: {cfg.surface_neg_to_pos_ratio}")
-    print()
-    test_dataset = DatasetClass(
+    dataset = DatasetClass(
         systems=target_systems,
         protein_loader=protein_loader,
         pdb_dir=pdb_dir,
-        apply_noise=False,
         neg_to_pos_ratio=float(cfg.neg_to_pos_ratio),
         max_pos_per_pair=int(cfg.max_pos_per_pair),
         interface_distance_graph=float(cfg.interface_distance_graph),
@@ -136,33 +103,8 @@ def main(cfg=None):
         surface_neg_to_pos_ratio=float(cfg.surface_neg_to_pos_ratio),
     )
 
-    # Calculate Input Dims if no checkpoint
-    # We use the FIRST VALID SAMPLE from test dataset to infer dims
-    # Since we are verifying, we MUST ensure dims are set.
-    print("Inferring model dimensions from first valid sample...")
-
-    # We might need to try a few indices if first one is None
-    temp_dataset_subset = torch.utils.data.Subset(
-        test_dataset, range(min(len(test_dataset), 20))
-    )
-    try:
-        update_model_input_dim(
-            cfg, dataset_temp=temp_dataset_subset, gkey="graph_1", skey="surface_1"
-        )
-    except Exception as e:
-        print(f"Warning: Could not infer input dims from test subset: {e}")
-        # If we have checkpoint, we might be fine. If not, model init will fail/be wrong.
-
-    # Collate fn
-    def collate_fn(batch):
-        batch = [x for x in batch if x is not None]
-        if len(batch) == 0:
-            return None
-        return AtomBatch.from_data_list(batch)
-
-    # Create DataLoader
-    test_loader = torch.utils.data.DataLoader(
-        test_dataset,
+    return torch.utils.data.DataLoader(
+        dataset,
         batch_size=cfg.loader.batch_size,
         shuffle=False,
         num_workers=cfg.loader.num_workers,
@@ -170,58 +112,17 @@ def main(cfg=None):
         pin_memory=cfg.loader.pin_memory,
     )
 
-    # 4. Load Model
-    print("Loading model...")
-    ckpt_path = getattr(cfg, "ckpt_path", None)
-    if not ckpt_path:
-        print(
-            "Warning: No checkpoint path specified (cfg.ckpt_path). Using random weights."
-        )
-        model = PinderPairModule(cfg)
-    else:
-        print(f"Loading checkpoint: {ckpt_path}")
-        model = PinderPairModule.load_from_checkpoint(ckpt_path, cfg=cfg)
 
-    # Diagnostic: verify checkpoint loaded real weights (not random)
-    param_stats = {}
-    for name, param in model.named_parameters():
-        param_stats[name] = (param.mean().item(), param.std().item(), param.shape)
-    print(f"\nModel has {len(param_stats)} parameters")
-    for name, (mean, std, shape) in list(param_stats.items())[:5]:
-        print(f"  {name}: shape={shape}, mean={mean:.6f}, std={std:.6f}")
-    print()
+def evaluate_setting(model, test_loader, device, cfg, test_setting):
+    """Run per-system AUROC + balanced accuracy evaluation for one setting.
 
-    # 5. Device setup
-    device = torch.device("cpu")
-    if torch.cuda.is_available():
-        device = torch.device(f"cuda:{cfg.device}")
-    model = model.to(device)
-
-    model.eval()
-
-    # Print training config from checkpoint for comparison
-    if ckpt_path:
-        ckpt_data = torch.load(ckpt_path, map_location="cpu")
-        if "hyper_parameters" in ckpt_data:
-            hp = ckpt_data["hyper_parameters"].get("cfg", {})
-            print("=== TRAINING CONFIG ===")
-            for key in [
-                "neg_to_pos_ratio",
-                "interface_distance_graph",
-                "interface_distance_surface",
-                "surface_neg_to_pos_ratio",
-            ]:
-                print(f"{key}: {hp.get(key, 'N/A')}")
-            print()
-        del ckpt_data
-
-    # 6. Manual test loop with per-system and global AUROC
-    print(f"Starting testing (eval_split={eval_split}, model.eval())...")
-    all_logits = []
-    all_labels = []
-    system_aurocs = []
+    Returns dict with keys: auroc_mean, auroc_median, bacc_mean, bacc_median,
+    auroc_homo_mean, auroc_hetero_mean, bacc_homo_mean, bacc_hetero_mean, n_systems, ...
+    or None if no systems evaluated.
+    """
     n_batches = 0
     n_skipped = 0
+    system_results = []  # (auroc, bacc, is_homodimer)
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(test_loader):
@@ -234,20 +135,14 @@ def main(cfg=None):
                 n_skipped += 1
                 continue
 
-            # Get labels (keep per-system structure for per-system AUROC)
             if isinstance(batch.label, list):
-                per_system_labels = [l.reshape(-1) for l in batch.label]
-                labels = torch.cat(batch.label).reshape(-1, 1)
+                per_system_labels = [lab.reshape(-1) for lab in batch.label]
             else:
                 per_system_labels = None
-                labels = batch.label.reshape(-1, 1)
 
-            outputs, outputs_surf = model(batch)
+            out = model(batch)
+            pair_logits = out["graph"]["pair_logit"].squeeze(-1)
 
-            all_logits.append(outputs.detach().cpu())
-            all_labels.append(labels.detach().cpu())
-
-            # Per-system AUROC
             if per_system_labels is not None:
                 offset = 0
                 sys_ids = (
@@ -260,7 +155,7 @@ def main(cfg=None):
                 for si, sys_labels in enumerate(per_system_labels):
                     n_pairs = len(sys_labels)
                     sys_logits = (
-                        outputs[offset : offset + n_pairs]
+                        pair_logits[offset : offset + n_pairs]
                         .detach()
                         .cpu()
                         .numpy()
@@ -269,80 +164,185 @@ def main(cfg=None):
                     sys_lab = sys_labels.cpu().numpy().astype(int).ravel()
                     n_pos = sys_lab.sum()
                     n_neg = len(sys_lab) - n_pos
+                    sid = sys_ids[si] if si < len(sys_ids) else None
                     if n_pos > 0 and n_neg > 0:
                         sys_auroc = roc_auc_score(sys_lab, sys_logits)
-                        sid = sys_ids[si] if si < len(sys_ids) else "?"
-                        system_aurocs.append((sid, sys_auroc, n_pos, n_neg))
+                        sys_preds = (sys_logits > 0).astype(int)
+                        sys_bacc = balanced_accuracy_score(sys_lab, sys_preds)
+                        is_homo = _is_homodimer(sid) if sid else False
+                        system_results.append((sys_auroc, sys_bacc, is_homo))
                     offset += n_pairs
 
-            # Print diagnostics for first few batches
-            if batch_idx < 3:
-                print(
-                    f"\n  Batch {batch_idx}: {batch.num_graphs} graphs, "
-                    f"{len(labels)} pairs"
-                )
-                print(
-                    f"    Labels: {labels.sum().item():.0f} pos / "
-                    f"{(1 - labels).sum().item():.0f} neg"
-                )
-                print(
-                    f"    Logits: min={outputs.min().item():.4f}, "
-                    f"max={outputs.max().item():.4f}, "
-                    f"mean={outputs.mean().item():.4f}, "
-                    f"std={outputs.std().item():.4f}"
-                )
-
             n_batches += 1
-            if batch_idx % 50 == 0 and batch_idx > 0:
-                print(f"  Processed {batch_idx}/{len(test_loader)} batches...")
 
-    print(f"\nProcessed {n_batches} batches, skipped {n_skipped}")
+    print(
+        f"  {test_setting}: {n_batches} batches, {n_skipped} skipped, {len(system_results)} systems evaluated"
+    )
 
-    if all_logits:
-        all_logits = torch.cat(all_logits).numpy().ravel()
-        all_labels = torch.cat(all_labels).numpy().astype(int).ravel()
+    if not system_results:
+        print(f"  {test_setting}: No valid systems evaluated!")
+        return None
 
-        print(f"Total predictions: {len(all_logits)}")
+    aurocs = np.array([r[0] for r in system_results])
+    baccs = np.array([r[1] for r in system_results])
+    homo_mask = np.array([r[2] for r in system_results])
+    hetero_mask = ~homo_mask
+
+    result = {
+        "auroc_mean": aurocs.mean(),
+        "auroc_median": float(np.median(aurocs)),
+        "auroc_std": aurocs.std(),
+        "bacc_mean": baccs.mean(),
+        "bacc_median": float(np.median(baccs)),
+        "bacc_std": baccs.std(),
+        "n_systems": len(system_results),
+        "n_homo": int(homo_mask.sum()),
+        "n_hetero": int(hetero_mask.sum()),
+    }
+
+    if homo_mask.sum() > 0:
+        result["auroc_homo_mean"] = float(aurocs[homo_mask].mean())
+        result["bacc_homo_mean"] = float(baccs[homo_mask].mean())
+    if hetero_mask.sum() > 0:
+        result["auroc_hetero_mean"] = float(aurocs[hetero_mask].mean())
+        result["bacc_hetero_mean"] = float(baccs[hetero_mask].mean())
+
+    print(
+        f"  >>> {test_setting} AUROC: Mean={result['auroc_mean']:.4f}, Median={result['auroc_median']:.4f} <<<"
+    )
+    print(
+        f"  >>> {test_setting} BACC:  Mean={result['bacc_mean']:.4f}, Median={result['bacc_median']:.4f} <<<"
+    )
+    print(
+        f"  >>> {test_setting} Homo/Hetero: {result['n_homo']}/{result['n_hetero']} <<<"
+    )
+    if result.get("auroc_homo_mean") is not None:
+        print(f"  >>> {test_setting} AUROC Homo: {result['auroc_homo_mean']:.4f} <<<")
+    if result.get("auroc_hetero_mean") is not None:
         print(
-            f"Total positives: {all_labels.sum()}, negatives: {(1 - all_labels).sum()}"
-        )
-        print(
-            f"Logit stats: min={all_logits.min():.4f}, "
-            f"max={all_logits.max():.4f}, "
-            f"mean={all_logits.mean():.4f}, "
-            f"std={all_logits.std():.4f}"
+            f"  >>> {test_setting} AUROC Hetero: {result['auroc_hetero_mean']:.4f} <<<"
         )
 
-        global_auroc = roc_auc_score(all_labels, all_logits)
-        print(f"\n>>> GLOBAL AUROC: {global_auroc:.6f} <<<")
+    return result
 
-        # Per-system AUROC distribution
-        if system_aurocs:
-            aurocs = [a for _, a, _, _ in system_aurocs]
-            aurocs_arr = np.array(aurocs)
-            print(f"\n=== PER-SYSTEM AUROC ({len(aurocs)} systems) ===")
+
+def load_model_from_checkpoint(ckpt_path, cfg):
+    """Load model from checkpoint using saved training config for correct dims."""
+    ckpt_data = torch.load(ckpt_path, map_location="cpu")
+    train_cfg = ckpt_data.get("hyper_parameters", {}).get("cfg")
+    if train_cfg:
+        OmegaConf.set_struct(train_cfg, False)
+        for key in ["test_setting", "ckpt_path", "device", "min_batch_size", "on_fly"]:
+            if key in cfg:
+                train_cfg[key] = cfg[key]
+
+        cfg = train_cfg
+    model = PinderPairModule.load_from_checkpoint(ckpt_path, cfg=cfg)
+    del ckpt_data
+    return model, cfg
+
+
+def _print_summary_table(all_results, ckpt_label):
+    """Print a summary table for one checkpoint across all settings."""
+    header = f"{ckpt_label:^8} | {'AUROC':^18} | {'BACC':^18} | {'AUROC Homo':^12} | {'AUROC Hetero':^12} | {'N':^7}"
+    sep = "-" * len(header)
+    print(f"\n{sep}\n{header}\n{sep}")
+    for setting in ["holo", "apo", "af2"]:
+        r = all_results.get(setting)
+        if r is None:
             print(
-                f"Mean: {aurocs_arr.mean():.4f}, Median: {np.median(aurocs_arr):.4f}, "
-                f"Std: {aurocs_arr.std():.4f}"
+                f"{setting:^8} | {'N/A':^18} | {'N/A':^18} | {'N/A':^12} | {'N/A':^12} | {'0':^7}"
             )
-            print(f"Min: {aurocs_arr.min():.4f}, Max: {aurocs_arr.max():.4f}")
-            # Distribution buckets
-            for threshold in [0.6, 0.7, 0.8, 0.9]:
-                count = (aurocs_arr >= threshold).sum()
-                print(
-                    f"  Systems with AUROC >= {threshold}: {count}/{len(aurocs)} "
-                    f"({100 * count / len(aurocs):.1f}%)"
+        else:
+            auroc_str = f"{r['auroc_mean']:.4f} +/- {r['auroc_std']:.4f}"
+            bacc_str = f"{r['bacc_mean']:.4f} +/- {r['bacc_std']:.4f}"
+            homo_str = (
+                f"{r.get('auroc_homo_mean', float('nan')):.4f}"
+                if r.get("n_homo", 0) > 0
+                else "N/A"
+            )
+            hetero_str = (
+                f"{r.get('auroc_hetero_mean', float('nan')):.4f}"
+                if r.get("n_hetero", 0) > 0
+                else "N/A"
+            )
+            n_str = f"{r['n_homo']}/{r['n_hetero']}"
+            print(
+                f"{setting:^8} | {auroc_str:^18} | {bacc_str:^18} | {homo_str:^12} | {hetero_str:^12} | {n_str:^7}"
+            )
+    print(sep)
+
+
+def run_all_tests(cfg, model=None):
+    """Run per-system AUROC evaluation for holo/apo/af2 on best and last checkpoints."""
+    ckpt_path = getattr(cfg, "ckpt_path", None)
+    if not ckpt_path:
+        print("No checkpoint path specified. Skipping tests.")
+        return
+
+    device = torch.device("cpu")
+    if torch.cuda.is_available():
+        device = torch.device(f"cuda:{cfg.device}")
+
+    ckpts_to_eval = {"provided": ckpt_path}
+    last_ckpt = Path(ckpt_path).parent / "last.ckpt"
+    if last_ckpt.exists() and str(last_ckpt) != ckpt_path:
+        ckpts_to_eval["last"] = str(last_ckpt)
+
+    for ckpt_label, ckpt_file in ckpts_to_eval.items():
+        print(f"\n{'=' * 50}")
+        print(f"Checkpoint: {ckpt_label} ({ckpt_file})")
+        print(f"{'=' * 50}")
+
+        loaded_model, eval_cfg = load_model_from_checkpoint(ckpt_file, cfg)
+        loaded_model = loaded_model.to(device)
+        loaded_model.eval()
+
+        all_results = {}
+        for setting in ["holo", "apo", "af2"]:
+            print(f"\n--- {setting} ---")
+            try:
+                test_loader = setup_test_loader(eval_cfg, setting)
+                result = evaluate_setting(
+                    loaded_model, test_loader, device, eval_cfg, setting
                 )
-            # Top 10 and bottom 10 systems
-            sorted_sys = sorted(system_aurocs, key=lambda x: x[1], reverse=True)
-            print("\nTop 10 systems:")
-            for sid, auc, np_, nn_ in sorted_sys[:10]:
-                print(f"  {sid}: AUROC={auc:.4f} ({np_} pos, {nn_} neg)")
-            print("\nBottom 10 systems:")
-            for sid, auc, np_, nn_ in sorted_sys[-10:]:
-                print(f"  {sid}: AUROC={auc:.4f} ({np_} pos, {nn_} neg)")
+                all_results[setting] = result
+            except Exception as e:
+                print(f"  {setting}: FAILED - {e}")
+
+        _print_summary_table(all_results, ckpt_label)
+        del loaded_model
+
+
+@hydra.main(version_base=None, config_path="conf", config_name="config")
+def main(cfg=None):
+    OmegaConf.register_new_resolver("eval", eval)
+    OmegaConf.resolve(cfg)
+
+    pl.seed_everything(cfg.seed, workers=True)
+
+    test_setting = getattr(cfg, "test_setting", "apo")
+    ckpt_path = getattr(cfg, "ckpt_path", None)
+
+    print(f"\n{'=' * 60}\nPINDER-PAIR TEST (Setting: {test_setting})\n{'=' * 60}\n")
+
+    if test_setting == "all":
+        run_all_tests(cfg)
     else:
-        print("No valid batches processed!")
+        device = torch.device("cpu")
+        if torch.cuda.is_available():
+            device = torch.device(f"cuda:{cfg.device}")
+
+        model, eval_cfg = (
+            load_model_from_checkpoint(ckpt_path, cfg)
+            if ckpt_path
+            else (PinderPairModule(cfg), cfg)
+        )
+        model = model.to(device)
+        model.eval()
+
+        test_loader = setup_test_loader(eval_cfg, test_setting)
+        evaluate_setting(model, test_loader, device, eval_cfg, test_setting)
 
 
 if __name__ == "__main__":
