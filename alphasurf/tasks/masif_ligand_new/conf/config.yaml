@@ -17,14 +17,14 @@ hydra:
   job:
     chdir: False
   searchpath:
-    - file:///cluster/CBIO/data2/vgertner/atomsurf/atomsurf/atomsurf/tasks/shared_conf
+    - file:///cluster/CBIO/data2/vgertner/alphasurf/alphasurf/alphasurf/tasks/shared_conf
 
 # General
 seed: 2024
 use_wandb: True
 run_name: default
 project_name: masif_ligand_new
-data_dir: /cluster/CBIO/data2/vgertner/atomsurf/atomsurf/data/masif_ligand/msms_01
+data_dir: /cluster/CBIO/data2/vgertner/alphasurf/alphasurf/data/masif_ligand/msms_01
 log_dir: "./"
 epochs: 500
 device: 0

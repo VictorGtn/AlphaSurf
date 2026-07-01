@@ -80,9 +80,6 @@ class PreprocessPatchDataset(Dataset):
 class PreProcessPDBDataset(PreprocessDataset):
     """
     Dataset for preprocessing MaSIF-Ligand PDB files into surface objects.
-
-    Supports generating multiple augmented views per protein using noise-based
-    data augmentation. Augmentation is handled by the parent PreprocessDataset class.
     """
 
     def __init__(
@@ -97,9 +94,6 @@ class PreProcessPDBDataset(PreprocessDataset):
         surface_method="msms",
         sbl_exe_path=None,
         alpha_value=0.1,
-        n_augmented_views=1,
-        augmentation_sigma=0.3,
-        augmentation_noise_type="normal",
     ):
         if data_dir is None:
             script_dir = os.path.dirname(os.path.realpath(__file__))
@@ -107,7 +101,6 @@ class PreProcessPDBDataset(PreprocessDataset):
                 script_dir, "..", "..", "..", "data", "masif_ligand"
             )
 
-        # Pass augmentation params to parent class (skip dir creation so we can override it)
         super().__init__(
             data_dir=data_dir,
             recompute_s=recompute_s,
@@ -117,9 +110,6 @@ class PreProcessPDBDataset(PreprocessDataset):
             surface_method=surface_method,
             sbl_exe_path=sbl_exe_path,
             alpha_value=alpha_value,
-            n_augmented_views=n_augmented_views,
-            augmentation_sigma=augmentation_sigma,
-            augmentation_noise_type=augmentation_noise_type,
             _skip_surf_dir_creation=True,
         )
 
@@ -137,8 +127,6 @@ class PreProcessPDBDataset(PreprocessDataset):
                 surface_dirname = f"surfaces_full_msms_fr{face_reduction_rate}"
             if use_pymesh:
                 surface_dirname += "_pymesh"
-            if n_augmented_views > 1:
-                surface_dirname += f"_aug{n_augmented_views}_{augmentation_noise_type}_sigma{augmentation_sigma}"
             self.out_surf_dir = os.path.join(data_dir, surface_dirname)
             os.makedirs(self.out_surf_dir, exist_ok=True)
         else:
@@ -211,7 +199,6 @@ def get_surface_tool_path(cfg, script_dir):
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
 def main(cfg: DictConfig):
-    recompute = False
     recompute_s = True
     recompute_g = False
     use_pymesh = False
@@ -228,14 +215,7 @@ def main(cfg: DictConfig):
 
     TimingStats.reset()
 
-    # Preprocess patches (no augmentation - these are pocket patches)
-    """dataset = PreprocessPatchDataset(recompute=recompute,
-                                     face_reduction_rate=cfg.preprocessing.face_reduction_rate,
-                                     use_pymesh=use_pymesh,
-                                     data_dir=data_dir)
-    do_all(dataset, num_workers=num_workers)"""
-
-    # Preprocess full surfaces from PDB (with augmentation support)
+    # Preprocess full surfaces from PDB
     dataset = PreProcessPDBDataset(
         recompute_g=recompute_g,
         recompute_s=recompute_s,
@@ -246,9 +226,6 @@ def main(cfg: DictConfig):
         sbl_exe_path=surface_tool_path,
         alpha_value=cfg.preprocessing.alpha_value,
         data_dir=data_dir,
-        n_augmented_views=cfg.cfg_surface.n_augmented_views,
-        augmentation_sigma=cfg.cfg_surface.augmentation_sigma,
-        augmentation_noise_type=cfg.cfg_surface.augmentation_noise_type,
     )
     do_all(dataset, num_workers=num_workers)
 

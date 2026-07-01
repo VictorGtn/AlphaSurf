@@ -52,66 +52,9 @@ def get_systems_from_ligands(
 
 
 class SurfaceLoaderMasifLigand(SurfaceLoader):
-    """
-    Surface loader for MaSIF-Ligand that supports augmented views.
-
-    When n_augmented_views > 1, this loader will randomly select one of the
-    pre-computed augmented views at each load call. This provides data augmentation
-    without increasing the number of samples per epoch.
-
-    Args:
-        config: Configuration object with the following relevant fields:
-            - use_whole_surfaces: If True, load full protein surface instead of patch
-            - n_augmented_views: Number of pre-computed augmented views (default: 1)
-            - augmentation_sigma: Sigma used during preprocessing (for directory naming)
-            - augmentation_noise_type: Type of noise ('normal' or 'isotropic')
-    """
-
-    def __init__(self, config):
-        # Store augmentation params before calling super().__init__
-        self.n_augmented_views = getattr(config, "n_augmented_views", 1)
-        self.augmentation_sigma = getattr(config, "augmentation_sigma", 0.3)
-        self.augmentation_noise_type = getattr(
-            config, "augmentation_noise_type", "normal"
-        )
-
-        # If using augmentation, modify data_name to point to augmented directory
-        if self.n_augmented_views > 1:
-            # Transform data_name to include augmentation suffix
-            # e.g., "surf_1.0_False" -> "surf_1.0_False_aug20_normal_sigma0.3"
-            original_data_name = config.data_name
-            config = self._clone_config_with_aug_dir(config)
-
-        super().__init__(config)
-
-    def _clone_config_with_aug_dir(self, config):
-        """Create a modified config with augmentation directory name."""
-        # Create a mutable copy of the config
-        from torch_geometric.data import Data
-
-        new_config = Data()
-        for key in dir(config):
-            if not key.startswith("_"):
-                try:
-                    setattr(new_config, key, getattr(config, key))
-                except:
-                    pass
-
-        # Modify data_name to point to augmented directory
-        # Format: {original}_aug{n_views}_{noise_type}_sigma{sigma}
-        original_name = config.data_name
-        new_config.data_name = f"{original_name}_aug{self.n_augmented_views}_{self.augmentation_noise_type}_sigma{self.augmentation_sigma}"
-        return new_config
-
     def load(self, pocket_name):
         if self.config.use_whole_surfaces:
             pocket_name = pocket_name.split("_patch_")[0]
-
-        # If using augmented views, randomly select one
-        if self.n_augmented_views > 1:
-            view_idx = np.random.randint(0, self.n_augmented_views)
-            pocket_name = f"{pocket_name}_view_{view_idx}"
-
         return super().load(pocket_name)
 
 

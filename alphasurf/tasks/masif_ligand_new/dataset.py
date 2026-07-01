@@ -30,20 +30,17 @@ class BaseProteinDataset(Dataset):
         self,
         names: List[str],
         protein_loader: ProteinLoader,
-        apply_noise: bool = False,
         post_transforms: Optional[List[Callable[[Protein], Optional[Protein]]]] = None,
     ):
         """
         Args:
             names: List of protein/pocket names to load
             protein_loader: ProteinLoader instance (handles on-fly/disk loading)
-            apply_noise: If True, apply noise augmentation during loading
             post_transforms: Optional transforms to apply AFTER loading
                            (for task-specific processing, not geometry changes)
         """
         self.names = names
         self.protein_loader = protein_loader
-        self.apply_noise = apply_noise
         self.post_transforms = post_transforms or []
 
     def __len__(self) -> int:
@@ -60,7 +57,7 @@ class BaseProteinDataset(Dataset):
             Protein object or None if loading fails
         """
         name = self.names[idx]
-        protein = self.protein_loader.load(name, apply_noise=self.apply_noise)
+        protein = self.protein_loader.load(name)
 
         if protein is None:
             return None
@@ -160,16 +157,14 @@ class MasifLigandDataset(BaseProteinDataset):
         self,
         pocket_data: Dict[str, Tuple[np.ndarray, int]],
         protein_loader: ProteinLoader,
-        apply_noise: bool = False,
     ):
         """
         Args:
             pocket_data: Dict from load_ligand_data()
             protein_loader: Configured ProteinLoader instance
-            apply_noise: Whether to apply noise augmentation
         """
         names = list(pocket_data.keys())
-        super().__init__(names, protein_loader, apply_noise)
+        super().__init__(names, protein_loader)
         self.pocket_data = pocket_data
 
     def __getitem__(self, idx: int) -> Optional[Data]:

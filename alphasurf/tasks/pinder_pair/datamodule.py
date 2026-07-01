@@ -15,7 +15,25 @@ from alphasurf.tasks.pinder_pair.dataset import (
 )
 from alphasurf.utils.batch_sampler import AtomBudgetBatchSampler
 from alphasurf.utils.data_utils import AtomBatch, update_model_input_dim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
+
+
+class _RetryDataset(Dataset):
+    """Wrapper that retries next indices on failure (TIMING mode only)."""
+
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        for offset in range(len(self.dataset)):
+            probe = (idx + offset) % len(self.dataset)
+            result = self.dataset[probe]
+            if result is not None:
+                return result
+        return None
 
 
 class PinderPairDataModule(pl.LightningDataModule):
@@ -43,6 +61,31 @@ class PinderPairDataModule(pl.LightningDataModule):
                 test_setting=self.test_setting if split == "test" else None,
             )
 
+        # Filter test split to common systems (shared across all surface methods)
+        common_only = getattr(cfg, "common_only", False)
+        if common_only and self.test_setting:
+            common_csv = os.path.join(
+                data_dir, f"common_systems_{self.test_setting}.csv"
+            )
+            if os.path.exists(common_csv):
+                import pandas as pd
+
+                common_df = pd.read_csv(common_csv)
+                common_ids = set(common_df["id"])
+                n_before = len(self.systems["test"])
+                self.systems["test"] = [
+                    s for s in self.systems["test"] if s["id"] in common_ids
+                ]
+                print(
+                    f"Common-only filter: {len(self.systems['test'])}/{n_before} systems "
+                    f"({self.test_setting})"
+                )
+            else:
+                print(
+                    f"WARNING: common_only=True but {common_csv} not found. "
+                    f"Using full test set."
+                )
+
         # Merge holo reference paths into test systems for apo/af2 alignment
         if self.test_setting in ["apo", "af2"]:
             holo_systems = load_pinder_split(
@@ -61,8 +104,12 @@ class PinderPairDataModule(pl.LightningDataModule):
                 f"Merged Holo paths for {merged}/{len(self.systems['test'])} test systems."
             )
 
-        # Build protein loader (one shared loader for all splits)
-        self.protein_loader = self._build_protein_loader(cfg)
+        # Build protein loaders: train gets the noise augmentor, eval does not.
+        # Datasets pick cache branches by inspecting loader.noise_augmentor.
+        (
+            self.protein_loader_train,
+            self.protein_loader_eval,
+        ) = self._build_protein_loaders(cfg)
 
         # Task-specific params
         self.neg_to_pos_ratio = getattr(cfg, "neg_to_pos_ratio", 1.0)
@@ -83,15 +130,21 @@ class PinderPairDataModule(pl.LightningDataModule):
         # DataLoader args
         self.loader_args = self._build_loader_args(cfg)
 
+        # Resolve surface label mode from config
+        if getattr(cfg, "on_fly", None) is not None:
+            surface_label_mode = getattr(cfg.on_fly, "surface_label_mode", "atom")
+        else:
+            surface_label_mode = getattr(cfg, "surface_label_mode", "atom")
+
         # Update model input dimensions
         temp_dataset = PinderPairDataset(
             systems=self.systems["train"][:10],
-            protein_loader=self.protein_loader,
+            protein_loader=self.protein_loader_eval,
             pdb_dir=self.pdb_dir,
-            apply_noise=False,
             interface_distance_graph=self.interface_distance_graph,
             interface_distance_surface=self.interface_distance_surface,
         )
+        temp_dataset.SURFACE_LABEL_MODE = surface_label_mode
         update_model_input_dim(
             cfg, dataset_temp=temp_dataset, gkey="graph_1", skey="surface_1"
         )
@@ -108,8 +161,8 @@ class PinderPairDataModule(pl.LightningDataModule):
             return None
         return os.path.join(data_dir, data_name)
 
-    def _build_protein_loader(self, cfg) -> ProteinLoader:
-        """Build ProteinLoader with appropriate configuration."""
+    def _build_protein_loaders(self, cfg) -> tuple:
+        """Build train (with noise) and eval (no noise) ProteinLoaders."""
         on_fly_cfg = getattr(cfg, "on_fly", None)
         mode = "on_fly" if on_fly_cfg is not None else "disk"
 
@@ -124,7 +177,6 @@ class PinderPairDataModule(pl.LightningDataModule):
 
         esm_dir = getattr(cfg.cfg_graph, "esm_dir", None)
 
-        # Noise augmentor
         noise_augmentor = self._build_noise_augmentor(cfg)
 
         # Merge configs
@@ -133,7 +185,7 @@ class PinderPairDataModule(pl.LightningDataModule):
 
         surface_config.use_poisson = "poisson" in cfg.encoder.name
 
-        return ProteinLoader(
+        common_kwargs = dict(
             mode=mode,
             pdb_dir=self.pdb_dir,
             surface_dir=surface_dir,
@@ -141,8 +193,10 @@ class PinderPairDataModule(pl.LightningDataModule):
             esm_dir=esm_dir,
             surface_config=surface_config,
             graph_config=graph_config,
-            noise_augmentor=noise_augmentor,
         )
+        loader_train = ProteinLoader(noise_augmentor=noise_augmentor, **common_kwargs)
+        loader_eval = ProteinLoader(noise_augmentor=None, **common_kwargs)
+        return loader_train, loader_eval
 
     def _build_noise_augmentor(self, cfg) -> Optional[NoiseAugmentor]:
         """Build NoiseAugmentor from config."""
@@ -196,17 +250,30 @@ class PinderPairDataModule(pl.LightningDataModule):
             return None
         return AtomBatch.from_data_list(batch)
 
-    def _create_dataset(self, split: str, apply_noise: bool) -> PinderPairDataset:
+    @staticmethod
+    def _maybe_wrap_timing(dataset):
+        if os.environ.get("TIMING", "0") == "1":
+            return _RetryDataset(dataset)
+        return dataset
+
+    def _create_dataset(self, split: str) -> PinderPairDataset:
         DatasetClass = PinderPairDataset
         # Use aligned dataset for Apo/AF2 testing to transfer labels from Holo
         if split == "test" and self.test_setting in ["apo", "af2"]:
             DatasetClass = PinderAlignedDataset
 
-        return DatasetClass(
+        protein_loader = (
+            self.protein_loader_train if split == "train" else self.protein_loader_eval
+        )
+
+        if self.cfg.on_fly is not None:
+            surface_label_mode = getattr(self.cfg.on_fly, "surface_label_mode", "atom")
+        else:
+            surface_label_mode = getattr(self.cfg, "surface_label_mode", "atom")
+        dataset = DatasetClass(
             systems=self.systems[split],
-            protein_loader=self.protein_loader,
+            protein_loader=protein_loader,
             pdb_dir=self.pdb_dir,
-            apply_noise=apply_noise,
             neg_to_pos_ratio=self.neg_to_pos_ratio,
             max_pos_per_pair=self.max_pos_per_pair,
             interface_distance_graph=self.interface_distance_graph,
@@ -214,6 +281,8 @@ class PinderPairDataModule(pl.LightningDataModule):
             surface_neg_to_pos_ratio=self.surface_neg_to_pos_ratio,
             interface_dir=self.interface_dir,
         )
+        dataset.SURFACE_LABEL_MODE = surface_label_mode
+        return dataset
 
     def train_dataloader(self) -> DataLoader:
         # Use dynamic batch sampler if configured
@@ -250,10 +319,12 @@ class PinderPairDataModule(pl.LightningDataModule):
                 filtered_systems = self.systems["train"]
                 filtered_sizes = sizes
 
-            dataset = self._create_dataset("train", apply_noise=True)
+            dataset = self._create_dataset("train")
             # Hack: replace systems in the dataset with filtered ones if needed
             # A cleaner way would be to pass systems to create_dataset, but we'll re-instantiate or set attribute
             dataset.systems = filtered_systems
+            dataset.prepopulate_interface_cache()
+            dataset = self._maybe_wrap_timing(dataset)
 
             batch_sampler = AtomBudgetBatchSampler(
                 sizes=filtered_sizes,
@@ -262,13 +333,14 @@ class PinderPairDataModule(pl.LightningDataModule):
                 shuffle=True,
             )
 
-            # Remove batch_size from loader_args for batch_sampler
             loader_args = {
                 k: v for k, v in self.loader_args.items() if k not in ["batch_size"]
             }
             return DataLoader(dataset, batch_sampler=batch_sampler, **loader_args)
         else:
-            dataset = self._create_dataset("train", apply_noise=True)
+            dataset = self._create_dataset("train")
+            dataset.prepopulate_interface_cache()
+            dataset = self._maybe_wrap_timing(dataset)
             shuffle = getattr(self.cfg.loader, "shuffle", True)
             return DataLoader(dataset, shuffle=shuffle, **self.loader_args)
 
@@ -310,7 +382,8 @@ class PinderPairDataModule(pl.LightningDataModule):
     def _eval_dataloader(self, split: str) -> DataLoader:
         """Build a DataLoader for validation or test (no shuffle, no percentile filtering)."""
         use_dynamic_batching = getattr(self.cfg.loader, "use_dynamic_batching", False)
-        dataset = self._create_dataset(split, apply_noise=False)
+        dataset = self._create_dataset(split)
+        dataset = self._maybe_wrap_timing(dataset)
 
         if use_dynamic_batching:
             max_atoms = getattr(self.cfg.loader, "max_atoms_per_batch", 50000)

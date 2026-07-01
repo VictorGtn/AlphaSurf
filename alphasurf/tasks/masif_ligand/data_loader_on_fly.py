@@ -28,72 +28,9 @@ if __name__ == "__main__":
 from alphasurf.protein.graphs import parse_pdb_path
 from alphasurf.protein.residue_graph import ResidueGraphBuilder
 from alphasurf.protein.surfaces import SurfaceObject
+from alphasurf.protein.transforms import NoiseAugmentor
 from alphasurf.utils.data_utils import AtomBatch, update_model_input_dim
 from data_loader import get_systems_from_ligands
-
-
-class NoiseAugmentor:
-    """
-    Handles noise augmentation for on-the-fly training.
-
-    Supports two modes:
-    - 'independent': Noise graph coordinates (sigma_graph) and mesh vertices (sigma_mesh)
-                     independently. Mesh noise is applied along vertex normals.
-    - 'joint': Noise atom coordinates first, then regenerate the mesh from the
-               noised atomic positions. This propagates coordinate noise naturally.
-    - 'none': No noise augmentation (default).
-
-    All operations are performed on CPU.
-    """
-
-    def __init__(
-        self,
-        noise_mode: str = "none",
-        sigma_graph: float = 0.3,
-        sigma_mesh: float = 0.3,
-        clip_sigma: float = 3.0,
-    ):
-        """
-        Args:
-            noise_mode: 'none', 'independent', or 'joint'
-            sigma_graph: Noise sigma for graph coordinates (used in both modes)
-            sigma_mesh: Noise sigma for mesh vertices (only used in 'independent' mode)
-            clip_sigma: Clip noise to ±clip_sigma*sigma
-        """
-        self.noise_mode = noise_mode.lower()
-        self.sigma_graph = sigma_graph
-        self.sigma_mesh = sigma_mesh
-        self.clip_sigma = clip_sigma
-
-        if self.noise_mode not in ("none", "independent", "joint"):
-            raise ValueError(
-                f"Unknown noise_mode: {noise_mode}. Must be 'none', 'independent', or 'joint'."
-            )
-
-    def noise_parsed_arrays(self, parsed_arrays: tuple) -> tuple:
-        """
-        Apply noise to parsed atom positions for 'joint' mode.
-        """
-        parsed_list = list(parsed_arrays)
-        atom_pos = parsed_list[5]
-
-        noise = np.random.randn(*atom_pos.shape) * self.sigma_graph
-
-        if self.clip_sigma is not None:
-            np.clip(
-                noise,
-                -self.clip_sigma * self.sigma_graph,
-                self.clip_sigma * self.sigma_graph,
-                out=noise,  # In-place clipping
-            )
-
-        atom_pos = atom_pos + noise  # Out-of-place addition
-        atom_pos = atom_pos.astype(
-            np.float32, copy=False
-        )  # Avoid copy if already float32
-        parsed_list[5] = atom_pos
-
-        return tuple(parsed_list)
 
 
 class PatchExtractor:
@@ -369,7 +306,7 @@ class OnFlyPDBParser:
         try:
             try:
                 arrays = parse_pdb_path(pdb_path, use_pqr=False)
-            except:
+            except Exception:
                 arrays = parse_pdb_path(pdb_path)
 
             # Ensure minimal precision (float32) for critical arrays to verify strict consistency
@@ -404,17 +341,24 @@ class OnFlySurfaceLoader:
     """
 
     def __init__(
-        self, config, pdb_dir: str, patch_extractor: Optional[PatchExtractor] = None
+        self,
+        config,
+        pdb_dir: str,
+        patch_extractor: Optional[PatchExtractor] = None,
+        noise_augmentor: Optional[NoiseAugmentor] = None,
     ):
         """
         Args:
             config: Configuration object with surface parameters
             pdb_dir: Path to directory containing PDB files
             patch_extractor: Optional PatchExtractor for extracting binding site patches
+            noise_augmentor: Optional NoiseAugmentor; apply_mesh_noise is invoked
+                unconditionally and no-ops unless mode == 'independent'.
         """
         self.config = config
         self.pdb_dir = pdb_dir
         self.patch_extractor = patch_extractor
+        self.noise_augmentor = noise_augmentor
 
         # Surface generation parameters
         self.surface_method = getattr(config, "surface_method", "msms")
@@ -500,7 +444,6 @@ class OnFlySurfaceLoader:
         self,
         pocket_name: str,
         parsed_arrays: Optional[tuple] = None,
-        apply_noise: bool = False,
     ) -> Optional[SurfaceObject]:
         """
         Generate or retrieve a surface for the given pocket/protein.
@@ -603,28 +546,11 @@ class OnFlySurfaceLoader:
                     patch_verts, patch_faces = patch_result
 
                 # Apply independent mesh noise BEFORE operator computation
-                # This ensures operators (mass, L eigenvalues, etc.) are computed on the noisy mesh
-                noise_mode = getattr(self.config, "noise_mode", "none")
-                sigma_mesh = getattr(self.config, "sigma_mesh", None)
-
-                if (
-                    apply_noise
-                    and noise_mode == "independent"
-                    and sigma_mesh is not None
-                ):
-                    import igl
-                    from alphasurf.protein.create_surface import add_surface_noise
-
-                    # Compute normals for noise direction (using igl for consistency)
-                    normals = igl.per_vertex_normals(patch_verts, patch_faces)
-
-                    # Apply noise
-                    patch_verts = add_surface_noise(
-                        patch_verts,
-                        patch_faces,
-                        sigma=sigma_mesh,
-                        normals=normals,
-                        clip_sigma=getattr(self.config, "clip_sigma", None),
+                # so operators (mass, L eigenvalues, etc.) are computed on the noised mesh.
+                # No-ops unless the augmentor is in 'independent' mode.
+                if self.noise_augmentor is not None:
+                    patch_verts = self.noise_augmentor.apply_mesh_noise(
+                        patch_verts, patch_faces
                     )
 
                 # DEBUG: Save patch as PLY (will save features after expand_features())
@@ -885,7 +811,7 @@ class OnFlyGraphLoader:
             else:
                 try:
                     arrays = parse_pdb_path(pdb_path, use_pqr=False)
-                except:
+                except Exception:
                     arrays = parse_pdb_path(pdb_path)
 
             # Build residue graph
@@ -992,59 +918,33 @@ class MasifLigandDatasetOnFly(Dataset):
         lig_coord, lig_type = self.systems[pocket]
         lig_coord = torch.from_numpy(lig_coord)
 
-        # Determine if we need fresh data (no caching) for noise augmentation
-        use_noise = (
-            self.noise_augmentor is not None
-            and self.noise_augmentor.noise_mode != "none"
-        )
-        is_joint_mode = use_noise and self.noise_augmentor.noise_mode == "joint"
-        is_independent_mode = (
-            use_noise and self.noise_augmentor.noise_mode == "independent"
-        )
+        use_noise = self.noise_augmentor is not None and self.noise_augmentor.enabled
 
-        # Parse PDB for shared parsing OR any noise mode
-        # (independent mode needs parsed arrays to noise for graph)
         parsed_arrays = None
-        if self.use_shared_parsing or is_joint_mode or is_independent_mode:
+        if self.use_shared_parsing or use_noise:
             protein_name = pocket.split("_patch_")[0]
             if self.pdb_parser is not None:
                 parsed_arrays = self.pdb_parser.parse(protein_name)
             else:
-                # Parse directly if no shared parser
                 pdb_path = self.surface_loader.pdb_dir
                 pdb_file = os.path.join(pdb_path, f"{protein_name}.pdb")
                 try:
                     parsed_arrays = parse_pdb_path(pdb_file, use_pqr=False)
-                except:
+                except Exception:
                     parsed_arrays = parse_pdb_path(pdb_file)
             if parsed_arrays is None:
                 return None
 
-        # Determine which arrays to use for surface vs graph
-        parsed_arrays_for_surface = parsed_arrays
-        parsed_arrays_for_graph = parsed_arrays
-
-        # For joint mode: noise arrays for BOTH surface and graph
-        if is_joint_mode and parsed_arrays is not None:
-            noised_arrays = self.noise_augmentor.noise_parsed_arrays(parsed_arrays)
-            parsed_arrays_for_surface = noised_arrays
-            parsed_arrays_for_graph = noised_arrays
-
-        # For independent mode: noise arrays for GRAPH only
-        # Surface gets original arrays (mesh noise applied separately inside surface_loader)
-        if is_independent_mode and parsed_arrays is not None:
-            parsed_arrays_for_graph = self.noise_augmentor.noise_parsed_arrays(
-                parsed_arrays
+        if self.noise_augmentor is not None:
+            parsed_for_surface, parsed_for_graph, _ = (
+                self.noise_augmentor.prepare_arrays(parsed_arrays)
             )
-            # parsed_arrays_for_surface stays as original (clean)
+        else:
+            parsed_for_surface = parsed_arrays
+            parsed_for_graph = parsed_arrays
 
-        # Generate surface from appropriate arrays
-        surface = self.surface_loader.load(
-            pocket, parsed_arrays=parsed_arrays_for_surface, apply_noise=use_noise
-        )
-        # Generate graph from (potentially noised) arrays
-        # For independent mode: edges, pronet features computed from noised positions
-        graph = self.graph_loader.load(pocket, parsed_arrays=parsed_arrays_for_graph)
+        surface = self.surface_loader.load(pocket, parsed_arrays=parsed_for_surface)
+        graph = self.graph_loader.load(pocket, parsed_arrays=parsed_for_graph)
 
         if surface is None or graph is None:
             return None
@@ -1100,7 +1000,6 @@ class MasifLigandDataModuleOnFly(pl.LightningDataModule):
             getattr(on_fly_cfg, "use_whole_surfaces", True) if on_fly_cfg else True
         )
         patch_radius = getattr(on_fly_cfg, "patch_radius", 6.0) if on_fly_cfg else 6.0
-        min_faces = getattr(on_fly_cfg, "min_faces", 250) if on_fly_cfg else 250
         patch_max_radius = (
             getattr(on_fly_cfg, "patch_max_radius", 12.0) if on_fly_cfg else 12.0
         )
@@ -1124,36 +1023,15 @@ class MasifLigandDataModuleOnFly(pl.LightningDataModule):
                     f"[WARNING] Patch dir not found: {self.patch_dir}, using whole surfaces"
                 )
 
-        # Build surface config
-        surface_config = self._merge_configs(cfg.cfg_surface, on_fly_cfg)
-        self.surface_loader = OnFlySurfaceLoader(
-            surface_config, self.pdb_dir, patch_extractor=patch_extractor
-        )
-
-        # Build graph config
-        graph_config = self._merge_configs(cfg.cfg_graph, on_fly_cfg)
-        self.graph_loader = OnFlyGraphLoader(graph_config, self.pdb_dir)
-
-        # Create shared PDB parser for alpha_complex method or joint noise mode
-        # Joint noise mode needs fresh parsed arrays to noise before generation
+        # Resolve noise mode + build augmentor before the surface loader so the
+        # loader can be wired to it.
         noise_mode = getattr(on_fly_cfg, "noise_mode", "none") if on_fly_cfg else "none"
-        self.use_shared_parsing = (
-            self.surface_loader.surface_method == "alpha_complex"
-            or noise_mode == "joint"
-        )
-
-        if self.use_shared_parsing:
-            self.pdb_parser = OnFlyPDBParser(self.pdb_dir)
-        else:
-            self.pdb_parser = None
-
-        # Create noise augmentor for training (only applied during training)
         if on_fly_cfg is not None and noise_mode != "none":
             sigma_graph = getattr(on_fly_cfg, "sigma_graph", 0.3)
             sigma_mesh = getattr(on_fly_cfg, "sigma_mesh", 0.3)
-            clip_sigma = getattr(on_fly_cfg, "clip_sigma", 3.0)
+            clip_sigma = getattr(on_fly_cfg, "clip_sigma", None)
             self.noise_augmentor = NoiseAugmentor(
-                noise_mode=noise_mode,
+                mode=noise_mode,
                 sigma_graph=sigma_graph,
                 sigma_mesh=sigma_mesh,
                 clip_sigma=clip_sigma,
@@ -1163,6 +1041,31 @@ class MasifLigandDataModuleOnFly(pl.LightningDataModule):
             )
         else:
             self.noise_augmentor = None
+
+        # Build surface config
+        surface_config = self._merge_configs(cfg.cfg_surface, on_fly_cfg)
+        self.surface_loader = OnFlySurfaceLoader(
+            surface_config,
+            self.pdb_dir,
+            patch_extractor=patch_extractor,
+            noise_augmentor=self.noise_augmentor,
+        )
+
+        # Build graph config
+        graph_config = self._merge_configs(cfg.cfg_graph, on_fly_cfg)
+        self.graph_loader = OnFlyGraphLoader(graph_config, self.pdb_dir)
+
+        # Create shared PDB parser for alpha_complex method or joint noise mode
+        # Joint noise mode needs fresh parsed arrays to noise before generation
+        self.use_shared_parsing = (
+            self.surface_loader.surface_method == "alpha_complex"
+            or noise_mode == "joint"
+        )
+
+        if self.use_shared_parsing:
+            self.pdb_parser = OnFlyPDBParser(self.pdb_dir)
+        else:
+            self.pdb_parser = None
 
         # Load split systems
         splits_dir = os.path.join(
@@ -1214,23 +1117,11 @@ class MasifLigandDataModuleOnFly(pl.LightningDataModule):
         if override_config is None:
             return base_config
 
-        # Create a merged config
         merged = Data()
-        for key in dir(base_config):
-            if not key.startswith("_"):
-                try:
-                    setattr(merged, key, getattr(base_config, key))
-                except:
-                    pass
-
-        # Apply overrides
-        for key in dir(override_config):
-            if not key.startswith("_"):
-                try:
-                    setattr(merged, key, getattr(override_config, key))
-                except:
-                    pass
-
+        for key in base_config.keys():
+            merged[key] = base_config[key]
+        for key in override_config.keys():
+            merged[key] = override_config[key]
         return merged
 
     @staticmethod

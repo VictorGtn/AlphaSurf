@@ -44,11 +44,11 @@ class MasifLigandDataModule(pl.LightningDataModule):
                 split_file, ligands_dir, cache_file
             )
 
-        # Build protein loader
-        self.protein_loader = self._build_protein_loader(cfg, pdb_dir, patch_dir)
-
-        # Build noise augmentor (only for training)
-        self.noise_augmentor = self._build_noise_augmentor(cfg)
+        # Build protein loaders: train gets the noise augmentor, eval does not
+        (
+            self.protein_loader_train,
+            self.protein_loader_eval,
+        ) = self._build_protein_loaders(cfg, pdb_dir, patch_dir)
 
         # DataLoader arguments
         self.loader_args = self._build_loader_args(cfg)
@@ -56,13 +56,12 @@ class MasifLigandDataModule(pl.LightningDataModule):
         # Update model input dimensions
         temp_dataset = MasifLigandDataset(
             self.pocket_data["train"],
-            self.protein_loader,
-            apply_noise=False,
+            self.protein_loader_eval,
         )
         update_model_input_dim(cfg, dataset_temp=temp_dataset)
 
-    def _build_protein_loader(self, cfg, pdb_dir: str, patch_dir: str) -> ProteinLoader:
-        """Build ProteinLoader with appropriate configuration."""
+    def _build_protein_loaders(self, cfg, pdb_dir: str, patch_dir: str) -> tuple:
+        """Build train (with noise) and eval (no noise) ProteinLoaders."""
         on_fly_cfg = getattr(cfg, "on_fly", None)
 
         # Determine mode: on_fly if we have on_fly config, else disk
@@ -94,14 +93,15 @@ class MasifLigandDataModule(pl.LightningDataModule):
                     max_radius=getattr(on_fly_cfg, "patch_max_radius", 12.0),
                 )
 
-        # Build noise augmentor
         noise_augmentor = self._build_noise_augmentor(cfg)
 
         # Merge surface config with on_fly overrides
         surface_config = self._merge_surface_config(cfg, on_fly_cfg)
         graph_config = self._merge_graph_config(cfg, on_fly_cfg)
 
-        return ProteinLoader(
+        surface_config.use_poisson = "poisson" in cfg.encoder.name
+
+        common_kwargs = dict(
             mode=mode,
             pdb_dir=pdb_dir,
             surface_dir=surface_dir,
@@ -109,9 +109,11 @@ class MasifLigandDataModule(pl.LightningDataModule):
             esm_dir=esm_dir,
             surface_config=surface_config,
             graph_config=graph_config,
-            noise_augmentor=noise_augmentor,
             patch_extractor=patch_extractor,
         )
+        loader_train = ProteinLoader(noise_augmentor=noise_augmentor, **common_kwargs)
+        loader_eval = ProteinLoader(noise_augmentor=None, **common_kwargs)
+        return loader_train, loader_eval
 
     def _build_noise_augmentor(self, cfg) -> Optional[NoiseAugmentor]:
         """Build NoiseAugmentor from config."""
@@ -211,8 +213,7 @@ class MasifLigandDataModule(pl.LightningDataModule):
     def train_dataloader(self) -> DataLoader:
         dataset = MasifLigandDataset(
             self.pocket_data["train"],
-            self.protein_loader,
-            apply_noise=True,
+            self.protein_loader_train,
         )
         shuffle = getattr(self.cfg.loader, "shuffle", True)
         return DataLoader(dataset, shuffle=shuffle, **self.loader_args)
@@ -220,15 +221,13 @@ class MasifLigandDataModule(pl.LightningDataModule):
     def val_dataloader(self) -> DataLoader:
         dataset = MasifLigandDataset(
             self.pocket_data["val"],
-            self.protein_loader,
-            apply_noise=False,
+            self.protein_loader_eval,
         )
         return DataLoader(dataset, shuffle=False, **self.loader_args)
 
     def test_dataloader(self) -> DataLoader:
         dataset = MasifLigandDataset(
             self.pocket_data["test"],
-            self.protein_loader,
-            apply_noise=False,
+            self.protein_loader_eval,
         )
         return DataLoader(dataset, shuffle=False, **self.loader_args)
