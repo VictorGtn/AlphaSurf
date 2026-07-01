@@ -26,7 +26,7 @@ from alphasurf.protein.graphs import parse_pdb_path
 from alphasurf.protein.protein import Protein
 from alphasurf.protein.residue_graph import ResidueGraphBuilder
 from alphasurf.protein.surfaces import SurfaceObject
-from alphasurf.protein.transforms import NoiseAugmentor, PatchExtractor, add_mesh_noise
+from alphasurf.protein.transforms import NoiseAugmentor, PatchExtractor
 from torch_geometric.data import Data
 
 logger = logging.getLogger(__name__)
@@ -120,18 +120,17 @@ class ProteinLoader:
         self,
         name: str,
         pdb_path: Optional[str] = None,
-        apply_noise: bool = False,
     ) -> Optional[Protein]:
         """
         Load or generate a Protein.
 
         Transforms are applied DURING generation, ensuring features reflect
-        the transformed geometry.
+        the transformed geometry. Noise is applied iff self.noise_augmentor is
+        not None and enabled.
 
         Args:
             name: Protein identifier (e.g., "1ABC_A" or "1ABC_A_patch_0_HEM")
             pdb_path: explicit path to PDB file (overrides pdb_dir/name.pdb)
-            apply_noise: If True, apply noise augmentation during generation
 
         Returns:
             Protein object with surface and graph, or None on failure
@@ -139,9 +138,7 @@ class ProteinLoader:
         if self.mode == "disk":
             protein = self._load_from_disk(name)
         else:
-            protein = self._generate_on_fly(
-                name, pdb_path=pdb_path, apply_noise=apply_noise
-            )
+            protein = self._generate_on_fly(name, pdb_path=pdb_path)
 
         if protein is None:
             return None
@@ -150,6 +147,23 @@ class ProteinLoader:
             return None
 
         return protein
+
+    def load_clean(
+        self,
+        name: str,
+        pdb_path: Optional[str] = None,
+    ) -> Optional[Protein]:
+        """Load a Protein with noise augmentation temporarily disabled.
+
+        Used by cache pre-population paths that must always load clean geometry
+        regardless of the loader's configured augmentor.
+        """
+        saved = self.noise_augmentor
+        self.noise_augmentor = None
+        try:
+            return self.load(name, pdb_path=pdb_path)
+        finally:
+            self.noise_augmentor = saved
 
     def _load_from_disk(self, name: str) -> Optional[Protein]:
         """Load precomputed surface and graph from disk."""
@@ -174,7 +188,6 @@ class ProteinLoader:
 
         if self.graph_dir is not None:
             graph_path = os.path.join(self.graph_dir, f"{protein_name}.pt")
-            print(f"[DISK] graph: {graph_path} exists={os.path.exists(graph_path)}")
             if os.path.exists(graph_path):
                 try:
                     graph = torch.load(graph_path, weights_only=False)
@@ -251,7 +264,6 @@ class ProteinLoader:
         self,
         name: str,
         pdb_path: Optional[str] = None,
-        apply_noise: bool = False,
     ) -> Optional[Protein]:
         """Generate surface and graph on-the-fly from PDB."""
         if "_patch_" in name:
@@ -272,31 +284,16 @@ class ProteinLoader:
         if parsed_arrays is None:
             return None
 
-        # Determine noise mode
-        use_noise = (
-            apply_noise
-            and self.noise_augmentor is not None
-            and self.noise_augmentor.enabled
-        )
-        noise_mode = self.noise_augmentor.mode if use_noise else "none"
-
-        # Prepare arrays for surface vs graph
-        # Joint: same noised arrays for both
-        # Independent: graph gets noised arrays, surface gets original (mesh noise later)
-        parsed_for_surface = parsed_arrays
-        parsed_for_graph = parsed_arrays
-
-        if noise_mode == "joint":
-            noised = self.noise_augmentor.noise_arrays(parsed_arrays)
-            parsed_for_surface = noised
-            parsed_for_graph = noised
-        elif noise_mode == "independent":
-            parsed_for_graph = self.noise_augmentor.noise_arrays(parsed_arrays)
-
-        # Sample random alpha value if alpha noise mode
-        alpha_override = None
-        if noise_mode == "alpha":
-            alpha_override = self.noise_augmentor.sample_alpha_value()
+        if self.noise_augmentor is not None and self.noise_augmentor.enabled:
+            (
+                parsed_for_surface,
+                parsed_for_graph,
+                alpha_override,
+            ) = self.noise_augmentor.prepare_arrays(parsed_arrays)
+        else:
+            parsed_for_surface = parsed_arrays
+            parsed_for_graph = parsed_arrays
+            alpha_override = None
 
         # Generate surface
         surface = self._generate_surface(
@@ -304,7 +301,6 @@ class ProteinLoader:
             protein_name=protein_name,
             pocket_name=pocket_name,
             parsed_arrays=parsed_for_surface,
-            apply_mesh_noise=(noise_mode == "independent"),
             alpha_override=alpha_override,
         )
 
@@ -318,14 +314,13 @@ class ProteinLoader:
         if surface is None and graph is None:
             return None
 
-        # Store atom-level data for interface computation
+        # Store atom-level data for interface computation.
+        # Use parsed_for_graph so metadata reflects the same atoms the graph saw
+        # (noised under joint/independent modes, clean otherwise).
         metadata = {}
-        if parsed_arrays is not None:
-            # Extract atom positions and residue mapping
-            # arrays format: amino_types, atom_chain_id, atom_amino_id, atom_names,
-            #                atom_types, atom_pos, atom_charge, atom_radius, res_sse, amino_ids, atom_ids
-            atom_amino_id = parsed_arrays[2]  # residue index for each atom
-            atom_pos = parsed_arrays[5]  # atom positions
+        if parsed_for_graph is not None:
+            atom_amino_id = parsed_for_graph[2]
+            atom_pos = parsed_for_graph[5]
             metadata["atom_pos"] = torch.from_numpy(atom_pos).float()
             metadata["atom_res_map"] = torch.from_numpy(atom_amino_id).long()
 
@@ -364,7 +359,6 @@ class ProteinLoader:
         protein_name: str,
         pocket_name: Optional[str],
         parsed_arrays: Tuple,
-        apply_mesh_noise: bool = False,
         alpha_override: Optional[float] = None,
     ) -> Optional[SurfaceObject]:
         """Generate surface with optional patch extraction and mesh noise."""
@@ -463,14 +457,10 @@ class ProteinLoader:
                     else:
                         patch_verts, patch_faces = verts, faces
 
-                # Apply mesh noise BEFORE computing operators (independent mode)
-                if apply_mesh_noise and self.noise_augmentor is not None:
-                    # Note: patch_verts/faces are just verts/faces if no extraction happened
-                    patch_verts = add_mesh_noise(
-                        patch_verts,
-                        patch_faces,
-                        sigma=self.noise_augmentor.sigma_mesh,
-                        clip_sigma=self.noise_augmentor.clip_sigma,
+                # Apply mesh noise BEFORE computing operators (no-ops unless augmentor is independent)
+                if self.noise_augmentor is not None:
+                    patch_verts = self.noise_augmentor.apply_mesh_noise(
+                        patch_verts, patch_faces
                     )
 
                 surface = SurfaceObject.from_verts_faces(
@@ -519,14 +509,9 @@ class ProteinLoader:
                 else:
                     raise ValueError(f"Unknown surface method: {surface_method}")
 
-                # Apply mesh noise BEFORE computing operators
-                if apply_mesh_noise and self.noise_augmentor is not None:
-                    verts = add_mesh_noise(
-                        verts,
-                        faces,
-                        sigma=self.noise_augmentor.sigma_mesh,
-                        clip_sigma=self.noise_augmentor.clip_sigma,
-                    )
+                # Apply mesh noise BEFORE computing operators (no-ops unless augmentor is independent)
+                if self.noise_augmentor is not None:
+                    verts = self.noise_augmentor.apply_mesh_noise(verts, faces)
 
                 surface = SurfaceObject.from_verts_faces(
                     verts=verts,
@@ -545,18 +530,21 @@ class ProteinLoader:
             # Compute vertex-to-residue mapping + atom types
             if parsed_arrays is not None and surface is not None:
                 atom_pos_np = parsed_arrays[5]
-                atom_res_map_np = parsed_arrays[2]
                 atom_types_np = parsed_arrays[4]
                 if atom_pos_np is not None and len(atom_pos_np) > 0:
                     verts_t = torch.from_numpy(surface.verts).float()
                     atom_pos_t = torch.from_numpy(atom_pos_np).float()
                     dists = torch.cdist(verts_t, atom_pos_t)
-                    vert_atom_ids = dists.argmin(dim=1)
-                    atom_res_map = torch.from_numpy(atom_res_map_np).long()
-                    surface.vert_res_ids = atom_res_map[vert_atom_ids]
-                    surface.vert_atom_types = torch.from_numpy(
-                        atom_types_np[vert_atom_ids.numpy()]
+                    min_dists, closest_atoms = dists.min(dim=1)
+                    exact_match = min_dists < 1e-6
+                    vert_atom_ids = torch.full((len(verts_t),), -1, dtype=torch.long)
+                    vert_atom_ids[exact_match] = closest_atoms[exact_match]
+                    surface.vert_atom_ids = vert_atom_ids
+                    vert_atom_types = torch.full((len(verts_t),), -1, dtype=torch.long)
+                    vert_atom_types[exact_match] = torch.from_numpy(
+                        atom_types_np[closest_atoms[exact_match].numpy()]
                     ).long()
+                    surface.vert_atom_types = vert_atom_types
 
             surface.from_numpy()
 

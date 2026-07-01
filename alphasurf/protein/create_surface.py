@@ -480,7 +480,7 @@ def mesh_simplification(
     out_ply,
     face_reduction_rate=1.0,
     min_vert_number=140,
-    max_vert_number=50000,
+    max_vert_number=100000,
     use_pymesh=True,
     surface_method="msms",
     obj_name=None,
@@ -505,21 +505,15 @@ def mesh_simplification(
     # Clean with open3d
     if surface_method != "alpha_complex":
         mesh.remove_non_manifold_edges()
-    # save_debug_ply(mesh, base_name, "01_after_remove_non_manifold_edges")
     if surface_method != "alpha_complex":
         mesh.remove_duplicated_vertices()
-    # save_debug_ply(mesh, base_name, "02_after_remove_duplicated_vertices")
     mesh.remove_degenerate_triangles()
-    # save_debug_ply(mesh, base_name, "03_after_remove_degenerate_triangles")
     if surface_method != "alpha_complex":
         mesh.remove_duplicated_triangles()
-    # save_debug_ply(mesh, base_name, "04_after_remove_duplicated_triangles")
 
     mesh.remove_unreferenced_vertices()
-    # save_debug_ply(mesh, base_name, "05_after_remove_unreferenced_vertices")
     if face_reduction_rate < 1.0:
         mesh = mesh.simplify_quadric_decimation(target_number_of_triangles=faces_num)
-        # save_debug_ply(mesh, base_name, "06_after_msms_simplify_quadric_decimation")
 
     verts_out = np.asarray(mesh.vertices)
     faces_out = np.asarray(mesh.triangles)
@@ -529,7 +523,9 @@ def mesh_simplification(
     drop_ratio_vertex = 0.0
 
     if not use_pymesh:
-        if surface_method == "alpha_complex":
+        use_vertex_clustering = surface_method != "msms"
+
+        if use_vertex_clustering:
             vc_clusters, vc_cluster_n = cluster_triangles_by_vertex_sharing(
                 np.asarray(mesh.triangles)
             )
@@ -540,11 +536,12 @@ def mesh_simplification(
             cutoff = int(0.01 * largest_cluster_size)
             assert (
                 (vc_cluster_n >= cutoff).sum() == 1
-            ), f"Vertex cluster n triangles: {vc_cluster_n}, cutoff: {cutoff}"
+            ), f"Multi-cluster ({surface_method}): {vc_cluster_n} (cutoff={cutoff})"
 
             triangles_to_remove = vc_cluster_n[vc_clusters] < cutoff
             dropped_faces = np.sum(triangles_to_remove)
-            drop_ratio_vertex = dropped_faces / len(vc_clusters)
+            total_faces = len(vc_clusters)
+            drop_ratio = dropped_faces / total_faces if total_faces > 0 else 0.0
             mesh.remove_triangles_by_mask(triangles_to_remove)
             mesh.remove_unreferenced_vertices()
             mesh.remove_degenerate_triangles()
@@ -559,26 +556,15 @@ def mesh_simplification(
             cutoff = int(0.01 * largest_cluster_size)
             assert (
                 (cluster_n_triangles >= cutoff).sum() == 1
-            ), f"Cluster n triangles: {cluster_n_triangles}, cutoff: {cutoff}"
+            ), f"Multi-cluster ({surface_method}): {cluster_n_triangles} (cutoff={cutoff})"
 
             triangles_to_remove = cluster_n_triangles[triangle_clusters] < cutoff
             dropped_faces = np.sum(triangles_to_remove)
+            total_faces = len(triangle_clusters)
+            drop_ratio = dropped_faces / total_faces if total_faces > 0 else 0.0
             mesh.remove_triangles_by_mask(triangles_to_remove)
             mesh.remove_unreferenced_vertices()
             mesh.remove_degenerate_triangles()
-
-        total_faces = (
-            len(vc_clusters)
-            if surface_method == "alpha_complex"
-            else len(triangle_clusters)
-        )
-        drop_ratio = (
-            drop_ratio_vertex
-            if surface_method == "alpha_complex"
-            else dropped_faces / total_faces
-            if total_faces > 0
-            else 0.0
-        )
 
         if drop_ratio > 0.1:
             msg = f"WARNING: Dropped {drop_ratio:.1%} of faces in component filtering"
@@ -666,8 +652,8 @@ def mesh_simplification(
     verts_out = verts_out.astype(np.float32)
     faces_out = faces_out.astype(np.int32)
     # remove duplicate
-    _preprocess = surface_method != "alpha_complex"
-    mesh = trimesh.Trimesh(vertices=verts_out, faces=faces_out, preprocess=_preprocess)
+    _process = surface_method != "alpha_complex"
+    mesh = trimesh.Trimesh(vertices=verts_out, faces=faces_out, process=_process)
     # save_debug_ply(mesh, base_name, "12_after_trimesh_preprocess")
     verts_out = np.array(mesh.vertices).astype(np.float32)
     faces_out = np.array(mesh.faces).astype(np.int32)
@@ -703,10 +689,24 @@ def pdb_to_edtsurf(pdb_path, grid_scale=0.5):
             timeout=300,
         )
         if not os.path.exists(ply_file):
-            raise RuntimeError(
-                f"EDTSurf produced no output (exit={result.returncode}): "
-                f"stdout={result.stdout[-200:]}, stderr={result.stderr[-200:]}"
-            )
+            rc = result.returncode
+            if rc < 0:
+                import signal as _sig_mod
+
+                try:
+                    sname = _sig_mod.Signals(-rc).name
+                    exit_desc = f"crashed with {sname} (rc={rc})"
+                except (ValueError, RuntimeError):
+                    exit_desc = f"crashed with signal {-rc} (rc={rc})"
+            elif rc > 0:
+                exit_desc = f"exited with error (rc={rc})"
+            else:
+                exit_desc = "exited cleanly but produced no output"
+            stderr_tail = (result.stderr or "").strip().splitlines()
+            stderr_last = stderr_tail[-1][:140] if stderr_tail else ""
+            if stderr_last:
+                exit_desc += f": {stderr_last}"
+            raise RuntimeError(f"EDTSurf {exit_desc}")
 
         mesh = trimesh.load(ply_file, process=False)
         verts = np.array(mesh.vertices, dtype=np.float32)
@@ -819,10 +819,24 @@ def pdb_to_nanoshaper(
         )
 
         if not os.path.exists(off_file):
-            raise RuntimeError(
-                f"NanoShaper produced no output (exit={result.returncode}): "
-                f"stdout={result.stdout[-300:]}, stderr={result.stderr[-300:]}"
-            )
+            rc = result.returncode
+            if rc < 0:
+                import signal as _sig_mod
+
+                try:
+                    sname = _sig_mod.Signals(-rc).name
+                    exit_desc = f"crashed with {sname} (rc={rc})"
+                except (ValueError, RuntimeError):
+                    exit_desc = f"crashed with signal {-rc} (rc={rc})"
+            elif rc > 0:
+                exit_desc = f"exited with error (rc={rc})"
+            else:
+                exit_desc = "exited cleanly but produced no output"
+            stderr_tail = (result.stderr or "").strip().splitlines()
+            stderr_last = stderr_tail[-1][:140] if stderr_tail else ""
+            if stderr_last:
+                exit_desc += f": {stderr_last}"
+            raise RuntimeError(f"NanoShaper {exit_desc}")
 
         verts, faces = _parse_off(off_file)
         return verts, faces
@@ -835,7 +849,7 @@ def get_surface(
     out_ply_path=None,
     face_reduction_rate=1.0,
     min_vert_number=140,
-    max_vert_number=50000,
+    max_vert_number=100000,
     use_pymesh=True,
     surface_method="msms",
     sbl_exe_path=None,
@@ -902,15 +916,14 @@ def add_normal_noise(verts, faces, sigma=0.3, normals=None, clip_sigma=3.0, seed
     Returns:
         verts_noisy: (N, 3) array of displaced vertex positions
     """
-    if seed is not None:
-        np.random.seed(seed)
+    rng = np.random.default_rng(seed)
 
     if normals is None:
         from alphasurf.protein.create_operators import vertex_normals
 
         normals = vertex_normals(verts, faces)
 
-    noise = np.random.randn(len(verts), 1) * sigma
+    noise = rng.standard_normal((len(verts), 1)) * sigma
 
     if clip_sigma is not None:
         noise = np.clip(noise, -clip_sigma * sigma, clip_sigma * sigma)
@@ -918,33 +931,6 @@ def add_normal_noise(verts, faces, sigma=0.3, normals=None, clip_sigma=3.0, seed
     verts_noisy = verts + normals * noise
 
     return verts_noisy.astype(np.float32)
-
-
-def add_surface_noise(
-    verts,
-    faces,
-    sigma=0.3,
-    normals=None,
-    clip_sigma=3.0,
-    seed=None,
-):
-    """
-    Add noise to surface vertices along their normals.
-
-    Args:
-        verts: (N, 3) array of vertex positions
-        faces: (M, 3) array of face indices
-        sigma: Standard deviation of displacement in Angstroms
-        normals: (N, 3) array of pre-computed vertex normals (auto-computed if None)
-        clip_sigma: Clip noise to ±clip_sigma*sigma to prevent extreme outliers
-        seed: Random seed for reproducibility
-
-    Returns:
-        verts_noisy: (N, 3) array of displaced vertex positions
-    """
-    return add_normal_noise(
-        verts, faces, sigma=sigma, normals=normals, clip_sigma=clip_sigma, seed=seed
-    )
 
 
 if __name__ == "__main__":

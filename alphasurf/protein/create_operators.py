@@ -175,8 +175,6 @@ def vertex_normals(verts, faces, permissive=False, use_igl=False, name=""):
 
         return igl.per_vertex_normals(verts, faces)
 
-    V, F = verts.shape[0], faces.shape[0]
-
     # --- Compute normals ---
     normals = mesh_vertex_normals(verts, faces)
 
@@ -209,7 +207,11 @@ def vertex_normals(verts, faces, permissive=False, use_igl=False, name=""):
             raise ValueError(f"Unfixable normals for {len(uidxs)} vertices{name}")
         if fix_mask.any():
             flat_verts = faces.ravel()
-            flat_normals = np.repeat(face_n, 3, axis=0)
+            flat_normals = np.repeat(
+                face_n / np.linalg.norm(face_n, axis=-1, keepdims=True).clip(min=1e-12),
+                3,
+                axis=0,
+            )
             mask = fix_mask[flat_verts]
             normals[flat_verts[mask]] = flat_normals[mask]
             bad_normals_mask = np.isnan(normals).any(axis=1, keepdims=True)
@@ -557,10 +559,10 @@ def build_poisson_solver(L, device=None):
         except Exception:
             eps *= 10.0
             sparse_eps_diag = torch.sparse.spdiags(
-                eps * torch.ones(nV, device=L.device),
-                torch.zeros(1, dtype=torch.long, device=L.device),
+                eps * torch.ones(nV),
+                torch.zeros(1, dtype=torch.long),
                 (nV, nV),
-            )
+            ).to(L.device)
             L = (L + sparse_eps_diag).coalesce()
     raise RuntimeError("Failed to create Cholesky solver")
 
@@ -569,15 +571,15 @@ def load_operators(npz_file):
     """
     We remove the hashing util and add a filename for the npz instead.
     """
-    if not isinstance(npzfile, np.lib.npyio.NpzFile):
-        npzfile = np.load(npzfile, allow_pickle=True)
-    mass = diff_utils.read_sp_mat(npzfile, "mass")
-    L = diff_utils.read_sp_mat(npzfile, "L")
-    evals = npzfile["evals"]
-    evecs = npzfile["evecs"]
-    vnormals = npzfile["vnormals"] if "vnormals" in npzfile else None
-    gradX = diff_utils.read_sp_mat(npzfile, "gradX")
-    gradY = diff_utils.read_sp_mat(npzfile, "gradY")
+    if not isinstance(npz_file, np.lib.npyio.NpzFile):
+        npz_file = np.load(npz_file, allow_pickle=True)
+    mass = diff_utils.read_sp_mat(npz_file, "mass")
+    L = diff_utils.read_sp_mat(npz_file, "L")
+    evals = npz_file["evals"]
+    evecs = npz_file["evecs"]
+    vnormals = npz_file["vnormals"] if "vnormals" in npz_file else None
+    gradX = diff_utils.read_sp_mat(npz_file, "gradX")
+    gradY = diff_utils.read_sp_mat(npz_file, "gradY")
     return mass, L, evals, evecs, vnormals, gradX, gradY
 
 

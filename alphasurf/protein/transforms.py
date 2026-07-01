@@ -9,7 +9,7 @@ Transform Order (critical):
 2. NoiseAugmentor.noise_arrays() -> noised atom positions (for joint/independent modes)
 3. Generate mesh from (noised) atoms
 4. PatchExtractor.extract_patch() -> subset mesh to binding site
-5. add_mesh_noise() -> displace vertices along normals (independent mode only)
+5. add_normal_noise() -> displace vertices along normals (independent mode only)
 6. Compute operators (mass, L, evals, evecs) on final mesh
 7. Compute features on final geometry
 """
@@ -114,11 +114,9 @@ class NoiseAugmentor:
 
     def prepare_arrays(
         self, parsed_arrays: tuple
-    ) -> Tuple[tuple, tuple, Optional[float], bool]:
+    ) -> Tuple[tuple, tuple, Optional[float]]:
         """
         Prepare arrays for surface and graph generation based on noise mode.
-
-        Encapsulates the logic for joint vs independent noise application.
 
         Args:
             parsed_arrays: The original parsed PDB arrays (clean)
@@ -128,20 +126,43 @@ class NoiseAugmentor:
             - parsed_for_surface: Arrays to use for surface generation
             - parsed_for_graph: Arrays to use for graph generation
             - alpha_override: Optional alpha value (for 'alpha' mode)
-            - apply_mesh_noise: Whether to apply mesh noise later (for 'independent' mode)
         """
         if self.mode == "joint":
             noised = self.noise_arrays(parsed_arrays)
-            return noised, noised, None, False
+            return noised, noised, None
         elif self.mode == "independent":
-            # Graph gets atom noise, surface gets clean atoms (will apply mesh noise later)
             noised_graph = self.noise_arrays(parsed_arrays)
-            return parsed_arrays, noised_graph, None, True
+            return parsed_arrays, noised_graph, None
         elif self.mode == "alpha":
-            return parsed_arrays, parsed_arrays, self.sample_alpha_value(), False
+            return parsed_arrays, parsed_arrays, self.sample_alpha_value()
         else:
-            # None or unknown
-            return parsed_arrays, parsed_arrays, None, False
+            return parsed_arrays, parsed_arrays, None
+
+    def apply_mesh_noise(
+        self,
+        verts: np.ndarray,
+        faces: np.ndarray,
+        normals: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
+        """
+        Apply normal-directed noise to mesh vertices. No-ops unless mode == 'independent'.
+
+        In 'independent' mode, the surface is generated from clean atoms and mesh
+        vertices are displaced along their normals here. In all other modes the
+        surface already reflects the noised geometry (joint) or no noise is to be
+        applied (none/alpha), so verts are returned unchanged.
+        """
+        if self.mode != "independent":
+            return verts
+        from alphasurf.protein.create_surface import add_normal_noise
+
+        return add_normal_noise(
+            verts,
+            faces,
+            sigma=self.sigma_mesh,
+            normals=normals,
+            clip_sigma=self.clip_sigma,
+        )
 
 
 class PatchExtractor:
@@ -341,36 +362,3 @@ class PatchExtractor:
 
         remapped_faces = old_to_new[kept_faces]
         return verts[kept_indices].astype(np.float32), remapped_faces.astype(np.int64)
-
-
-def add_mesh_noise(
-    verts: np.ndarray,
-    faces: np.ndarray,
-    sigma: float = 0.3,
-    clip_sigma: Optional[float] = 3.0,
-    normals: Optional[np.ndarray] = None,
-) -> np.ndarray:
-    """
-    Add noise to mesh vertices along their normals.
-
-    Args:
-        verts: (N, 3) array of vertex positions
-        faces: (M, 3) array of face indices
-        sigma: Standard deviation of displacement in Angstroms
-        clip_sigma: Clip noise to ±clip_sigma*sigma (None to disable)
-        normals: (N, 3) pre-computed normals (auto-computed if None)
-
-    Returns:
-        (N, 3) array of displaced vertex positions (new array)
-    """
-    import igl
-
-    if normals is None:
-        normals = igl.per_vertex_normals(verts, faces)
-
-    noise = np.random.randn(len(verts), 1) * sigma
-
-    if clip_sigma is not None:
-        noise = np.clip(noise, -clip_sigma * sigma, clip_sigma * sigma)
-
-    return (verts + normals * noise).astype(np.float32)

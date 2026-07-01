@@ -169,47 +169,17 @@ def pdb_to_surf(
     surface_method="msms",
     sbl_exe_path=None,
     alpha_value=0.1,
-    n_augmented_views=1,
-    augmentation_sigma=0.3,
-    augmentation_noise_type="normal",
 ):
     """
-    Wrapper code to go from a PDB to a surface, with optional augmentation.
-
-    Args:
-        pdb_path: Path to PDB file
-        surface_dump: Path to save the surface (.pt file)
-        face_reduction_rate: Mesh simplification rate
-        max_vert_number: Maximum number of vertices
-        use_pymesh: Whether to use PyMesh for cleaning
-        recompute_s: If True, recompute even if file exists
-        surface_method: 'msms' or 'alpha_complex'
-        sbl_exe_path: Path to SBL executable (for alpha_complex)
-        alpha_value: Alpha value (for alpha_complex)
-        n_augmented_views: Number of augmented views to generate.
-                          If > 1, surface_dump should be a base path (without .pt),
-                          and files will be saved as {base}_view_0.pt, {base}_view_1.pt, etc.
-        augmentation_sigma: Noise standard deviation (in Angstroms)
-        augmentation_noise_type: 'normal' or 'isotropic'
+    Wrapper code to go from a PDB to a surface.
 
     Returns:
         1 on success, 0 on failure
     """
-    import numpy as np
-
     try:
         use_pymesh = False if use_pymesh is None else use_pymesh
 
-        # Determine file paths based on augmentation
-        if n_augmented_views > 1:
-            # surface_dump is treated as base path; append _view_X.pt
-            base_path = surface_dump.replace(".pt", "")
-            view_0_path = f"{base_path}_view_0.pt"
-        else:
-            view_0_path = surface_dump
-
-        # Create or load base surface (view 0)
-        if recompute_s or not os.path.exists(view_0_path):
+        if recompute_s or not os.path.exists(surface_dump):
             surface = SurfaceObject.from_pdb_path(
                 pdb_path,
                 face_reduction_rate=face_reduction_rate,
@@ -220,53 +190,7 @@ def pdb_to_surf(
                 alpha_value=alpha_value,
             )
             surface.add_geom_feats()
-            surface.save_torch(view_0_path)
-        else:
-            # Load existing surface for augmentation
-            surface = (
-                torch.load(view_0_path, weights_only=False)
-                if n_augmented_views > 1
-                else None
-            )
-
-        # Generate augmented views (views 1+)
-        if n_augmented_views > 1 and surface is not None:
-            from alphasurf.protein.create_surface import add_surface_noise
-
-            verts_original = (
-                surface.verts.numpy()
-                if torch.is_tensor(surface.verts)
-                else surface.verts
-            )
-            faces = (
-                surface.faces.numpy()
-                if torch.is_tensor(surface.faces)
-                else surface.faces
-            )
-            faces = faces.astype(np.int32)
-
-            for view_idx in range(1, n_augmented_views):
-                view_path = f"{base_path}_view_{view_idx}.pt"
-
-                if recompute_s or not os.path.exists(view_path):
-                    # Apply noise with deterministic seed
-                    verts_noisy = add_surface_noise(
-                        verts_original,
-                        faces,
-                        noise_type=augmentation_noise_type,
-                        sigma=augmentation_sigma,
-                        seed=view_idx,
-                    )
-
-                    # Create new surface from noisy verts (recomputes all operators)
-                    noisy_surface = SurfaceObject.from_verts_faces(
-                        verts=verts_noisy,
-                        faces=faces,
-                        face_reduction_rate=1.0,  # Already simplified
-                        use_pymesh=False,
-                    )
-                    noisy_surface.add_geom_feats()
-                    noisy_surface.save_torch(view_path)
+            surface.save_torch(surface_dump)
 
         success = 1
     except Exception as e:
@@ -316,8 +240,6 @@ class PreprocessDataset(Dataset):
     Small utility class that handles the boilerplate code of setting up the right repository structure.
     Given a data_dir/ as input, expected to hold a data_dir/pdb/{}.pdb of pdb files, this dataset will loop through
     those files and generate rgraphs/ agraphs/ and surfaces/ directories and files.
-
-    Supports data augmentation by generating multiple noisy views per surface.
     """
 
     def __init__(
@@ -332,9 +254,6 @@ class PreprocessDataset(Dataset):
         surface_method="msms",
         sbl_exe_path=None,
         alpha_value=0.1,
-        n_augmented_views=1,
-        augmentation_sigma=0.3,
-        augmentation_noise_type="normal",
         _skip_surf_dir_creation=False,
     ):
         self.pdb_dir = os.path.join(data_dir, "pdb")
@@ -347,15 +266,8 @@ class PreprocessDataset(Dataset):
         self.sbl_exe_path = sbl_exe_path
         self.alpha_value = alpha_value
 
-        # Augmentation params
-        self.n_augmented_views = n_augmented_views
-        self.augmentation_sigma = augmentation_sigma
-        self.augmentation_noise_type = augmentation_noise_type
-
-        # Build surface directory name (include augmentation info if applicable)
+        # Build surface directory name
         surface_dirname = f"surfaces_{surface_method}_{face_reduction_rate}{f'_{use_pymesh}' if use_pymesh is not None else ''}"
-        if n_augmented_views > 1:
-            surface_dirname += f"_aug{n_augmented_views}_{augmentation_noise_type}_sigma{augmentation_sigma}"
         self.out_surf_dir = os.path.join(data_dir, surface_dirname)
         if not _skip_surf_dir_creation:
             os.makedirs(self.out_surf_dir, exist_ok=True)
@@ -393,9 +305,6 @@ class PreprocessDataset(Dataset):
             surface_method=self.surface_method,
             sbl_exe_path=self.sbl_exe_path,
             alpha_value=self.alpha_value,
-            n_augmented_views=self.n_augmented_views,
-            augmentation_sigma=self.augmentation_sigma,
-            augmentation_noise_type=self.augmentation_noise_type,
         )
 
     def path_to_graphs(self, pdb_path, agraph_dump, rgraph_dump):
