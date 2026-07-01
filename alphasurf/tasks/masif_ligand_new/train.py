@@ -12,18 +12,20 @@ from pathlib import Path
 os.environ["PYTHONWARNINGS"] = "ignore::UserWarning"
 warnings.filterwarnings("ignore")
 
-import hydra
-import pytorch_lightning as pl
-import torch
-from omegaconf import OmegaConf
-from pytorch_lightning.loggers.tensorboard import TensorBoardLogger
+import hydra  # noqa: E402
+import pytorch_lightning as pl  # noqa: E402
+import torch  # noqa: E402
+from omegaconf import OmegaConf  # noqa: E402
+
+torch.serialization.add_safe_globals([Path])
+from pytorch_lightning.loggers.tensorboard import TensorBoardLogger  # noqa: E402
 
 if __name__ == "__main__":
     sys.path.append(str(Path(__file__).absolute().parents[3]))
 
-from alphasurf.tasks.masif_ligand_new.datamodule import MasifLigandDataModule
-from alphasurf.tasks.masif_ligand_new.pl_model import MasifLigandModule
-from alphasurf.utils.callbacks import CommandLoggerCallback, add_wandb_logger
+from alphasurf.tasks.masif_ligand_new.datamodule import MasifLigandDataModule  # noqa: E402
+from alphasurf.tasks.masif_ligand_new.pl_model import MasifLigandModule  # noqa: E402
+from alphasurf.utils.callbacks import CommandLoggerCallback, add_wandb_logger  # noqa: E402
 
 torch.set_num_threads(1)
 

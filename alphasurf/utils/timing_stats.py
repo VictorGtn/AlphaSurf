@@ -37,7 +37,7 @@ def reset():
     for f in glob.glob(pattern):
         try:
             os.remove(f)
-        except:
+        except OSError:
             pass
 
 
@@ -91,6 +91,7 @@ def print_summary():
 
     # Print priority metrics first
     for name in [
+        "train_fwd_bwd",
         "surface_generation",
         "mesh_processing",
         "compute_operators",
@@ -108,6 +109,7 @@ def print_summary():
     # Print remaining metrics
     for name in sorted(data.keys()):
         if name in [
+            "train_fwd_bwd",
             "surface_generation",
             "mesh_processing",
             "compute_operators",

@@ -36,6 +36,8 @@ def merge_surface_config(base_cfg, override_cfg=None):
             "min_vert_number",
             "use_pymesh",
             "use_whole_surfaces",
+            "nanoshaper_grid_scale",
+            "edtsurf_grid_scale",
         ]:
             if hasattr(override_cfg, key):
                 setattr(merged, key, getattr(override_cfg, key))

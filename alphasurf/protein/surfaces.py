@@ -241,7 +241,7 @@ class SurfaceObject(Data, FeaturesHolder):
         verts,
         faces,
         min_vert_number=140,
-        max_vert_number=50000,
+        max_vert_number=100000,
         face_reduction_rate=1.0,
         use_fem_decomp=False,
         use_pymesh=False,
