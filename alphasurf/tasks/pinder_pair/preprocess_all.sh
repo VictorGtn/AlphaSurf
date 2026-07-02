@@ -5,8 +5,8 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=22
 #SBATCH --time=24:00:00
-#SBATCH --output=%x_%j.log
-#SBATCH --error=%x_%j.err
+#SBATCH --output=log/pinder_preprocess/%x_%j.log
+#SBATCH --error=log/pinder_preprocess/%x_%j.err
 #SBATCH --mem=64000
 
 # Load environment

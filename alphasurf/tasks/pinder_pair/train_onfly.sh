@@ -8,8 +8,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --time=20:00:00
 #SBATCH --qos=qos_gpu_h100-t3
-#SBATCH --output=%x_%j.out
-#SBATCH --error=%x_%j.err
+#SBATCH --output=log/pinder_h100/%x_%j.out
+#SBATCH --error=log/pinder_h100/%x_%j.err
 #SBATCH --hint=nomultithread
 
 # 1. Load H100 Environment
@@ -19,7 +19,7 @@ module load anaconda-py3
 
 # 2. Activate Conda
 eval "$(conda shell.bash hook)"
-conda activate /lustre/fsn1/projects/rech/pyg/ust26qt/atomsurf_env
+conda activate $SCRATCH/atomsurf_h100_env
 
 # 3. Exports
 export OMP_NUM_THREADS=1
@@ -30,8 +30,8 @@ export WANDB_MODE=offline
 export WANDB_DIR=$(pwd)/wandb_logs
 mkdir -p $WANDB_DIR
 
-export REPO_ROOT=/lustre/fsn1/projects/rech/pyg/ust26qt/atomsurf/atomsurf
-export PYTHONPATH=$PYTHONPATH:$REPO_ROOT:$(dirname $REPO_ROOT)/cgal_alpha_bindings
+export REPO_ROOT=/lustre/fsn1/projects/rech/pyg/ust26qt/alphasurf
+export PYTHONPATH=$PYTHONPATH:$REPO_ROOT:$REPO_ROOT/cgal_alpha_bindings
 
 # Logic to switch between Disk (MSMS) and OnFly (Alpha)
 if [ "$MODE" == "disk" ]; then
@@ -47,11 +47,11 @@ else
 fi
 
 # Run training
-python $REPO_ROOT/atomsurf/tasks/pinder_pair/train.py \
+python $REPO_ROOT/alphasurf/tasks/pinder_pair/train.py \
     run_name=${RUN_NAME:-exp_h100} \
     use_wandb=true \
-    data_dir=/lustre/fsn1/projects/rech/pyg/ust26qt/atomsurf/atomsurf/data/pinder-pair \
-    hydra.searchpath=[file:///lustre/fsn1/projects/rech/pyg/ust26qt/atomsurf/atomsurf/atomsurf/tasks/shared_conf] \
+    data_dir=$REPO_ROOT/data/pinder-pair \
+    hydra.searchpath=[file://$REPO_ROOT/alphasurf/tasks/shared_conf] \
     $ON_FLY_ARGS \
     encoder=pronet_gvpencoder \
     optimizer.lr=0.0005 \

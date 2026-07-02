@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=msms_fixed
-#SBATCH --output=%x_%j.out
-#SBATCH --error=%x_%j.err
+#SBATCH --output=log/msms_fixed/%x_%j.out
+#SBATCH --error=log/msms_fixed/%x_%j.err
 #SBATCH --time=20:00:00
 #SBATCH --qos=qos_gpu-t3
 #SBATCH --nodes=1

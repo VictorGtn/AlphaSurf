@@ -7,8 +7,8 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:1
 #SBATCH --time=24:00:00
-#SBATCH --output=%x_%j.log
-#SBATCH --error=%x_%j.err
+#SBATCH --output=log/pinder_train/%x_%j.log
+#SBATCH --error=log/pinder_train/%x_%j.err
 #SBATCH --mem=32000
 
 # Load environment

@@ -6,8 +6,9 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=8G
 #SBATCH --time=4:00:00
-#SBATCH --output=/cluster/CBIO/data2/vgertner/atomsurf/log/%x_%j.log
-#SBATCH --error=/cluster/CBIO/data2/vgertner/atomsurf/log/%x_%j.err
+#SBATCH --output=log/time_simp/%x_%j.log
+#SBATCH --error=log/time_simp/%x_%j.err
+
 
 # Activate conda environment
 source /cluster/CBIO/home/vgertner/miniconda3/etc/profile.d/conda.sh

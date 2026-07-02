@@ -1,7 +1,7 @@
 #!/bin/bash -l
 #SBATCH --job-name=mesh_stats
-#SBATCH --output=/cluster/CBIO/data2/vgertner/atomsurf/log/mesh_statistics_%j.log
-#SBATCH --error=/cluster/CBIO/data2/vgertner/atomsurf/log/mesh_statistics_%j.err
+#SBATCH --output=log/mesh_stats/%x_%j.log
+#SBATCH --error=log/mesh_stats/%x_%j.err
 #SBATCH --time=2:00:00        
 #SBATCH --mem=32000              
 #SBATCH -p cbio-cpu       

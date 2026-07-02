@@ -8,8 +8,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --time=20:00:00
 #SBATCH --qos=qos_gpu_h100-t3
-#SBATCH --output=%x_%j.out
-#SBATCH --error=%x_%j.err
+#SBATCH --output=log/pinder_h100/%x_%j.out
+#SBATCH --error=log/pinder_h100/%x_%j.err
 #SBATCH --hint=nomultithread
 
 # 1. Load H100 Environment
@@ -55,7 +55,7 @@ export PYTHONPATH=$PYTHONPATH:$REPO_ROOT:$CGAL_BINDINGS_DIR
 echo "========================================"
 echo "Testing CGAL bindings..."
 echo "========================================"
-python -c "import sys; sys.path.insert(0, '$CGAL_BINDINGS_DIR'); import cgal_alpha; print('[CGAL] Successfully loaded:', cgal_alpha.__file__)"
+python -c "import sys; sys.path.insert(0, '$CGAL_BINDINGS_DIR'); import cgal_alpha_algo2; print('[CGAL] Successfully loaded:', cgal_alpha_algo2.__file__)"
 echo ""
 
 # Logic to switch between Disk (MSMS) and OnFly (Alpha)
@@ -75,11 +75,11 @@ fi
 run_training() {
     MAX_RESTARTS=20
     RESTART_COUNT=0
-    
+
     while [ $RESTART_COUNT -lt $MAX_RESTARTS ]; do
         echo "=== Training attempt $((RESTART_COUNT + 1))/$MAX_RESTARTS ==="
         echo "=== Started at $(date) ==="
-        
+
         # Prepare checkpoint argument (quoted to handle '=' in filenames)
         CKPT_ARG=""
         if [ -n "$CKPT_PATH" ]; then
@@ -99,7 +99,8 @@ run_training() {
             interface_distance_graph=5.0 \
             interface_distance_surface=${INTERFACE_DIST_SURF:-3.8} \
             loader.num_workers=${NUM_WORKERS:-16} \
-            loader.use_dynamic_batching=true \
+            loader.use_dynamic_batching=${DYNAMIC_BATCHING:-true} \
+            loader.batch_size=${BATCH_SIZE:-8} \
             loader.max_atoms_per_batch=${MAX_ATOMS:-40000} \
             loader.persistent_workers=${PERSISTENT_WORKERS:-true} \
             surface_neg_to_pos_ratio=10.0 \
@@ -109,15 +110,15 @@ run_training() {
             --resume
 
         EXIT_CODE=$?
-        
+
         echo "=== Process exited with code $EXIT_CODE at $(date) ==="
-        
+
         # Exit code 0 = success
         if [ $EXIT_CODE -eq 0 ]; then
             echo "Training completed successfully!"
             return 0
         fi
-        
+
         # Negative exit code = killed by signal (e.g., -11 = SIGSEGV)
         # Bash sees 128+signal for killed processes. SIGSEGV=11 -> 139
         if [ $EXIT_CODE -eq 139 ] || [ $EXIT_CODE -lt 0 ] || [ $EXIT_CODE -eq 1 ]; then
@@ -130,7 +131,7 @@ run_training() {
             return $EXIT_CODE
         fi
     done
-    
+
     echo "Failed after $MAX_RESTARTS restarts. Giving up."
     return 1
 }

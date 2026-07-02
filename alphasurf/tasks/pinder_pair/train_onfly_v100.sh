@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=atomsurf_onfly
-#SBATCH --output=/lustre/fsn1/projects/rech/pyg/ust26qt/atomsurf/log/train_onfly_%j.log
-#SBATCH --error=/lustre/fsn1/projects/rech/pyg/ust26qt/atomsurf/log/train_onfly_%j.err
+#SBATCH --output=log/atomsurf_onfly/%x_%j.log
+#SBATCH --error=log/atomsurf_onfly/%x_%j.err
 #SBATCH --time=20:00:00
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
