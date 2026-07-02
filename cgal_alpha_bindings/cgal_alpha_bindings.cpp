@@ -107,7 +107,8 @@ parse_filter(const std::string &filter_str) {
 py::tuple compute_alpha_complex_from_atoms(
     py::array_t<float> positions, py::array_t<float> radii, float alpha,
     float probe_radius = 1.4f, const std::string &filter = "singular+regular",
-    bool return_face_types = false) {
+    bool return_face_types = false, bool return_patch_info = false,
+    bool return_singular_edges = false) {
   auto pos_buf = positions.unchecked<2>();
   auto rad_buf = radii.unchecked<1>();
   if (pos_buf.shape(1) != 3)
@@ -120,7 +121,8 @@ py::tuple compute_alpha_complex_from_atoms(
     std::vector<Weighted_point> wpoints;
     wpoints.reserve(n_atoms);
     for (size_t i = 0; i < n_atoms; i++) {
-      double r = rad_buf(i) + probe_radius;
+      double r =
+          static_cast<double>(rad_buf(i)) + static_cast<double>(probe_radius);
       wpoints.emplace_back(Point_3(pos_buf(i, 0), pos_buf(i, 1), pos_buf(i, 2)),
                            r * r);
     }
@@ -161,7 +163,8 @@ py::tuple compute_alpha_complex_from_atoms(
     auto uf_union = [&](int a, int b) {
       a = uf_find(a);
       b = uf_find(b);
-      if (a != b) uf[a] = b;
+      if (a != b)
+        uf[a] = b;
     };
 
     if (inf_id != -1) {
@@ -172,7 +175,8 @@ py::tuple compute_alpha_complex_from_atoms(
       }
     }
 
-    for (auto fit = A.finite_facets_begin(); fit != A.finite_facets_end(); ++fit) {
+    for (auto fit = A.finite_facets_begin(); fit != A.finite_facets_end();
+         ++fit) {
       if (A.classify(*fit) == Fixed_alpha_shape::EXTERIOR) {
         Cell_handle c1 = fit->first;
         Cell_handle c2 = c1->neighbor(fit->second);
@@ -197,7 +201,8 @@ py::tuple compute_alpha_complex_from_atoms(
 
     auto is_ext = [&](Cell_handle c) -> bool {
       auto it = cell_to_id.find(c);
-      if (it == cell_to_id.end()) return false;
+      if (it == cell_to_id.end())
+        return false;
       return ext_from_infinite[it->second];
     };
 
@@ -234,11 +239,14 @@ py::tuple compute_alpha_complex_from_atoms(
     }
 
     std::unordered_set<Vertex_handle, PtrHash> M;
+    int total_patches = 0;
     for (const auto &kv : ball_to_patches) {
+      total_patches += static_cast<int>(kv.second.size());
       if (kv.second.size() > 1) {
         M.insert(kv.first);
       }
     }
+    int n_multi_patch = static_cast<int>(M.size());
 
     // Étape 2 : Duplication des vertex
     std::vector<Vertex_handle> tilde_V;
@@ -295,9 +303,8 @@ py::tuple compute_alpha_complex_from_atoms(
     int n_tilde_V = static_cast<int>(tilde_V.size());
 
     auto add_triangle = [&](int v1, int v2, int v3, uint8_t ftype) {
-      if (v1 < 0 || v1 >= n_tilde_V ||
-          v2 < 0 || v2 >= n_tilde_V ||
-          v3 < 0 || v3 >= n_tilde_V)
+      if (v1 < 0 || v1 >= n_tilde_V || v2 < 0 || v2 >= n_tilde_V || v3 < 0 ||
+          v3 >= n_tilde_V)
         return;
 
       Tri t;
@@ -425,6 +432,100 @@ py::tuple compute_alpha_complex_from_atoms(
       }
     }
 
+    // Count singular edges, classified by endpoint isolation.
+    // Type A: one endpoint has no incident alpha-shape edges or facets
+    //         (isolated vertex — its star in the alpha shape is empty).
+    // Type B: both endpoints have other connections in the alpha shape.
+    int singular_edge_count = 0;
+    int singular_edge_type_a = 0;
+    int singular_edge_type_b = 0;
+    {
+      // Count non-EXTERIOR incident edges per vertex.  For a singular edge
+      // (u,v), if an endpoint has count == 1 then its only alpha-shape
+      // connection is this singular edge — its star is "empty" beyond it.
+      std::unordered_map<Vertex_handle, int, PtrHash> alpha_edge_count;
+      for (auto vit = A.finite_vertices_begin(); vit != A.finite_vertices_end();
+           ++vit) {
+        std::vector<Fixed_alpha_shape::Edge> inc_edges;
+        A.finite_incident_edges(vit, std::back_inserter(inc_edges));
+        int cnt = 0;
+        for (const auto &e : inc_edges)
+          if (A.classify(e) != Fixed_alpha_shape::EXTERIOR)
+            cnt++;
+        alpha_edge_count[vit] = cnt;
+      }
+
+      for (auto eit = A.finite_edges_begin(); eit != A.finite_edges_end();
+           ++eit) {
+        if (A.classify(*eit) != Fixed_alpha_shape::SINGULAR)
+          continue;
+        singular_edge_count++;
+        Vertex_handle eu = eit->first->vertex(eit->second);
+        Vertex_handle ev = eit->first->vertex(eit->third);
+        if (alpha_edge_count[eu] <= 1 || alpha_edge_count[ev] <= 1)
+          singular_edge_type_a++;
+        else
+          singular_edge_type_b++;
+      }
+    }
+
+    // Connected component analysis: check if singular edges bridge components
+    // of the output surface.  Build UF on alpha-shape vertex handles from
+    // face adjacency, then count singular edges whose endpoints sit in
+    // different components.
+    int n_components = 0;
+    int singular_bridge_count = 0;
+    {
+      std::unordered_map<Vertex_handle, int, PtrHash> vh_to_ufid;
+      for (const auto &tri : tilde_F) {
+        for (int k = 0; k < 3; k++) {
+          Vertex_handle vh = tilde_V[tri[k]];
+          if (!vh_to_ufid.count(vh))
+            vh_to_ufid[vh] = static_cast<int>(vh_to_ufid.size());
+        }
+      }
+
+      std::vector<int> cc_uf(vh_to_ufid.size());
+      std::iota(cc_uf.begin(), cc_uf.end(), 0);
+      auto cc_find = [&](int x) -> int {
+        while (cc_uf[x] != x) {
+          cc_uf[x] = cc_uf[cc_uf[x]];
+          x = cc_uf[x];
+        }
+        return x;
+      };
+      auto cc_union = [&](int a, int b) {
+        a = cc_find(a);
+        b = cc_find(b);
+        if (a != b)
+          cc_uf[a] = b;
+      };
+
+      for (const auto &tri : tilde_F)
+        for (int k = 0; k < 3; k++)
+          cc_union(vh_to_ufid[tilde_V[tri[k]]],
+                   vh_to_ufid[tilde_V[tri[(k + 1) % 3]]]);
+
+      std::unordered_set<int> roots;
+      for (const auto &kv : vh_to_ufid)
+        roots.insert(cc_find(kv.second));
+      n_components = static_cast<int>(roots.size());
+
+      for (auto eit = A.finite_edges_begin(); eit != A.finite_edges_end();
+           ++eit) {
+        if (A.classify(*eit) != Fixed_alpha_shape::SINGULAR)
+          continue;
+        Vertex_handle eu = eit->first->vertex(eit->second);
+        Vertex_handle ev = eit->first->vertex(eit->third);
+        auto it_u = vh_to_ufid.find(eu);
+        auto it_v = vh_to_ufid.find(ev);
+        if (it_u == vh_to_ufid.end() || it_v == vh_to_ufid.end())
+          continue;
+        if (cc_find(it_u->second) != cc_find(it_v->second))
+          singular_bridge_count++;
+      }
+    }
+
     // Clean up orphan vertices by only outputting those referenced by faces
     std::vector<int> old_to_new(tilde_V.size(), -1);
     std::vector<Vertex_handle> final_V;
@@ -460,13 +561,52 @@ py::tuple compute_alpha_complex_from_atoms(
       fb(i, 2) = old_to_new[tilde_F[i][2]];
     }
 
+    if (return_singular_edges) {
+      if (return_face_types && return_patch_info) {
+        py::array_t<uint8_t> tout({nf});
+        auto tb = tout.mutable_unchecked<1>();
+        for (size_t i = 0; i < nf; i++)
+          tb(i) = tilde_face_types[i];
+        return py::make_tuple(vout, fout, tout, n_multi_patch, total_patches,
+                              singular_edge_count, singular_edge_type_a,
+                              singular_edge_type_b, singular_bridge_count,
+                              n_components);
+      }
+      if (return_face_types) {
+        py::array_t<uint8_t> tout({nf});
+        auto tb = tout.mutable_unchecked<1>();
+        for (size_t i = 0; i < nf; i++)
+          tb(i) = tilde_face_types[i];
+        return py::make_tuple(vout, fout, tout, singular_edge_count,
+                              singular_edge_type_a, singular_edge_type_b,
+                              singular_bridge_count, n_components);
+      }
+      if (return_patch_info) {
+        return py::make_tuple(vout, fout, n_multi_patch, total_patches,
+                              singular_edge_count, singular_edge_type_a,
+                              singular_edge_type_b, singular_bridge_count,
+                              n_components);
+      }
+      return py::make_tuple(vout, fout, singular_edge_count,
+                            singular_edge_type_a, singular_edge_type_b,
+                            singular_bridge_count, n_components);
+    }
+    if (return_face_types && return_patch_info) {
+      py::array_t<uint8_t> tout({nf});
+      auto tb = tout.mutable_unchecked<1>();
+      for (size_t i = 0; i < nf; i++)
+        tb(i) = tilde_face_types[i];
+      return py::make_tuple(vout, fout, tout, n_multi_patch, total_patches);
+    }
     if (return_face_types) {
       py::array_t<uint8_t> tout({nf});
       auto tb = tout.mutable_unchecked<1>();
-      for (size_t i = 0; i < nf; i++) {
+      for (size_t i = 0; i < nf; i++)
         tb(i) = tilde_face_types[i];
-      }
       return py::make_tuple(vout, fout, tout);
+    }
+    if (return_patch_info) {
+      return py::make_tuple(vout, fout, n_multi_patch, total_patches);
     }
 
     return py::make_tuple(vout, fout);
@@ -475,14 +615,275 @@ py::tuple compute_alpha_complex_from_atoms(
   }
 }
 
+struct UFInt_SBL {
+  std::vector<int> p;
+  std::vector<uint8_t> r;
+  int make_set() {
+    int i = static_cast<int>(p.size());
+    p.push_back(i);
+    r.push_back(0);
+    return i;
+  }
+  int find(int x) {
+    while (p[x] != x) {
+      p[x] = p[p[x]];
+      x = p[x];
+    }
+    return x;
+  }
+  void unite(int a, int b) {
+    a = find(a);
+    b = find(b);
+    if (a == b)
+      return;
+    if (r[a] < r[b])
+      std::swap(a, b);
+    p[b] = a;
+    if (r[a] == r[b])
+      r[a]++;
+  }
+};
+
+py::dict debug_multipatch_sbl(py::array_t<float> positions,
+                              py::array_t<float> radii, float alpha,
+                              float probe_radius = 1.4f) {
+  auto pos_buf = positions.unchecked<2>();
+  auto rad_buf = radii.unchecked<1>();
+  if (pos_buf.shape(1) != 3)
+    throw std::invalid_argument("positions must have shape (N, 3)");
+  size_t n_atoms = pos_buf.shape(0);
+  if (rad_buf.shape(0) != n_atoms)
+    throw std::invalid_argument("radii must have shape (N,)");
+
+  std::vector<Weighted_point> wpoints;
+  wpoints.reserve(n_atoms);
+  for (size_t i = 0; i < n_atoms; i++) {
+    double r =
+        static_cast<double>(rad_buf(i)) + static_cast<double>(probe_radius);
+    wpoints.emplace_back(Point_3(pos_buf(i, 0), pos_buf(i, 1), pos_buf(i, 2)),
+                         r * r);
+  }
+
+  Triangulation T(wpoints.begin(), wpoints.end());
+  Fixed_alpha_shape A(T, alpha);
+
+  std::vector<Cell_handle> exterior_cells;
+  exterior_cells.reserve(1024);
+  std::unordered_map<Cell_handle, int, PtrHash> cell_to_id;
+
+  int inf_id = -1;
+  for (auto cit = A.all_cells_begin(); cit != A.all_cells_end(); ++cit) {
+    if (A.classify(cit) == Fixed_alpha_shape::EXTERIOR) {
+      int id = static_cast<int>(exterior_cells.size());
+      cell_to_id[cit] = id;
+      exterior_cells.push_back(cit);
+      if (inf_id == -1 && A.is_infinite(cit))
+        inf_id = id;
+    }
+  }
+
+  const int n_ext = static_cast<int>(exterior_cells.size());
+  std::vector<int> uf(n_ext);
+  std::iota(uf.begin(), uf.end(), 0);
+
+  auto uf_find = [&](int x) -> int {
+    while (uf[x] != x) {
+      uf[x] = uf[uf[x]];
+      x = uf[x];
+    }
+    return x;
+  };
+  auto uf_union = [&](int a, int b) {
+    a = uf_find(a);
+    b = uf_find(b);
+    if (a != b)
+      uf[a] = b;
+  };
+
+  if (inf_id != -1) {
+    for (int id = 0; id < n_ext; ++id)
+      if (A.is_infinite(exterior_cells[id]))
+        uf_union(inf_id, id);
+  }
+
+  for (auto fit = A.finite_facets_begin(); fit != A.finite_facets_end();
+       ++fit) {
+    if (A.classify(*fit) == Fixed_alpha_shape::EXTERIOR) {
+      Cell_handle c1 = fit->first;
+      Cell_handle c2 = c1->neighbor(fit->second);
+      auto it1 = cell_to_id.find(c1);
+      auto it2 = cell_to_id.find(c2);
+      if (it1 != cell_to_id.end() && it2 != cell_to_id.end())
+        uf_union(it1->second, it2->second);
+    }
+  }
+
+  std::vector<bool> ext_from_infinite(n_ext, false);
+  if (inf_id != -1) {
+    int inf_root = uf_find(inf_id);
+    for (int id = 0; id < n_ext; ++id)
+      if (uf_find(id) == inf_root)
+        ext_from_infinite[id] = true;
+  }
+
+  auto is_ext = [&](Cell_handle c) -> bool {
+    auto it = cell_to_id.find(c);
+    if (it == cell_to_id.end())
+      return false;
+    return ext_from_infinite[it->second];
+  };
+
+  UBB_DS ubb(A);
+  UBB_Builder builder;
+  builder(ubb, 2);
+
+  using UBB_Face = decltype(ubb.faces_begin());
+
+  std::unordered_map<Vertex_handle, std::vector<UBB_Face>, PtrHash>
+      ball_to_patches;
+  for (auto fit = ubb.faces_begin(); fit != ubb.faces_end(); ++fit) {
+    UBB_Face p = fit;
+    if (!p->is_exterior())
+      continue;
+    ball_to_patches[p->get_dual_simplex()].push_back(p);
+  }
+
+  py::list result;
+  for (const auto &kv : ball_to_patches) {
+    if (kv.second.size() <= 1)
+      continue;
+
+    Vertex_handle v = kv.first;
+    py::dict d;
+    auto pt = v->point().point();
+    py::list pos_list;
+    pos_list.append(static_cast<float>(pt.x()));
+    pos_list.append(static_cast<float>(pt.y()));
+    pos_list.append(static_cast<float>(pt.z()));
+    d["pos"] = pos_list;
+    d["n_exterior_patches"] = static_cast<int>(kv.second.size());
+
+    py::list patch_info;
+    for (auto p : kv.second) {
+      py::dict pd;
+      // Count halfedges on this patch boundary as a fingerprint
+      int n_halfedges = 0;
+      if (p->halfedge() != decltype(ubb.halfedges_begin())()) {
+        auto start = p->halfedge();
+        auto h = start;
+        do {
+          n_halfedges++;
+          h = h->next();
+        } while (h != start && h != decltype(ubb.halfedges_begin())());
+      }
+      pd["n_halfedges"] = n_halfedges;
+      patch_info.append(pd);
+    }
+    d["patches"] = patch_info;
+
+    // Also run algo2-style local UF for comparison
+    std::vector<Cell_handle> inc_cells;
+    A.incident_cells(v, std::back_inserter(inc_cells));
+
+    std::vector<Cell_handle> ext_inc_cells;
+    for (Cell_handle c : inc_cells)
+      if (A.classify(c) == Fixed_alpha_shape::EXTERIOR && is_ext(c))
+        ext_inc_cells.push_back(c);
+
+    d["n_outside_cells"] = static_cast<int>(ext_inc_cells.size());
+
+    // Local UF on outside cells (algo2 logic)
+    UFInt_SBL ufl;
+    std::unordered_map<Cell_handle, int, PtrHash> id_of_cell;
+    for (Cell_handle c : ext_inc_cells)
+      id_of_cell[c] = ufl.make_set();
+
+    struct EdgeInfo {
+      int a, b;
+      std::string cls;
+    };
+    std::vector<EdgeInfo> edges;
+
+    auto cls_to_str =
+        [](Fixed_alpha_shape::Classification_type cls) -> std::string {
+      switch (cls) {
+      case Fixed_alpha_shape::EXTERIOR:
+        return "EXTERIOR";
+      case Fixed_alpha_shape::SINGULAR:
+        return "SINGULAR";
+      case Fixed_alpha_shape::REGULAR:
+        return "REGULAR";
+      case Fixed_alpha_shape::INTERIOR:
+        return "INTERIOR";
+      default:
+        return "UNKNOWN";
+      }
+    };
+
+    for (Cell_handle c : ext_inc_cells) {
+      for (int i = 0; i < 4; ++i) {
+        if (c->vertex(i) == v)
+          continue;
+        Cell_handle n = c->neighbor(i);
+        auto itn = id_of_cell.find(n);
+        if (itn == id_of_cell.end())
+          continue;
+        int id_c = id_of_cell[c];
+        int id_n = itn->second;
+        if (id_c > id_n)
+          continue;
+        Facet f(c, i);
+        auto cls = A.classify(f);
+        if (cls == Fixed_alpha_shape::EXTERIOR)
+          ufl.unite(id_c, id_n);
+        edges.push_back({id_c, id_n, cls_to_str(cls)});
+      }
+    }
+
+    std::unordered_map<int, std::vector<int>> root_to_ids;
+    for (auto &kv2 : id_of_cell)
+      root_to_ids[ufl.find(kv2.second)].push_back(kv2.second);
+
+    d["n_local_uf_components"] = static_cast<int>(root_to_ids.size());
+
+    py::list comps;
+    for (auto it = root_to_ids.begin(); it != root_to_ids.end(); ++it) {
+      py::dict comp;
+      comp["root"] = it->first;
+      comp["size"] = static_cast<int>(it->second.size());
+      comps.append(comp);
+    }
+    d["local_uf_components"] = comps;
+
+    py::list edge_list;
+    for (auto &e : edges) {
+      py::dict ed;
+      ed["a"] = e.a;
+      ed["b"] = e.b;
+      ed["facet_cls"] = e.cls;
+      ed["same_component"] = (ufl.find(e.a) == ufl.find(e.b));
+      edge_list.append(ed);
+    }
+    d["edges"] = edge_list;
+
+    result.append(d);
+  }
+
+  py::dict out;
+  out["n_multipatch"] = static_cast<int>(result.size());
+  out["multipatch_vertices"] = result;
+  return out;
+}
+
 PYBIND11_MODULE(cgal_alpha, m) {
   m.def("compute_alpha_complex_from_atoms", &compute_alpha_complex_from_atoms,
         py::arg("positions"), py::arg("radii"), py::arg("alpha"),
         py::arg("probe_radius") = 1.4f, py::arg("filter") = "singular+regular",
         py::arg("return_face_types") = false,
+        py::arg("return_patch_info") = false,
+        py::arg("return_singular_edges") = false,
         R"doc(
 Compute a surface triangle mesh from weighted atomic spheres using a CGAL fixed alpha shape.
-The output applies singular-edge repair.
 
 Args:
     positions: numpy array of shape (N, 3), float32 - atom centers
@@ -490,8 +891,29 @@ Args:
     alpha: Alpha value for the alpha complex (e.g., 0.0)
     probe_radius: Probe radius to add to atomic radii (default 1.4 for water)
     filter: Filter for facet classification ("all", "solid", "singular+regular")
+    return_face_types: if True, append face type array to output
+    return_patch_info: if True, append (n_multi_patch, total_patches) to output
+    return_singular_edges: if True, append singular edge stats and component info to output
 
 Returns:
-    Tuple of (vertices, faces)
+    Tuple of (vertices, faces [, face_types] [, n_multi_patch, total_patches]
+              [, singular_edge_count, type_a, type_b, bridge_count, n_components])
+)doc");
+
+  m.def("debug_multipatch_sbl", &debug_multipatch_sbl, py::arg("positions"),
+        py::arg("radii"), py::arg("alpha"), py::arg("probe_radius") = 1.4f,
+        R"doc(
+Debug: per-vertex UBB patch count and local UF analysis for multi-patch vertices.
+
+Returns dict with:
+    n_multipatch: number of multi-patch vertices (UBB exterior patches > 1)
+    multipatch_vertices: list of dicts with:
+        pos: [x, y, z]
+        n_exterior_patches: number of UBB exterior patches (SBL algo1)
+        n_outside_cells: number of incident outside cells
+        n_local_uf_components: number of UF components via algo2 logic
+        patches: list of {n_halfedges} per UBB patch
+        local_uf_components: list of {root, size}
+        edges: list of {a, b, facet_cls, same_component}
 )doc");
 }

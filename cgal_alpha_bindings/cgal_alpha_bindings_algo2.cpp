@@ -394,8 +394,12 @@ py::tuple compute_alpha_complex_algo2_from_atoms(
 
     auto add_tri = [&](int a, int b, int c, uint8_t t) {
       TriExact key{a, b, c};
+      // Sort key so {v0,v1,v2} and {v0,v2,v1} deduplicate when clones are the same
+      if (key.a > key.b) std::swap(key.a, key.b);
+      if (key.b > key.c) std::swap(key.b, key.c);
+      if (key.a > key.b) std::swap(key.a, key.b);
       if (seen_tri_exact.insert(key).second) {
-        tilde_F.push_back({a, b, c});
+        tilde_F.push_back({a, c, b});  // swap b,c for outward normals
         face_types.push_back(t);
       }
     };
@@ -454,6 +458,9 @@ py::tuple compute_alpha_complex_algo2_from_atoms(
         candidate_outside_cells.swap(uniq);
       }
 
+      // Determine which cell was used for orientation (may differ from f.first)
+      Cell_handle oriented_cell = is_outside(c1) ? c1 : c2;
+
       for (Cell_handle c_ext : candidate_outside_cells) {
         int out_idx[3];
         bool ok = true;
@@ -504,6 +511,12 @@ py::tuple compute_alpha_complex_algo2_from_atoms(
 
         if (!ok)
           continue;
+
+        // Flip winding for the outside cell on the opposite side of the facet
+        // from oriented_cell, so the face normal points out of c_ext.
+        if (c_ext != oriented_cell) {
+          std::swap(out_idx[1], out_idx[2]);
+        }
 
         add_tri(out_idx[0], out_idx[1], out_idx[2], touches_multi ? 2 : 0);
       }
@@ -557,6 +570,221 @@ py::tuple compute_alpha_complex_algo2_from_atoms(
   }
 }
 
+py::dict debug_multipatch_algo2(py::array_t<float> positions,
+                                py::array_t<float> radii, float alpha,
+                                float probe_radius = 1.4f) {
+  auto pos = positions.unchecked<2>();
+  auto rad = radii.unchecked<1>();
+  if (pos.shape(1) != 3)
+    throw std::invalid_argument("positions must have shape (N, 3)");
+  size_t n_atoms = pos.shape(0);
+  if (rad.shape(0) != n_atoms)
+    throw std::invalid_argument("radii must have shape (N,)");
+
+  std::vector<Weighted_point> wpoints;
+  wpoints.reserve(n_atoms);
+  for (size_t i = 0; i < n_atoms; ++i) {
+    const double r =
+        static_cast<double>(rad(i)) + static_cast<double>(probe_radius);
+    wpoints.emplace_back(Point_3(pos(i, 0), pos(i, 1), pos(i, 2)), r * r);
+  }
+  Triangulation T(wpoints.begin(), wpoints.end());
+  Fixed_alpha_shape A(T, alpha);
+
+  // Exterior-from-infinity UF
+  std::unordered_map<Cell_handle, Cell_handle, PtrHash> uf_ext;
+  std::vector<Cell_handle> exterior_cells;
+  exterior_cells.reserve(1024);
+
+  auto uf_ext_find = [&](Cell_handle x) {
+    while (uf_ext[x] != x) {
+      uf_ext[x] = uf_ext[uf_ext[x]];
+      x = uf_ext[x];
+    }
+    return x;
+  };
+  auto uf_ext_union = [&](Cell_handle a, Cell_handle b) {
+    a = uf_ext_find(a);
+    b = uf_ext_find(b);
+    if (a != b)
+      uf_ext[a] = b;
+  };
+
+  Cell_handle inf_seed = nullptr;
+  bool has_inf = false;
+  for (auto cit = A.all_cells_begin(); cit != A.all_cells_end(); ++cit) {
+    if (A.classify(cit) == Fixed_alpha_shape::EXTERIOR) {
+      uf_ext[cit] = cit;
+      exterior_cells.push_back(cit);
+      if (!has_inf && A.is_infinite(cit)) {
+        inf_seed = cit;
+        has_inf = true;
+      }
+    }
+  }
+
+  if (has_inf) {
+    for (Cell_handle c : exterior_cells)
+      if (A.is_infinite(c))
+        uf_ext_union(inf_seed, c);
+  }
+
+  for (auto fit = A.finite_facets_begin(); fit != A.finite_facets_end();
+       ++fit) {
+    if (A.classify(*fit) == Fixed_alpha_shape::EXTERIOR) {
+      Cell_handle c1 = fit->first;
+      Cell_handle c2 = c1->neighbor(fit->second);
+      if (uf_ext.find(c1) != uf_ext.end() && uf_ext.find(c2) != uf_ext.end())
+        uf_ext_union(c1, c2);
+    }
+  }
+
+  std::unordered_set<Cell_handle, PtrHash> outside_cells;
+  if (has_inf) {
+    Cell_handle inf_root = uf_ext_find(inf_seed);
+    for (Cell_handle c : exterior_cells)
+      if (uf_ext_find(c) == inf_root)
+        outside_cells.insert(c);
+  }
+
+  auto is_outside = [&](Cell_handle c) -> bool {
+    return outside_cells.count(c) > 0;
+  };
+
+  auto is_boundary_facet = [&](const Facet &f) -> bool {
+    Cell_handle c1 = f.first;
+    Cell_handle c2 = c1->neighbor(f.second);
+    const bool out1 = is_outside(c1);
+    const bool out2 = is_outside(c2);
+    if (out1 != out2)
+      return true;
+    if (out1 && out2 && A.classify(f) == Fixed_alpha_shape::SINGULAR)
+      return true;
+    return false;
+  };
+
+  std::unordered_set<Vertex_handle, PtrHash> boundary_vertices;
+  for (auto fit = A.finite_facets_begin(); fit != A.finite_facets_end();
+       ++fit) {
+    if (!is_boundary_facet(*fit))
+      continue;
+    Cell_handle c = fit->first;
+    int opp = fit->second;
+    for (int i = 0; i < 4; ++i)
+      if (i != opp)
+        boundary_vertices.insert(c->vertex(i));
+  }
+
+  auto cls_to_str = [](Cls cls) -> std::string {
+    switch (cls) {
+    case Fixed_alpha_shape::EXTERIOR:
+      return "EXTERIOR";
+    case Fixed_alpha_shape::SINGULAR:
+      return "SINGULAR";
+    case Fixed_alpha_shape::REGULAR:
+      return "REGULAR";
+    case Fixed_alpha_shape::INTERIOR:
+      return "INTERIOR";
+    default:
+      return "UNKNOWN";
+    }
+  };
+
+  py::list result;
+
+  for (Vertex_handle v : boundary_vertices) {
+    std::vector<Cell_handle> inc_cells;
+    A.incident_cells(v, std::back_inserter(inc_cells));
+
+    std::vector<Cell_handle> ext_inc_cells;
+    for (Cell_handle c : inc_cells)
+      if (A.classify(c) == Fixed_alpha_shape::EXTERIOR && is_outside(c))
+        ext_inc_cells.push_back(c);
+
+    if (ext_inc_cells.empty())
+      continue;
+
+    UFInt ufl;
+    std::unordered_map<Cell_handle, int, PtrHash> id_of_cell;
+    for (Cell_handle c : ext_inc_cells)
+      id_of_cell[c] = ufl.make_set();
+
+    struct EdgeInfo {
+      int a, b;
+      std::string cls;
+    };
+    std::vector<EdgeInfo> edges;
+
+    for (Cell_handle c : ext_inc_cells) {
+      for (int i = 0; i < 4; ++i) {
+        if (c->vertex(i) == v)
+          continue;
+        Cell_handle n = c->neighbor(i);
+        auto itn = id_of_cell.find(n);
+        if (itn == id_of_cell.end())
+          continue;
+        int id_c = id_of_cell[c];
+        int id_n = itn->second;
+        if (id_c > id_n)
+          continue;
+        Facet f(c, i);
+        auto cls = A.classify(f);
+        if (cls == Fixed_alpha_shape::EXTERIOR)
+          ufl.unite(id_c, id_n);
+        edges.push_back({id_c, id_n, cls_to_str(cls)});
+      }
+    }
+
+    std::unordered_map<int, std::vector<int>> root_to_ids;
+    for (auto &kv : id_of_cell)
+      root_to_ids[ufl.find(kv.second)].push_back(kv.second);
+
+    if (root_to_ids.size() <= 1)
+      continue;
+
+    py::dict d;
+    auto pt = v->point().point();
+    py::list pos_list;
+    pos_list.append(static_cast<float>(pt.x()));
+    pos_list.append(static_cast<float>(pt.y()));
+    pos_list.append(static_cast<float>(pt.z()));
+    d["pos"] = pos_list;
+    d["n_outside_cells"] = static_cast<int>(ext_inc_cells.size());
+    d["n_components"] = static_cast<int>(root_to_ids.size());
+
+    py::list comps;
+    for (auto it = root_to_ids.begin(); it != root_to_ids.end(); ++it) {
+      py::dict comp;
+      py::list id_list;
+      for (int id : it->second)
+        id_list.append(id);
+      comp["root"] = it->first;
+      comp["size"] = static_cast<int>(it->second.size());
+      comp["ids"] = id_list;
+      comps.append(comp);
+    }
+    d["components"] = comps;
+
+    py::list edge_list;
+    for (auto &e : edges) {
+      py::dict ed;
+      ed["a"] = e.a;
+      ed["b"] = e.b;
+      ed["facet_cls"] = e.cls;
+      ed["same_component"] = (ufl.find(e.a) == ufl.find(e.b));
+      edge_list.append(ed);
+    }
+    d["edges"] = edge_list;
+
+    result.append(d);
+  }
+
+  py::dict out;
+  out["n_multipatch"] = static_cast<int>(result.size());
+  out["multipatch_vertices"] = result;
+  return out;
+}
+
 PYBIND11_MODULE(cgal_alpha_algo2, m) {
   m.def("compute_alpha_complex_algo2_from_atoms",
         &compute_alpha_complex_algo2_from_atoms, py::arg("positions"),
@@ -576,5 +804,23 @@ Args:
 Returns:
     if return_face_types=False: (vertices, faces)
     else: (vertices, faces, face_types)
+)doc");
+
+  m.def("debug_multipatch_algo2", &debug_multipatch_algo2, py::arg("positions"),
+        py::arg("radii"), py::arg("alpha"), py::arg("probe_radius") = 1.4f,
+        R"doc(
+Debug: per-vertex local UF analysis for multi-patch vertices.
+
+Returns dict with:
+    n_multipatch: number of multi-patch vertices
+    multipatch_vertices: list of dicts with:
+        pos: [x, y, z]
+        n_outside_cells: number of incident outside cells
+        n_components: number of UF components (patches)
+        components: list of {root, size, ids}
+        edges: list of {a, b, facet_cls, same_component}
+            showing every pair of adjacent outside cells,
+            the facet classification between them, and whether
+            they ended up in the same UF component
 )doc");
 }
