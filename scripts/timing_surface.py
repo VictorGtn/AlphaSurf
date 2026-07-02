@@ -8,19 +8,22 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import trimesh
 
 _current_dir = Path(__file__).resolve().parent
-_cgal_bindings_path = (
-    _current_dir.parent.parent.parent.parent / "cgal_alpha_bindings" / "build"
-)
+_cgal_bindings_path = _current_dir.parent / "cgal_alpha_bindings" / "build"
 sys.path.append(str(_cgal_bindings_path))
-import cgal_alpha
+import cgal_alpha  # noqa: E402
 
-import igl
-from alphasurf.protein.create_surface import mesh_simplification
-from alphasurf.protein.create_operators import compute_operators
-from alphasurf.protein.surfaces import get_geom_feats
-from alphasurf.utils.python_utils import silentremove
+_nanoshaper_path = _current_dir.parent.parent / "NanoShaper" / "build"
+sys.path.append(str(_nanoshaper_path))
+import igl  # noqa: E402
+import nanoshaper  # noqa: E402
+from alphasurf.protein.create_operators import compute_operators  # noqa: E402
+from alphasurf.protein.create_surface import mesh_simplification  # noqa: E402
+from alphasurf.protein.graphs import parse_pdb_path  # noqa: E402
+from alphasurf.protein.surfaces import get_geom_feats  # noqa: E402
+from alphasurf.utils.python_utils import silentremove  # noqa: E402
 
 
 def parse_xyzr_file(xyzr_path):
@@ -35,7 +38,7 @@ def parse_xyzr_file(xyzr_path):
 def pdb_to_xyzr(pdb_path, xyzr_path):
     """Convert PDB to XYZR format using pdb_to_xyzr binary."""
     script_dir = os.path.dirname(os.path.realpath(__file__))
-    binary_base_path = os.path.abspath(os.path.join(script_dir, "..", "..", "bin"))
+    binary_base_path = os.path.abspath(os.path.join(script_dir, "..", "bin"))
 
     system = platform.system()
     if system == "Darwin":
@@ -94,10 +97,154 @@ def surface_alpha_complex(atom_pos, atom_radius, alpha_value=0.001):
     return verts, faces
 
 
+EDTSURF_BIN = str(Path(__file__).resolve().parent.parent.parent / "EDTSurf" / "EDTSurf")
+
+
+def surface_edtsurf(pdb_path, probe_radius=1.4):
+    """Generate molecular surface using EDTSurf."""
+    out_base = os.path.join(tempfile.gettempdir(), f"edtsurf_{os.getpid()}")
+    ply_file = out_base + ".ply"
+    asa_file = out_base + ".asa"
+    cav_file = out_base + "-cav.pdb"
+
+    try:
+        result = subprocess.run(
+            [
+                EDTSURF_BIN,
+                "-i",
+                pdb_path,
+                "-o",
+                out_base,
+                "-s",
+                "3",
+                "-p",
+                str(probe_radius),
+                "-f",
+                "0.5",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if not os.path.exists(ply_file):
+            raise RuntimeError(f"EDTSurf produced no output: {result.stdout[-200:]}")
+
+        t_parse = 0.0
+        t_surface = 0.0
+        for line in result.stdout.splitlines():
+            if line.startswith("Parse time "):
+                try:
+                    t_parse = float(line.split()[2])
+                except (IndexError, ValueError):
+                    pass
+            elif line.startswith("Surface time "):
+                try:
+                    t_surface = float(line.split()[2])
+                except (IndexError, ValueError):
+                    pass
+
+        mesh = trimesh.load(ply_file, process=False)
+        verts = np.array(mesh.vertices, dtype=np.float32)
+        faces = np.array(mesh.faces, dtype=np.int32)
+        return verts, faces, t_parse, t_surface
+    finally:
+        for f in [ply_file, asa_file, cav_file]:
+            silentremove(f)
+
+
+def surface_nanoshaper(
+    atom_pos,
+    atom_radius,
+    atom_names=None,
+    res_names=None,
+    res_nums=None,
+    chains=None,
+    grid_scale=2.0,
+    build_status=False,
+    operative_mode="normal",
+):
+    """Generate surface using NanoShaper via Python pybind modules."""
+    prm_path = os.path.join(
+        tempfile.gettempdir(), f"nanoshaper_timing_{os.getpid()}.prm"
+    )
+    try:
+        # Generate minimal NanoShaper .prm parameter file
+        with open(prm_path, "w") as f:
+            f.write(f"Grid_scale = {grid_scale}\n")
+            f.write("Grid_perfil = 80.0\n")
+            f.write("Build_status_map = true\n")
+            f.write(f"Operative_Mode = {operative_mode}\n")
+            f.write("Surface = ses\n")
+            f.write("Triangulation = true\n")
+            f.write("Probe_Radius = 1.4\n")
+
+        t_start = time.time()
+        # Parse configuration from the temp .prm file
+        cf_base = nanoshaper.load_config(prm_path)
+        cf = nanoshaper.parse_config(cf_base)
+
+        scale = cf.scale
+        perfil = cf.perfill
+
+        # Load atoms natively into NanoShaper InputData
+        inp = nanoshaper.InputData()
+        inp.na = len(atom_pos)
+        inp.x = atom_pos[:, 0].tolist()
+        inp.y = atom_pos[:, 1].tolist()
+        inp.z = atom_pos[:, 2].tolist()
+        inp.r = atom_radius.tolist()
+        inp.q = [0.0] * inp.na
+        inp.d = [1] * inp.na
+        if atom_names is not None:
+            ai_list = []
+            for i in range(inp.na):
+                ai = nanoshaper.AtomInfo(
+                    str(atom_names[i]),
+                    int(res_nums[i]),
+                    str(res_names[i]),
+                    str(chains[i]),
+                )
+                ai_list.append(ai)
+            inp.ai = ai_list
+        else:
+            inp.ai = []
+
+        # Initialize DelphiShared representation for NanoShaper natively from memory
+        grid = nanoshaper.DelphiShared()
+        grid.init(scale, perfil, inp)
+
+        t_parse = time.time() - t_start
+
+        t_surf_start = time.time()
+        surf = nanoshaper.createSurface(cf, grid)
+
+        # Redirect OS-level stdout to /dev/null
+        # null_fd = os.open(os.devnull, os.O_WRONLY)
+        # save_fd = os.dup(1)
+        # os.dup2(null_fd, 1)
+        try:
+            nanoshaper.normalMode(surf, grid, cf)
+        finally:
+            pass
+            # os.dup2(save_fd, 1)
+            # os.close(null_fd)
+            # os.close(save_fd)
+
+        t_surface = time.time() - t_surf_start
+
+        # Vertices and Normals are 1D arrays [x1,y1,z1, x2...], faces are [v1,v2,v3, f2...]
+        verts = np.array(surf.vertList, dtype=np.float32).reshape(-1, 3)
+        faces = np.array(surf.triList, dtype=np.int32).reshape(-1, 3)
+
+        return verts, faces, t_parse, t_surface
+    finally:
+        silentremove(prm_path)
+
+
 def surface_msms(xyzr_path, min_number=256):
     """Generate MSMS surface from xyzr file, starting at density=1.0 and increasing until min_number vertices."""
     script_dir = os.path.dirname(os.path.realpath(__file__))
-    binary_base_path = os.path.abspath(os.path.join(script_dir, "..", "..", "bin"))
+    binary_base_path = os.path.abspath(os.path.join(script_dir, "..", "bin"))
 
     system = platform.system()
     if system == "Darwin":
@@ -141,7 +288,6 @@ def surface_msms(xyzr_path, min_number=256):
 
             with open(vert_file, "r", errors="ignore") as f:
                 lines = f.readlines()
-                n_vert = int(lines[2].split()[0])
                 no_header = lines[3:]
                 lines = [line.split()[:6] for line in no_header]
                 lines = np.array(lines).astype(np.float32)
@@ -149,7 +295,6 @@ def surface_msms(xyzr_path, min_number=256):
 
             with open(face_file, "r", errors="ignore") as f:
                 lines = f.readlines()
-                n_faces = int(lines[2].split()[0])
                 no_header = lines[3:]
                 lines = [line.split() for line in no_header]
                 lines = np.array(lines).astype(np.int32)
@@ -170,7 +315,7 @@ def time_surface_generation(
     pdb_path,
     alpha_value=0.001,
     min_number=256,
-    method="both",
+    method="all",
     do_simplify=False,
     reduction_rate=1.0,
     do_operators=False,
@@ -182,7 +327,7 @@ def time_surface_generation(
         pdb_path: Path to PDB file
         alpha_value: Alpha value for alpha complex
         min_number: Minimum vertices for MSMS
-        method: Which method to run - "alpha", "msms", or "both"
+        method: Which method to run - "alpha", "msms", "edtsurf", "both", or "all"
         do_simplify: Whether to run mesh simplification
         reduction_rate: Face reduction rate for simplification
         do_operators: Whether to compute spectral operators
@@ -201,10 +346,14 @@ def time_surface_generation(
 
     # Initialize keys for all potential steps
     steps = []
-    if method in ["alpha", "both"]:
+    if method in ["alpha", "both", "all"]:
         steps.append("alpha")
-    if method in ["msms", "both"]:
+    if method in ["msms", "both", "all"]:
         steps.append("msms")
+    if method in ["edtsurf", "all"]:
+        steps.append("edtsurf")
+    if method in ["nanoshaper", "all"]:
+        steps.append("nanoshaper")
 
     for m in steps:
         result[f"t_{m}"] = 0.0
@@ -221,13 +370,56 @@ def time_surface_generation(
         if do_features:
             result[f"t_features_{m}"] = 0.0
 
-    try:
-        t0 = time.time()
-        pdb_to_xyzr(pdb_path, xyzr_path)
-        result["t_parse"] = time.time() - t0
+    needs_xyzr = method in ["alpha", "msms", "both", "all"]
 
-        atom_pos, atom_radius = parse_xyzr_file(xyzr_path)
-        result["n_atoms"] = len(atom_pos)
+    try:
+        atom_pos = atom_radius = None
+        if needs_xyzr:
+            t0 = time.time()
+            pdb_to_xyzr(pdb_path, xyzr_path)
+            result["t_parse"] = time.time() - t0
+
+            atom_pos, atom_radius = parse_xyzr_file(xyzr_path)
+            result["n_atoms"] = len(atom_pos)
+        else:
+            # Parse PDB directly to extract atoms without XYZR file conversion (NanoShaper mode)
+            (
+                amino_types,  # 0
+                atom_chain_id,  # 1
+                atom_amino_id,  # 2
+                atom_names,  # 3
+                _,  # 4: atom_types
+                atom_pos,  # 5
+                _,  # 6: atom_charge
+                atom_radius,  # 7
+                _,  # 8: res_sse
+                amino_ids,  # 9
+                _,  # 10: atom_ids
+            ) = parse_pdb_path(pdb_path, use_pqr=False)
+
+            # Map residue info for NanoShaper
+            from alphasurf.protein.graphs import res_type_dict
+
+            res_type_idx_to_name = {v: k for k, v in res_type_dict.items()}
+            atom_res_names = [
+                res_type_idx_to_name[amino_types[i]] for i in atom_amino_id
+            ]
+
+            # Extract residue numbers from amino_ids (format chain:AApos e.g. B:I26)
+            # Find the first digit in the part after the colon
+            def extract_res_num(amino_id):
+                parts = amino_id.split(":")
+                if len(parts) < 2:
+                    return 0
+                import re
+
+                match = re.search(r"\d+", parts[1])
+                return int(match.group()) if match else 0
+
+            res_nums_all = [extract_res_num(amino_id) for amino_id in amino_ids]
+            atom_res_nums = [res_nums_all[i] for i in atom_amino_id]
+
+            result["n_atoms"] = len(atom_pos)
 
         # Helper function to run pipeline for a method
         def run_method_pipeline(method_name, verts_in, faces_in, override_rate=None):
@@ -292,22 +484,38 @@ def time_surface_generation(
                 _ = get_geom_feats(curr_verts, curr_faces, evecs, evals, vnormals)
                 result[f"t_features_{method_name}"] = time.time() - t_start
 
-        if method in ["alpha", "both"]:
+        if method in ["alpha", "both", "all"]:
             t0 = time.time()
-            # Hardcoded alpha=0.0 as requested
             verts_alpha, faces_alpha = surface_alpha_complex(
                 atom_pos, atom_radius, alpha_value=0.0
             )
             result["t_alpha"] = time.time() - t0
-            # Hardcoded reduction_rate=1.0 for Alpha
             run_method_pipeline("alpha", verts_alpha, faces_alpha, override_rate=1.0)
 
-        if method in ["msms", "both"]:
+        if method in ["msms", "both", "all"]:
             t0 = time.time()
             verts_msms, faces_msms = surface_msms(xyzr_path, min_number)
             result["t_msms"] = time.time() - t0
-            # Hardcoded reduction_rate=0.1 for MSMS
             run_method_pipeline("msms", verts_msms, faces_msms, override_rate=0.1)
+
+        if method in ["edtsurf", "all"]:
+            verts_edt, faces_edt, edt_t_parse, edt_t_surface = surface_edtsurf(pdb_path)
+            result["t_parse_edtsurf"] = edt_t_parse
+            result["t_edtsurf"] = edt_t_surface
+            run_method_pipeline("edtsurf", verts_edt, faces_edt, override_rate=0.1)
+
+        if method in ["nanoshaper", "all"]:
+            verts_nano, faces_nano, nano_t_parse, nano_t_surface = surface_nanoshaper(
+                atom_pos,
+                atom_radius,
+                atom_names=atom_names if not needs_xyzr else None,
+                res_names=atom_res_names if not needs_xyzr else None,
+                res_nums=atom_res_nums if not needs_xyzr else None,
+                chains=atom_chain_id if not needs_xyzr else None,
+            )
+            result["t_parse_nanoshaper"] = nano_t_parse
+            result["t_nanoshaper"] = nano_t_surface
+            run_method_pipeline("nanoshaper", verts_nano, faces_nano, override_rate=0.1)
 
     except Exception as e:
         result["error"] = str(e)
@@ -346,9 +554,9 @@ def process_pdb_folder(
 
     print(f"Found {len(pdb_files)} PDB files in {pdb_dir}")
     print(f"Method: {method.upper()}")
-    if method in ["alpha", "both"]:
+    if method in ["alpha", "both", "all"]:
         print(f"Alpha value: {alpha_value}")
-    if method in ["msms", "both"]:
+    if method in ["msms", "both", "all"]:
         print(f"Min vertices (MSMS): {min_number}")
     print("Options:")
     print(f"  Simplify: {do_simplify} (Rate: {reduction_rate})")
@@ -445,11 +653,14 @@ def process_pdb_folder(
                     )
             print()
 
-        if method in ["alpha", "both"]:
+        if method in ["alpha", "both", "all"]:
             print_section_stats("alpha")
 
-        if method in ["msms", "both"]:
+        if method in ["msms", "both", "all"]:
             print_section_stats("msms")
+
+        if method in ["edtsurf", "all"]:
+            print_section_stats("edtsurf")
 
     if len(failed) > 0:
         print(f"Failed: {len(failed)}/{len(results)} proteins")
@@ -500,9 +711,9 @@ if __name__ == "__main__":
     parser.add_argument(
         "--method",
         type=str,
-        choices=["alpha", "msms", "both"],
-        default="both",
-        help="Which surface generation method to run (default: both)",
+        choices=["alpha", "msms", "edtsurf", "both", "all"],
+        default="all",
+        help="Which surface generation method to run (default: all)",
     )
     parser.add_argument(
         "--simplify",
