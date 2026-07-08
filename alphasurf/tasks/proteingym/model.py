@@ -1,9 +1,10 @@
 """
 Encoder loading and per-protein forward pass for ProteinGym scoring.
 
-Reuses the PINDER-trained ProteinEncoder via its Lightning checkpoint. The
-encoder is run unchanged; mutation-specific signal comes from overwriting
-residue-type features on a cloned graph (see scoring.py).
+Option D: load the PINDER checkpoint (PinderPairModule), run the encoder
+unchanged, score via embedding-delta on a cloned graph.
+Option F: load the S3F checkpoint (S3FPretrainModule), run the full model
+(encoder + ESM + residue head), score via log-odds.
 """
 
 from __future__ import annotations
@@ -28,7 +29,18 @@ def load_encoder_module(ckpt_path: str | Path) -> Tuple[PinderPairModule, str]:
     return module, device
 
 
-def build_protein_loader(module: PinderPairModule) -> ProteinLoader:
+def load_s3f_module(ckpt_path: str | Path):
+    """Load the S3F checkpoint and put the model in eval mode."""
+    from alphasurf.tasks.s3f_pretrain.pl_model import S3FPretrainModule
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    module = S3FPretrainModule.load_from_checkpoint(str(ckpt_path), map_location=device)
+    module.eval()
+    module.to(device)
+    return module, device
+
+
+def build_protein_loader(module) -> ProteinLoader:
     """Rebuild the on-the-fly ProteinLoader from the checkpoint config."""
     cfg = module.hparams.cfg
     on_fly_cfg = getattr(cfg, "on_fly", None)

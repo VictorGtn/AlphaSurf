@@ -1,14 +1,14 @@
 """
-Embedding-delta scoring for ProteinGym (Option D in the task README).
+Scoring for ProteinGym.
 
-For each mutant, the WT graph is cloned, residue-type one-hot features at
-mutated positions are overwritten with the mutant amino acid, and the cloned
-graph is re-encoded. Score = -sum over mutated positions of the L2 distance
-between MT and WT per-residue embeddings. Lower distance (more similar to WT)
-yields a higher (better) score, hence the sign flip.
+Option D (embedding-delta heuristic): clone WT graph, overwrite residue-type
+one-hot at mutated positions, re-encode, score = -sum ||emb_MT - emb_WT||.
+Training-free, not a log-odds; not comparable to leaderboard rows.
 
-This is a zero-shot, training-free heuristic, not a log-odds; reported
-Spearman numbers are not directly comparable to ProteinGym leaderboard rows.
+Option F (S3F-style log-odds): mask mutation positions, run the S3F-pretrained
+encoder + residue head, score = sum [log P(MT | masked) - log P(WT | masked)].
+Requires an S3FPretrainModule checkpoint. Produces a proper log-odds that IS
+comparable to leaderboard rows (S3F, ESM-2, etc.).
 """
 
 from __future__ import annotations
@@ -113,3 +113,112 @@ def compute_metrics(targets: np.ndarray, predictions: np.ndarray) -> Dict[str, f
         "mae": mae,
         "rmse": rmse,
     }
+
+
+# ── Option F: S3F-style log-odds scoring ──────────────────────────────
+
+
+def _compute_surf_leak_mask(graph, surface, positions, k: int = 20):
+    """Boolean mask (len N_surf) — True for surface vertices near masked residues."""
+    import torch as _torch
+
+    n_surf = surface.x.shape[0] if surface.x is not None else 0
+    zero_mask = _torch.zeros(n_surf, dtype=_torch.bool)
+    if n_surf == 0 or len(positions) == 0:
+        return zero_mask
+
+    ca_pos = graph.node_pos.float()
+    surf_pos = getattr(surface, "pos", None)
+    if surf_pos is None and hasattr(surface, "verts") and surface.verts is not None:
+        import numpy as _np
+
+        surf_pos = _torch.from_numpy(_np.asarray(surface.verts)).float()
+    if surf_pos is None:
+        return zero_mask
+
+    k = min(k, n_surf)
+    for pos in positions:
+        dists = (surf_pos - ca_pos[pos]).norm(dim=-1)
+        _, nearest = dists.topk(k, largest=False)
+        zero_mask[nearest] = True
+    return zero_mask
+
+
+def score_assay_option_f(
+    module,
+    wt_graph,
+    wt_surface,
+    assay: DMSAssay,
+    device: str,
+    batch_size: int = 8,
+) -> np.ndarray:
+    """Score mutants with S3F-style log-odds from the residue head.
+
+    For each mutant, mask the mutation positions, run the encoder + head,
+    take log_softmax at masked positions, and compute:
+        score = sum [log P(MT_AA) - log P(WT_AA)]
+
+    Returns a float array of length len(assay.mutants).
+    """
+    import torch as _torch
+    from torch_geometric.data import Data as _Data
+
+    from alphasurf.protein.graphs import res_type_idx_to_1
+
+    model = module.model
+    if not model._esm_loaded:
+        model._load_esm(device)
+
+    aa_idx = wt_graph.x[:, RES_TYPE_ONEHOT_SLICE].argmax(dim=-1).cpu().long()
+    sequence = "".join(res_type_idx_to_1[i] for i in aa_idx.numpy())
+
+    scores: List[float] = []
+    for i, mutant in enumerate(assay.mutants):
+        positions = list(mutant.positions)
+        wt_aas = mutant.wt_aas
+        mt_aas = mutant.mt_aas
+
+        masked_positions = _torch.tensor(positions, dtype=_torch.long)
+        mask_types = _torch.zeros(len(positions), dtype=_torch.long)
+        target_residues = aa_idx[masked_positions]
+        random_aa_indices = _torch.full((len(positions),), -1, dtype=_torch.long)
+        surf_zero_mask = _compute_surf_leak_mask(wt_graph, wt_surface, positions, k=20)
+
+        sample = _Data(
+            graph=wt_graph,
+            surface=wt_surface,
+            sequence=sequence,
+            masked_positions=masked_positions,
+            mask_types=mask_types,
+            target_residues=target_residues,
+            random_aa_indices=random_aa_indices,
+            surf_vert_zero_mask=surf_zero_mask,
+        )
+
+        from alphasurf.utils.data_utils import AtomBatch as _AtomBatch
+
+        batch = _AtomBatch.from_data_list([sample])
+
+        model.eval()
+        with _torch.no_grad():
+            out = model(batch, device)
+            logits = out["logits"]
+            global_masked = out["global_masked"]
+
+            masked_logits = logits[global_masked]
+            log_probs = _torch.log_softmax(masked_logits, dim=-1)
+
+            wt_idx = _torch.tensor(
+                [aa_one_letter_to_idx(a) for a in wt_aas], device=device
+            )
+            mt_idx = _torch.tensor(
+                [aa_one_letter_to_idx(a) for a in mt_aas], device=device
+            )
+
+            pos_range = _torch.arange(len(positions), device=device)
+            log_p_wt = log_probs[pos_range, wt_idx]
+            log_p_mt = log_probs[pos_range, mt_idx]
+            score = (log_p_mt - log_p_wt).sum().item()
+            scores.append(float(score))
+
+    return np.array(scores, dtype=np.float64)

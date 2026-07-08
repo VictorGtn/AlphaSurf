@@ -120,6 +120,7 @@ class ProteinLoader:
         self,
         name: str,
         pdb_path: Optional[str] = None,
+        crop_window: Optional[Tuple[int, int]] = None,
     ) -> Optional[Protein]:
         """
         Load or generate a Protein.
@@ -131,6 +132,9 @@ class ProteinLoader:
         Args:
             name: Protein identifier (e.g., "1ABC_A" or "1ABC_A_patch_0_HEM")
             pdb_path: explicit path to PDB file (overrides pdb_dir/name.pdb)
+            crop_window: if set (on_fly mode only), crop residues [start, end)
+                BEFORE surface/graph generation. Surface is built from cropped
+                atoms only — no mesh-operator rebuild needed.
 
         Returns:
             Protein object with surface and graph, or None on failure
@@ -138,7 +142,9 @@ class ProteinLoader:
         if self.mode == "disk":
             protein = self._load_from_disk(name)
         else:
-            protein = self._generate_on_fly(name, pdb_path=pdb_path)
+            protein = self._generate_on_fly(
+                name, pdb_path=pdb_path, crop_window=crop_window
+            )
 
         if protein is None:
             return None
@@ -264,6 +270,7 @@ class ProteinLoader:
         self,
         name: str,
         pdb_path: Optional[str] = None,
+        crop_window: Optional[Tuple[int, int]] = None,
     ) -> Optional[Protein]:
         """Generate surface and graph on-the-fly from PDB."""
         if "_patch_" in name:
@@ -283,6 +290,9 @@ class ProteinLoader:
         parsed_arrays = self._parse_pdb(pdb_path)
         if parsed_arrays is None:
             return None
+
+        if crop_window is not None:
+            parsed_arrays = self._crop_parsed_arrays(parsed_arrays, *crop_window)
 
         if self.noise_augmentor is not None and self.noise_augmentor.enabled:
             (
@@ -353,6 +363,59 @@ class ProteinLoader:
             logger.warning("PDB parsing failed for %s: %s", pdb_path, e)
             return None
 
+    @staticmethod
+    def _crop_parsed_arrays(arrays: Tuple, start: int, end: int) -> Tuple:
+        """Crop parsed PDB arrays to residues [start, end).
+
+        Residue-level arrays (amino_types, res_sse, amino_ids) are sliced.
+        Atom-level arrays are filtered to atoms whose residue index is in
+        [start, end), and atom_amino_id is remapped to 0-indexed within the
+        crop. This lets surface/graph generation run on the cropped structure
+        exactly as if it were a standalone PDB.
+        """
+        (
+            amino_types,
+            atom_chain_id,
+            atom_amino_id,
+            atom_names,
+            atom_types,
+            atom_pos,
+            atom_charge,
+            atom_radius,
+            res_sse,
+            amino_ids,
+            atom_ids,
+        ) = arrays
+
+        amino_types = amino_types[start:end]
+        res_sse = res_sse[start:end]
+        amino_ids = amino_ids[start:end]
+
+        atom_mask = (atom_amino_id >= start) & (atom_amino_id < end)
+        atom_chain_id = atom_chain_id[atom_mask]
+        atom_amino_id = atom_amino_id[atom_mask] - start
+        atom_names = atom_names[atom_mask]
+        atom_types = atom_types[atom_mask]
+        atom_pos = atom_pos[atom_mask]
+        if atom_charge is not None:
+            atom_charge = atom_charge[atom_mask]
+        atom_radius = atom_radius[atom_mask]
+        atom_ids = atom_ids[atom_mask]
+
+        return (
+            amino_types,
+            atom_chain_id,
+            atom_amino_id,
+            atom_names,
+            atom_types,
+            atom_pos,
+            atom_charge,
+            atom_radius,
+            res_sse,
+            amino_ids,
+            atom_ids,
+        )
+
     def _generate_surface(
         self,
         pdb_path: str,
@@ -384,6 +447,7 @@ class ProteinLoader:
         edtsurf_grid_scale = getattr(cfg, "edtsurf_grid_scale", 0.5)
         use_poisson = getattr(cfg, "use_poisson", False)
         poisson_high_precision = getattr(cfg, "poisson_high_precision", True)
+        tufting = getattr(cfg, "tufting", False)
 
         try:
             extra_kwargs = {}
@@ -473,6 +537,7 @@ class ProteinLoader:
                     use_igl_normals=use_igl_normals,
                     use_poisson=use_poisson,
                     poisson_high_precision=poisson_high_precision,
+                    tufting=tufting,
                 )
 
                 surface.add_geom_feats()
@@ -523,6 +588,7 @@ class ProteinLoader:
                     use_igl_normals=use_igl_normals,
                     use_poisson=use_poisson,
                     poisson_high_precision=poisson_high_precision,
+                    tufting=tufting,
                 )
 
                 surface.add_geom_feats()

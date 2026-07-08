@@ -1,0 +1,101 @@
+defaults:
+    - model_global_variables
+    - blocks_zoo_small
+    - blocks_zoo_input
+    - blocks_zoo
+    - encoder: pronet_gvpencoder
+    - optimizer: adam
+    - scheduler: constant
+    - override hydra/job_logging: colorlog
+    - override hydra/hydra_logging: colorlog
+    - _self_
+
+optimizer:
+    lr: 2e-4
+    b1: 0.9
+    b2: 0.999
+    weight_decay: 0.0
+
+hydra:
+    job:
+        chdir: False
+    searchpath:
+        - file:///cluster/CBIO/data2/vgertner/alphasurf/alphasurf/alphasurf/tasks/shared_conf
+
+seed: 2024
+use_wandb: False
+run_name: s3f_pretrain
+project_name: s3f_pretrain
+data_dir: /cluster/CBIO/data2/vgertner/alphasurf/alphasurf/data/cath/dompdb
+log_dir: "./"
+epochs: 100
+device: 0
+min_batch_size: 1
+ckpt_path: null
+
+mask_rate: 0.15
+max_length: 250
+k_surf_leak: 20
+
+on_fly:
+    surface_method: alpha_complex
+    alpha_value: 0
+    face_reduction_rate: 1.0
+    max_vert_number: 100000
+    min_vert_number: 16
+    use_pymesh: false
+    use_whole_surfaces: true
+    nanoshaper_grid_scale: 0.3
+    tufting: true
+    noise_mode: "none"
+    sigma_graph: 0.3
+    sigma_mesh: 0.3
+    clip_sigma: 3.0
+    use_igl_normals: false
+
+loader:
+    num_workers: 8
+    batch_size: 8
+    pin_memory: False
+    prefetch_factor: 2
+    shuffle: true
+    persistent_workers: true
+
+train:
+    save_top_k: 3
+    early_stoping_patience: 20
+    accumulate_grad_batches: 1
+    val_check_interval: 1.0
+    check_val_every_n_epoch: 2
+    limit_train_batches: 1.0
+    limit_val_batches: 1.0
+    gradient_clip_val: 1.0
+    max_steps: -1
+    log_every_n_steps: 50
+    detect_anomaly: False
+    overfit_batches: 0
+    to_monitor: acc/val
+
+cfg_surface:
+    use_surfaces: true
+    use_whole_surfaces: true
+    data_dir: ${data_dir}
+    data_name: surfaces
+    feat_keys: "all"
+    oh_keys: "all"
+
+cfg_graph:
+    use_graphs: true
+    data_dir: ${data_dir}
+    data_name: rgraph
+    feat_keys: "all"
+    oh_keys: "all"
+    esm_dir: null
+    use_esm: false
+
+cfg_head:
+    encoded_dims: ${model_hdim}
+    dropout: 0.5
+
+encoder:
+    pool_on: graph

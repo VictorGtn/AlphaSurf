@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """
-Zero-shot ProteinGym evaluation with the embedding-delta heuristic.
+Zero-shot ProteinGym evaluation.
 
-For each DMS assay under `--substitutions-dir`, load the corresponding AF2
-structure, score every mutant with Option D (clone WT graph, overwrite
-residue-type one-hot at mutated positions, re-encode, take -||delta||), and
-write per-assay CSVs plus a summary CSV with one row per assay.
+Option D: embedding-delta heuristic (PINDER checkpoint).
+Option F: S3F-style log-odds from masked residue head (S3F checkpoint).
 
 Usage:
     python -m alphasurf.tasks.proteingym.evaluate \
-        --ckpt tasks/pinder_pair/ckpt/last.ckpt \
-        --substitutions-dir data/proteingym/substitutions \
-        --af2-dir data/proteingym/af2_structures \
-        --output-dir runs/proteingym_option_d
+        --ckpt alphasurf/tasks/s3f_pretrain/ckpt/last.ckpt \
+        --scoring-method option_f \
+        --substitutions-dir data/proteingym/substitutions/DMS_ProteinGym_substitutions \
+        --af2-dir data/proteingym/af2_structures/ProteinGym_AF2_structures \
+        --output-dir runs/proteingym_s3f
 """
 
 from __future__ import annotations
@@ -46,6 +45,7 @@ from alphasurf.tasks.proteingym.scoring import (
     aa_one_letter_to_idx,
     compute_metrics,
     score_assay,
+    score_assay_option_f,
 )
 
 logger = logging.getLogger("alphasurf.proteingym")
@@ -114,6 +114,7 @@ def score_one_assay(
     loader,
     device: str,
     batch_size: int,
+    scoring_method: str,
 ) -> Optional[dict]:
     assay = load_dms_assay(csv_path)
     pdb_path = af2_structure_path(af2_dir, assay.uniprot_id)
@@ -139,8 +140,6 @@ def score_one_assay(
         logger.warning(f"[{assay.assay_id}] AA identity check failed; skipping.")
         return None
 
-    # If the AF2 graph covers more than the assay region (special assays),
-    # rewrite mutant positions to point into the AF2 graph.
     if offset != 0:
         shifted_mutants = []
         for m in assay.mutants:
@@ -156,9 +155,14 @@ def score_one_assay(
             )
         assay.mutants = shifted_mutants
 
-    predictions = score_assay(
-        module, graph, surface, assay, device, batch_size=batch_size
-    )
+    if scoring_method == "option_f":
+        predictions = score_assay_option_f(
+            module, graph, surface, assay, device, batch_size=batch_size
+        )
+    else:
+        predictions = score_assay(
+            module, graph, surface, assay, device, batch_size=batch_size
+        )
     metrics = compute_metrics(
         np.array([m.score for m in assay.mutants], dtype=np.float64), predictions
     )
@@ -205,6 +209,12 @@ def aggregate_stats(summary_rows: List[dict]) -> dict:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ckpt", required=True)
+    parser.add_argument(
+        "--scoring-method",
+        default="option_d",
+        choices=["option_d", "option_f"],
+        help="option_d: embedding-delta (PINDER ckpt). option_f: S3F log-odds (S3F ckpt).",
+    )
     parser.add_argument("--substitutions-dir", required=True)
     parser.add_argument("--af2-dir", required=True)
     parser.add_argument("--output-dir", required=True)
@@ -228,13 +238,18 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    module, device = load_encoder_module(args.ckpt)
+    if args.scoring_method == "option_f":
+        from alphasurf.tasks.proteingym.model import load_s3f_module
+
+        module, device = load_s3f_module(args.ckpt)
+    else:
+        module, device = load_encoder_module(args.ckpt)
     loader = build_protein_loader(module)
 
     csv_paths = list_assay_csvs(args.substitutions_dir)
     if args.limit is not None:
         csv_paths = csv_paths[: args.limit]
-    logger.info(f"Scoring {len(csv_paths)} assays")
+    logger.info(f"Scoring {len(csv_paths)} assays with {args.scoring_method}")
 
     summary_rows: List[dict] = []
     for i, csv_path in enumerate(csv_paths, 1):
@@ -246,6 +261,7 @@ def main() -> None:
             loader,
             device,
             batch_size=args.batch_size,
+            scoring_method=args.scoring_method,
         )
         if result is None:
             continue
