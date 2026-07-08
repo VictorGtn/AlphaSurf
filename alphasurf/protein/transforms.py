@@ -24,12 +24,15 @@ class NoiseAugmentor:
     """
     Handles noise augmentation for protein coordinates.
 
-    Supports two modes:
+    Supports modes:
     - 'independent': Noise graph coordinates (sigma_graph) and mesh vertices (sigma_mesh)
                      independently. Graph noise applied to atom coords before graph build.
                      Mesh noise applied to vertices after patch extraction.
     - 'joint': Noise atom coordinates once, then use for BOTH mesh and graph generation.
                This propagates coordinate noise naturally to both representations.
+    - 'joint_mesh': Like 'joint' (atom noise propagated to mesh), PLUS vertex-normal
+                     mesh noise on top. Both sigma_graph and sigma_mesh are used.
+    - 'alpha': Random alpha-complex radius override (no coordinate noise).
     - 'none': No noise augmentation (default).
 
     All operations create new arrays (no in-place modification).
@@ -46,9 +49,9 @@ class NoiseAugmentor:
     ):
         """
         Args:
-            mode: 'none', 'independent', 'joint', or 'alpha'
+            mode: 'none', 'independent', 'joint', 'joint_mesh', or 'alpha'
             sigma_graph: Noise sigma for atom/graph coordinates
-            sigma_mesh: Noise sigma for mesh vertices (only used in 'independent' mode)
+            sigma_mesh: Noise sigma for mesh vertices ('independent' and 'joint_mesh' modes)
             clip_sigma: Clip noise to ±clip_sigma*sigma (None to disable)
             alpha_min: Minimum alpha value for alpha noise (default: 0.0)
             alpha_max: Maximum alpha value for alpha noise (default: 20.0)
@@ -60,9 +63,9 @@ class NoiseAugmentor:
         self.alpha_min = alpha_min
         self.alpha_max = alpha_max
 
-        if self.mode not in ("none", "independent", "joint", "alpha"):
+        if self.mode not in ("none", "independent", "joint", "joint_mesh", "alpha"):
             raise ValueError(
-                f"Unknown noise mode: {mode}. Must be 'none', 'independent', 'joint', or 'alpha'."
+                f"Unknown noise mode: {mode}. Must be 'none', 'independent', 'joint', 'joint_mesh', or 'alpha'."
             )
 
     @property
@@ -127,7 +130,7 @@ class NoiseAugmentor:
             - parsed_for_graph: Arrays to use for graph generation
             - alpha_override: Optional alpha value (for 'alpha' mode)
         """
-        if self.mode == "joint":
+        if self.mode == "joint" or self.mode == "joint_mesh":
             noised = self.noise_arrays(parsed_arrays)
             return noised, noised, None
         elif self.mode == "independent":
@@ -145,14 +148,16 @@ class NoiseAugmentor:
         normals: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
-        Apply normal-directed noise to mesh vertices. No-ops unless mode == 'independent'.
+        Apply normal-directed noise to mesh vertices. Fires in 'independent' and
+        'joint_mesh' modes; no-op otherwise.
 
-        In 'independent' mode, the surface is generated from clean atoms and mesh
-        vertices are displaced along their normals here. In all other modes the
-        surface already reflects the noised geometry (joint) or no noise is to be
-        applied (none/alpha), so verts are returned unchanged.
+        - 'independent': surface is generated from clean atoms, then verts are
+          displaced along normals here.
+        - 'joint_mesh': surface is generated from noised atoms (joint propagation)
+          AND verts are additionally displaced along normals here.
+        - All other modes: verts returned unchanged.
         """
-        if self.mode != "independent":
+        if self.mode not in ("independent", "joint_mesh"):
             return verts
         from alphasurf.protein.create_surface import add_normal_noise
 
