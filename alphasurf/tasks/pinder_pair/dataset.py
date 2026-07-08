@@ -323,9 +323,19 @@ class PinderPairDataset(Dataset):
             f"[Cache] Pre-populating interface cache for {len(self.systems)} systems..."
         )
         cached = 0
+        from_disk = 0
         for i, system in enumerate(self.systems):
             sid = system["id"]
             if sid in self._interface_cache:
+                continue
+            precomputed = self._load_precomputed_interface(sid)
+            if precomputed is not None:
+                self._interface_cache[sid] = {
+                    k: (v.numpy() if isinstance(v, torch.Tensor) else v)
+                    for k, v in precomputed.items()
+                }
+                cached += 1
+                from_disk += 1
                 continue
             receptor_path = self._get_pdb_path(system, "receptor")
             ligand_path = self._get_pdb_path(system, "ligand")
@@ -337,7 +347,10 @@ class PinderPairDataset(Dataset):
                 print(
                     f"[Cache] {i + 1}/{len(self.systems)} processed ({cached} cached)"
                 )
-        print(f"[Cache] Done. {cached}/{len(self.systems)} systems cached.")
+        print(
+            f"[Cache] Done. {cached}/{len(self.systems)} systems cached "
+            f"({from_disk} from disk)."
+        )
 
     def __len__(self) -> int:
         return len(self.systems)

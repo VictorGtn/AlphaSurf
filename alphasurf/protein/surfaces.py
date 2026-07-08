@@ -251,6 +251,7 @@ class SurfaceObject(Data, FeaturesHolder):
         use_igl_normals=False,
         use_poisson=False,
         poisson_high_precision=True,
+        tufting=False,
     ):
         from alphasurf.protein.create_operators import compute_operators, vertex_normals
         from alphasurf.protein.create_surface import mesh_simplification
@@ -269,6 +270,7 @@ class SurfaceObject(Data, FeaturesHolder):
                 use_pymesh=use_pymesh,
                 surface_method=surface_method,
                 obj_name=obj_name,
+                tufting=tufting,
             )
         vnormals = vertex_normals(
             verts, faces, use_igl=use_igl_normals, name=f" {obj_name}"
@@ -329,6 +331,7 @@ class SurfaceObject(Data, FeaturesHolder):
         alpha_value = kwargs.pop("alpha_value", 0.1)
         atom_pos = kwargs.pop("atom_pos", None)
         atom_radius = kwargs.pop("atom_radius", None)
+        tufting = kwargs.pop("tufting", False)
 
         from alphasurf.utils.timing_stats import Timer
 
@@ -350,7 +353,12 @@ class SurfaceObject(Data, FeaturesHolder):
             else:
                 raise ValueError(f"Unknown surface method: {surface_method}")
         return cls.from_verts_faces(
-            verts, faces, surface_method=surface_method, obj_name=obj_name, **kwargs
+            verts,
+            faces,
+            surface_method=surface_method,
+            obj_name=obj_name,
+            tufting=tufting,
+            **kwargs,
         )
 
     def __cat_dim__(self, key, value, *args, **kwargs):

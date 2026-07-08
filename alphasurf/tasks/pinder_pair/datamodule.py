@@ -292,9 +292,11 @@ class PinderPairDataModule(pl.LightningDataModule):
             max_atoms = getattr(self.cfg.loader, "max_atoms_per_batch", 50000)
             min_batch_size = getattr(self.cfg.loader, "min_batch_size", 2)
 
+            dataset = self._create_dataset("train")
+
             # Compute atom counts from systems
             print("Computing atom counts for dynamic batching...")
-            sizes = self._compute_atom_counts(self.systems["train"])
+            sizes = self._compute_atom_counts(self.systems["train"], dataset)
 
             # Check if numpy is available (it should be in this env)
             import numpy as np
@@ -319,9 +321,6 @@ class PinderPairDataModule(pl.LightningDataModule):
                 filtered_systems = self.systems["train"]
                 filtered_sizes = sizes
 
-            dataset = self._create_dataset("train")
-            # Hack: replace systems in the dataset with filtered ones if needed
-            # A cleaner way would be to pass systems to create_dataset, but we'll re-instantiate or set attribute
             dataset.systems = filtered_systems
             dataset.prepopulate_interface_cache()
             dataset = self._maybe_wrap_timing(dataset)
@@ -344,19 +343,12 @@ class PinderPairDataModule(pl.LightningDataModule):
             shuffle = getattr(self.cfg.loader, "shuffle", True)
             return DataLoader(dataset, shuffle=shuffle, **self.loader_args)
 
-    def _compute_atom_counts(self, systems) -> list:
+    def _compute_atom_counts(self, systems, dataset) -> list:
         """Compute total atom count for each system (R + L)."""
         sizes = []
         for sys in systems:
-            # Try to use explicit path if available, else fallback to constructed path
-            r_path = sys.get("receptor_path")
-            if not r_path:
-                r_path = os.path.join(self.pdb_dir, f"{sys['receptor_id']}.pdb")
-
-            l_path = sys.get("ligand_path")
-            if not l_path:
-                l_path = os.path.join(self.pdb_dir, f"{sys['ligand_id']}.pdb")
-
+            r_path = dataset._get_pdb_path(sys, "receptor")
+            l_path = dataset._get_pdb_path(sys, "ligand")
             total = self._count_atoms(r_path) + self._count_atoms(l_path)
             sizes.append(total)
         return sizes
@@ -387,7 +379,7 @@ class PinderPairDataModule(pl.LightningDataModule):
 
         if use_dynamic_batching:
             max_atoms = getattr(self.cfg.loader, "max_atoms_per_batch", 50000)
-            sizes = self._compute_atom_counts(self.systems[split])
+            sizes = self._compute_atom_counts(self.systems[split], dataset)
 
             batch_sampler = AtomBudgetBatchSampler(
                 sizes=sizes,

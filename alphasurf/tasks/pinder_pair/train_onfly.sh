@@ -43,7 +43,8 @@ else
                  on_fly.sigma_graph=${SIGMA_GRAPH:-0.3} \
                  on_fly.sigma_mesh=${SIGMA_MESH:-0.3} \
                  on_fly.clip_sigma=${CLIP_SIGMA:-null} \
-                 on_fly.min_vert_number=16"
+                 on_fly.min_vert_number=16 \
+                 on_fly.tufting=${TUFTING:-false}"
 fi
 
 # Run training

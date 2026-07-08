@@ -484,6 +484,7 @@ def mesh_simplification(
     use_pymesh=True,
     surface_method="msms",
     obj_name=None,
+    tufting=False,
 ):
     """
     Simplify and clean a mesh.
@@ -505,10 +506,10 @@ def mesh_simplification(
     # Clean with open3d
     if surface_method != "alpha_complex":
         mesh.remove_non_manifold_edges()
-    if surface_method != "alpha_complex":
+    if not tufting:
         mesh.remove_duplicated_vertices()
     mesh.remove_degenerate_triangles()
-    if surface_method != "alpha_complex":
+    if not tufting:
         mesh.remove_duplicated_triangles()
 
     mesh.remove_unreferenced_vertices()
@@ -652,8 +653,7 @@ def mesh_simplification(
     verts_out = verts_out.astype(np.float32)
     faces_out = faces_out.astype(np.int32)
     # remove duplicate
-    _process = surface_method != "alpha_complex"
-    mesh = trimesh.Trimesh(vertices=verts_out, faces=faces_out, process=_process)
+    mesh = trimesh.Trimesh(vertices=verts_out, faces=faces_out, process=not tufting)
     # save_debug_ply(mesh, base_name, "12_after_trimesh_preprocess")
     verts_out = np.array(mesh.vertices).astype(np.float32)
     faces_out = np.array(mesh.faces).astype(np.int32)

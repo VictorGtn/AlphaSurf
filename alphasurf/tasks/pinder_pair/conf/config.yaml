@@ -57,6 +57,7 @@ on_fly:
     use_pymesh: false
     use_whole_surfaces: true # Full proteins for pair task
     nanoshaper_grid_scale: 0.3
+    tufting: true
 
     # Noise augmentation
     noise_mode: "none"
