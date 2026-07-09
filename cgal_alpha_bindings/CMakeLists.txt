@@ -16,6 +16,7 @@ find_package(CGAL REQUIRED)
 pybind11_add_module(cgal_alpha cgal_alpha_bindings.cpp)
 pybind11_add_module(cgal_alpha_algo2 cgal_alpha_bindings_algo2.cpp)
 pybind11_add_module(cgal_alpha_raw cgal_alpha_raw.cpp)
+pybind11_add_module(cgal_alpha_tagged cgal_alpha_tagged.cpp)
 pybind11_add_module(cgal_pmp_repair cgal_pmp_repair.cpp)
 
 # Include SBL and necessary extensions (for cgal_alpha only)
@@ -35,6 +36,7 @@ target_include_directories(cgal_alpha PRIVATE
 target_link_libraries(cgal_alpha PRIVATE CGAL::CGAL)
 target_link_libraries(cgal_alpha_algo2 PRIVATE CGAL::CGAL)
 target_link_libraries(cgal_alpha_raw PRIVATE CGAL::CGAL)
+target_link_libraries(cgal_alpha_tagged PRIVATE CGAL::CGAL)
 target_link_libraries(cgal_pmp_repair PRIVATE CGAL::CGAL)
 
 # Print info

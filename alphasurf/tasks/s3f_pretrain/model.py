@@ -124,8 +124,6 @@ class S3FPretrainNet(nn.Module):
         x = torch.cat([graph.x, esm_emb], dim=-1)
         x = self._apply_node_mask(x, per_protein, ptr, B)
 
-        surface = self._zero_surface_features(surface, batch, device)
-
         graph.x = x
         _, graph_out = self.encoder(graph=graph, surface=surface)
         logits = self.residue_head(graph_out.x)
@@ -236,18 +234,3 @@ class S3FPretrainNet(nn.Module):
                 x[gp_rand, 1 + ra_rand] = 1.0
                 x[gp_rand, 0] = self._hphob_lookup[ra_rand]
         return x
-
-    def _zero_surface_features(self, surface, batch, device):
-        masks = batch.surf_vert_zero_mask
-        if masks is None:
-            return surface
-        if isinstance(masks, torch.Tensor):
-            masks = [masks]
-
-        global_mask = torch.cat([m.to(device) for m in masks])
-        if not global_mask.any():
-            return surface
-
-        surface.x = surface.x.clone()
-        surface.x[global_mask] = 0.0
-        return surface

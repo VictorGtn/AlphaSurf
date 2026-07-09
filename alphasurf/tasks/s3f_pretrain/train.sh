@@ -7,11 +7,11 @@
 #SBATCH --cpus-per-task=9
 #SBATCH --gres=gpu:1
 #SBATCH --time=240:00:00
-#SBATCH --output=log/s3f_pretrain/%x_%j.log
-#SBATCH --error=log/s3f_pretrain/%x_%j.err
+#SBATCH --output=/cluster/CBIO/data2/vgertner/alphasurf/alphasurf/alphasurf/tasks/s3f_pretrain/log/%x_%j.log
+#SBATCH --error=/cluster/CBIO/data2/vgertner/alphasurf/alphasurf/alphasurf/tasks/s3f_pretrain/log/%x_%j.err
 #SBATCH --mem=64000
 
-set -euo pipefail
+set +e
 
 source /cluster/CBIO/home/vgertner/.bashrc
 conda activate atomsurf_poisson2
@@ -32,12 +32,12 @@ export LD_LIBRARY_PATH=$(python -c "import torch, os; print(os.path.join(os.path
 
 ulimit -n 65536
 
-cd "$REPO_ROOT"
-mkdir -p log/s3f_pretrain
+LOG_DIR=/cluster/CBIO/data2/vgertner/alphasurf/alphasurf/alphasurf/tasks/s3f_pretrain/log
+mkdir -p "$LOG_DIR"
 export ATOMSURF_VERSION="${SLURM_JOB_ID:-s3f_$(date +%s)}"
 
 python -m alphasurf.tasks.s3f_pretrain.train \
     device=0 \
     run_name=s3f_pretrain \
-    log_dir="$REPO_ROOT/log/s3f_pretrain" \
+    log_dir="$LOG_DIR" \
     "$@"

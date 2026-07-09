@@ -15,7 +15,7 @@ from alphasurf.protein.protein_loader import ProteinLoader
 from alphasurf.tasks.s3f_pretrain.dataset import CATHDataset
 from alphasurf.utils.config_utils import merge_surface_config
 from alphasurf.utils.data_utils import AtomBatch
-from omegaconf import OmegaConf
+from omegaconf import open_dict
 from torch.utils.data import DataLoader
 
 
@@ -74,7 +74,7 @@ class S3FPretrainDataModule(pl.LightningDataModule):
         )
         update_model_input_dim(cfg, temp_dataset, gkey="graph", skey="surface")
 
-        with OmegaConf.set_struct(cfg, False):
+        with open_dict(cfg):
             block0 = cfg.encoder.blocks[0]
             if "g_pre_block" in block0:
                 block0.g_pre_block.dim_in = 31 + ESM_EMBED_DIM

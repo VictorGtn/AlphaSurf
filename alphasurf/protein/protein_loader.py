@@ -31,6 +31,8 @@ from torch_geometric.data import Data
 
 logger = logging.getLogger(__name__)
 
+BACKBONE_ATOM_NAMES = {"N", "CA", "C", "O", "CB"}
+
 
 class ProteinLoader:
     """
@@ -121,6 +123,7 @@ class ProteinLoader:
         name: str,
         pdb_path: Optional[str] = None,
         crop_window: Optional[Tuple[int, int]] = None,
+        ala_strip_positions: Optional[list] = None,
     ) -> Optional[Protein]:
         """
         Load or generate a Protein.
@@ -135,6 +138,10 @@ class ProteinLoader:
             crop_window: if set (on_fly mode only), crop residues [start, end)
                 BEFORE surface/graph generation. Surface is built from cropped
                 atoms only — no mesh-operator rebuild needed.
+            ala_strip_positions: if set (on_fly mode only), replace sidechain
+                atoms (beyond Cb) with nothing at these residue indices — only
+                N, CA, C, O, CB remain. Applied after crop, before surface/graph
+                generation. Used for S3F-style masked-residue leakage prevention.
 
         Returns:
             Protein object with surface and graph, or None on failure
@@ -143,7 +150,10 @@ class ProteinLoader:
             protein = self._load_from_disk(name)
         else:
             protein = self._generate_on_fly(
-                name, pdb_path=pdb_path, crop_window=crop_window
+                name,
+                pdb_path=pdb_path,
+                crop_window=crop_window,
+                ala_strip_positions=ala_strip_positions,
             )
 
         if protein is None:
@@ -271,6 +281,7 @@ class ProteinLoader:
         name: str,
         pdb_path: Optional[str] = None,
         crop_window: Optional[Tuple[int, int]] = None,
+        ala_strip_positions: Optional[list] = None,
     ) -> Optional[Protein]:
         """Generate surface and graph on-the-fly from PDB."""
         if "_patch_" in name:
@@ -293,6 +304,11 @@ class ProteinLoader:
 
         if crop_window is not None:
             parsed_arrays = self._crop_parsed_arrays(parsed_arrays, *crop_window)
+
+        if ala_strip_positions:
+            parsed_arrays = self._strip_sidechains_to_ala(
+                parsed_arrays, ala_strip_positions
+            )
 
         if self.noise_augmentor is not None and self.noise_augmentor.enabled:
             (
@@ -401,6 +417,63 @@ class ProteinLoader:
             atom_charge = atom_charge[atom_mask]
         atom_radius = atom_radius[atom_mask]
         atom_ids = atom_ids[atom_mask]
+
+        return (
+            amino_types,
+            atom_chain_id,
+            atom_amino_id,
+            atom_names,
+            atom_types,
+            atom_pos,
+            atom_charge,
+            atom_radius,
+            res_sse,
+            amino_ids,
+            atom_ids,
+        )
+
+    @staticmethod
+    def _strip_sidechains_to_ala(arrays: Tuple, positions) -> Tuple:
+        """Replace sidechain atoms (beyond Cb) with nothing at the given
+        residues — keep only N, CA, C, O, CB. Residue-level arrays unchanged.
+
+        Used for S3F-style masked-residue leakage prevention: the surface and
+        graph are built from coordinates where masked residues look like
+        Alanine (backbone + Cb only), so no sidechain geometry leaks.
+        """
+        (
+            amino_types,
+            atom_chain_id,
+            atom_amino_id,
+            atom_names,
+            atom_types,
+            atom_pos,
+            atom_charge,
+            atom_radius,
+            res_sse,
+            amino_ids,
+            atom_ids,
+        ) = arrays
+
+        positions_set = {int(p) for p in positions}
+
+        keep = np.ones(len(atom_amino_id), dtype=bool)
+        for i in range(len(atom_amino_id)):
+            res_id = int(atom_amino_id[i])
+            if res_id in positions_set:
+                name = str(atom_names[i]).strip().upper()
+                if name not in BACKBONE_ATOM_NAMES:
+                    keep[i] = False
+
+        atom_chain_id = atom_chain_id[keep]
+        atom_amino_id = atom_amino_id[keep]
+        atom_names = atom_names[keep]
+        atom_types = atom_types[keep]
+        atom_pos = atom_pos[keep]
+        if atom_charge is not None:
+            atom_charge = atom_charge[keep]
+        atom_radius = atom_radius[keep]
+        atom_ids = atom_ids[keep]
 
         return (
             amino_types,

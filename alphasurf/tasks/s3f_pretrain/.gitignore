@@ -1,0 +1,4 @@
+log/
+ckpt/
+lightning_logs/
+outputs/

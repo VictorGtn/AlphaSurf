@@ -125,41 +125,72 @@ def score_one_assay(
         )
         return None
 
-    protein = loader.load(assay.assay_id, pdb_path=str(pdb_path))
-    if protein is None:
-        logger.warning(f"[{assay.assay_id}] failed to build protein from {pdb_path}")
-        return None
-
-    graph = protein.graph
-    surface = protein.surface
-
-    offset = resolve_position_offset(assay, graph.x.shape[0])
-    if offset is None:
-        return None
-    if not validate_aa_identity(assay, graph, offset):
-        logger.warning(f"[{assay.assay_id}] AA identity check failed; skipping.")
-        return None
-
-    if offset != 0:
-        shifted_mutants = []
-        for m in assay.mutants:
-            shifted_mutants.append(
-                type(m)(
-                    mutant_str=m.mutant_str,
-                    mutated_sequence=m.mutated_sequence,
-                    score=m.score,
-                    positions=[p + offset for p in m.positions],
-                    wt_aas=m.wt_aas,
-                    mt_aas=m.mt_aas,
-                )
-            )
-        assay.mutants = shifted_mutants
-
     if scoring_method == "option_f":
+        ref_protein = loader.load(assay.assay_id, pdb_path=str(pdb_path))
+        if ref_protein is None:
+            logger.warning(
+                f"[{assay.assay_id}] failed to build protein from {pdb_path}"
+            )
+            return None
+        graph = ref_protein.graph
+        offset = resolve_position_offset(assay, graph.x.shape[0])
+        if offset is None:
+            return None
+        if not validate_aa_identity(assay, graph, offset):
+            logger.warning(f"[{assay.assay_id}] AA identity check failed; skipping.")
+            return None
+        if offset != 0:
+            shifted_mutants = []
+            for m in assay.mutants:
+                shifted_mutants.append(
+                    type(m)(
+                        mutant_str=m.mutant_str,
+                        mutated_sequence=m.mutated_sequence,
+                        score=m.score,
+                        positions=[p + offset for p in m.positions],
+                        wt_aas=m.wt_aas,
+                        mt_aas=m.mt_aas,
+                    )
+                )
+            assay.mutants = shifted_mutants
         predictions = score_assay_option_f(
-            module, graph, surface, assay, device, batch_size=batch_size
+            module,
+            loader,
+            str(pdb_path),
+            assay.assay_id,
+            assay,
+            device,
+            batch_size=batch_size,
         )
     else:
+        protein = loader.load(assay.assay_id, pdb_path=str(pdb_path))
+        if protein is None:
+            logger.warning(
+                f"[{assay.assay_id}] failed to build protein from {pdb_path}"
+            )
+            return None
+        graph = protein.graph
+        surface = protein.surface
+        offset = resolve_position_offset(assay, graph.x.shape[0])
+        if offset is None:
+            return None
+        if not validate_aa_identity(assay, graph, offset):
+            logger.warning(f"[{assay.assay_id}] AA identity check failed; skipping.")
+            return None
+        if offset != 0:
+            shifted_mutants = []
+            for m in assay.mutants:
+                shifted_mutants.append(
+                    type(m)(
+                        mutant_str=m.mutant_str,
+                        mutated_sequence=m.mutated_sequence,
+                        score=m.score,
+                        positions=[p + offset for p in m.positions],
+                        wt_aas=m.wt_aas,
+                        mt_aas=m.mt_aas,
+                    )
+                )
+            assay.mutants = shifted_mutants
         predictions = score_assay(
             module, graph, surface, assay, device, batch_size=batch_size
         )

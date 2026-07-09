@@ -10,11 +10,12 @@ S3F's data pipeline:
   - max_length=250 enforced by random crop at __getitem__ time (not filter)
   - Split ratios: [0.97, 0.02, 0.01] random on sorted file list
   - Masking: 15% of residues, 80% [MASK] / 10% random / 10% unchanged
-  - Surface leakage prevention: zero features at k=20 nearest surface
-    vertices to each masked residue's Ca
 
-The masking PLAN is stored in the returned Data; the model forward applies
-the mask to graph.x, the ESM input tokens, and the surface features.
+Surface leakage prevention: at masked residues, sidechain atoms beyond Cb
+are stripped from the coordinates BEFORE surface/graph generation. Both
+branches see an Alanine-like structure (backbone + Cb only) at masked
+positions, so no sidechain geometry leaks. Graph node features (one-hot,
+hphob) are still zeroed separately by the model forward.
 """
 
 from __future__ import annotations
@@ -41,14 +42,14 @@ class CATHDataset(Dataset):
     """CATH dompdb dataset for masked residue prediction.
 
     __getitem__ returns a torch_geometric Data with:
-      - graph: ResidueGraph (31-dim node features, UNMASKED, possibly cropped)
-      - surface: SurfaceObject (features UNMODIFIED, possibly cropped)
+      - graph: ResidueGraph (31-dim node features, coordinates already
+        Ala-stripped at masked positions)
+      - surface: SurfaceObject (built from Ala-stripped coordinates)
       - sequence: str (original AA sequence, cropped)
       - masked_positions: LongTensor (0-indexed into this protein's residues)
       - mask_types: LongTensor (0=mask, 1=random, 2=unchanged)
       - target_residues: LongTensor (original AA index in res_type_dict, 0-20)
       - random_aa_indices: LongTensor (random AA for type=1, -1 for others)
-      - surf_vert_zero_mask: BoolTensor (len = N_surf, True = zero features)
     """
 
     SPLIT_RATIOS = (0.97, 0.02, 0.01)
@@ -95,10 +96,19 @@ class CATHDataset(Dataset):
         pdb_path = os.path.join(self.pdb_dir, pdb_name)
 
         crop_window = self._compute_crop_window(pdb_path)
+        n_res_for_mask = (
+            (crop_window[1] - crop_window[0])
+            if crop_window is not None
+            else self._count_residues_fast(pdb_path)
+        )
+        masked_positions = self._sample_positions(n_res_for_mask)
 
         try:
             protein = self.protein_loader.load(
-                protein_name, pdb_path=pdb_path, crop_window=crop_window
+                protein_name,
+                pdb_path=pdb_path,
+                crop_window=crop_window,
+                ala_strip_positions=masked_positions.tolist(),
             )
         except Exception as e:
             logger.warning(f"Failed to load {pdb_name}: {e}")
@@ -112,19 +122,20 @@ class CATHDataset(Dataset):
             return None
 
         n_res = graph.x.shape[0]
-        if n_res < 2:
+        n_surf = surface.x.shape[0] if surface.x is not None else 0
+        if n_res < 32 or n_surf < 64:
+            return None
+
+        masked_positions = masked_positions[masked_positions < n_res]
+        if len(masked_positions) == 0:
             return None
 
         sequence = self._extract_sequence(graph)
         if sequence is None or len(sequence) != n_res:
             return None
 
-        masked_positions, mask_types, target_residues, random_aa_indices = (
-            self._sample_masking(n_res, graph)
-        )
-
-        surf_vert_zero_mask = self._compute_surf_leak_mask(
-            graph, surface, masked_positions
+        mask_types, target_residues, random_aa_indices = self._complete_masking_plan(
+            graph, masked_positions
         )
 
         return Data(
@@ -135,16 +146,10 @@ class CATHDataset(Dataset):
             mask_types=mask_types,
             target_residues=target_residues,
             random_aa_indices=random_aa_indices,
-            surf_vert_zero_mask=surf_vert_zero_mask,
             protein_name=protein_name,
         )
 
     def _compute_crop_window(self, pdb_path: str):
-        """Determine a random crop window if the PDB exceeds max_length residues.
-
-        Matches S3F's truncate logic: random start in [0, n_res - max_length].
-        Returns None if no crop needed.
-        """
         if self.max_length is None:
             return None
         n_res = self._count_residues_fast(pdb_path)
@@ -155,7 +160,6 @@ class CATHDataset(Dataset):
 
     @staticmethod
     def _count_residues_fast(pdb_path: str) -> int:
-        """Fast residue count by counting CA atoms (one per residue)."""
         count = 0
         with open(pdb_path) as f:
             for line in f:
@@ -163,19 +167,14 @@ class CATHDataset(Dataset):
                     count += 1
         return count
 
-    def _extract_sequence(self, graph) -> Optional[str]:
-        try:
-            aa_idx = graph.x[:, 1:22].argmax(dim=-1).cpu().numpy()
-            return "".join(res_type_idx_to_1[i] for i in aa_idx)
-        except Exception as e:
-            logger.warning(f"Sequence extraction failed: {e}")
-            return None
-
-    def _sample_masking(self, n_res: int, graph):
+    def _sample_positions(self, n_res: int) -> torch.Tensor:
         n_mask = max(1, int(round(n_res * self.mask_rate)))
+        n_mask = min(n_mask, n_res)
         positions = self._rng.choice(n_res, size=n_mask, replace=False)
-        positions = torch.from_numpy(positions).long()
+        return torch.from_numpy(positions).long()
 
+    def _complete_masking_plan(self, graph, positions: torch.Tensor):
+        n_mask = len(positions)
         r = self._rng.random(n_mask)
         mask_types = np.where(
             r < 0.8,
@@ -195,24 +194,12 @@ class CATHDataset(Dataset):
             random_aa_indices,
             torch.full_like(random_aa_indices, -1),
         )
-        return positions, mask_types, target_residues, random_aa_indices
+        return mask_types, target_residues, random_aa_indices
 
-    def _compute_surf_leak_mask(self, graph, surface, masked_positions):
-        n_surf = surface.x.shape[0]
-        zero_mask = torch.zeros(n_surf, dtype=torch.bool)
-        if masked_positions.numel() == 0 or n_surf == 0:
-            return zero_mask
-
-        ca_pos = graph.node_pos.float()
-        surf_pos = getattr(surface, "pos", None)
-        if surf_pos is None and hasattr(surface, "verts") and surface.verts is not None:
-            surf_pos = torch.from_numpy(np.asarray(surface.verts)).float()
-        if surf_pos is None:
-            return zero_mask
-
-        k = min(self.k_surf_leak, n_surf)
-        for pos in masked_positions:
-            dists = (surf_pos - ca_pos[pos]).norm(dim=-1)
-            _, nearest_idx = dists.topk(k, largest=False)
-            zero_mask[nearest_idx] = True
-        return zero_mask
+    def _extract_sequence(self, graph) -> Optional[str]:
+        try:
+            aa_idx = graph.x[:, 1:22].argmax(dim=-1).cpu().numpy()
+            return "".join(res_type_idx_to_1[i] for i in aa_idx)
+        except Exception as e:
+            logger.warning(f"Sequence extraction failed: {e}")
+            return None
