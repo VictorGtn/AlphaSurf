@@ -183,7 +183,7 @@ class CATHDataset(Dataset):
         )
         mask_types = torch.from_numpy(mask_types).long()
 
-        aa_idx = graph.x[:, 1:22].argmax(dim=-1).cpu().long()
+        aa_idx = graph.x[:, 1:21].argmax(dim=-1).cpu().long()
         target_residues = aa_idx[positions]
 
         all_aa = list(range(20))
@@ -198,7 +198,7 @@ class CATHDataset(Dataset):
 
     def _extract_sequence(self, graph) -> Optional[str]:
         try:
-            aa_idx = graph.x[:, 1:22].argmax(dim=-1).cpu().numpy()
+            aa_idx = graph.x[:, 1:21].argmax(dim=-1).cpu().numpy()
             return "".join(res_type_idx_to_1[i] for i in aa_idx)
         except Exception as e:
             logger.warning(f"Sequence extraction failed: {e}")

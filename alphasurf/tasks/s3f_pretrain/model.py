@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 ESM_EMBED_DIM = 1280
 ESM_REPR_LAYER = 33
-NUM_AA_CLASSES = 21
+NUM_AA_CLASSES = 20
 
 RES_TYPE_TO_LETTER = {
     "ALA": "A",
@@ -57,6 +57,7 @@ class S3FPretrainNet(nn.Module):
     def __init__(self, cfg_encoder, cfg_head):
         super().__init__()
         self.encoder = ProteinEncoder(cfg_encoder)
+        self.encoder_name = getattr(cfg_encoder, "name", "")
         self.encoded_dim = cfg_head.encoded_dims
         self.head_dropout = cfg_head.dropout
 
@@ -91,6 +92,8 @@ class S3FPretrainNet(nn.Module):
 
         res_idx_to_esm = torch.zeros(NUM_AA_CLASSES, dtype=torch.long)
         for res_type, idx in res_type_dict.items():
+            if idx >= NUM_AA_CLASSES:
+                continue
             letter = RES_TYPE_TO_LETTER.get(res_type.upper())
             res_idx_to_esm[idx] = (
                 alphabet.get_idx(letter) if letter else alphabet.unk_idx
@@ -121,10 +124,13 @@ class S3FPretrainNet(nn.Module):
 
         esm_emb = self._run_esm_masked(sequences, per_protein, device, graph.x.dtype)
 
-        x = torch.cat([graph.x, esm_emb], dim=-1)
-        x = self._apply_node_mask(x, per_protein, ptr, B)
+        if "s3f_exact" in self.encoder_name:
+            graph.x = esm_emb
+        else:
+            x = torch.cat([graph.x, esm_emb], dim=-1)
+            x = self._apply_node_mask(x, per_protein, ptr, B)
+            graph.x = x
 
-        graph.x = x
         _, graph_out = self.encoder(graph=graph, surface=surface)
         logits = self.residue_head(graph_out.x)
 

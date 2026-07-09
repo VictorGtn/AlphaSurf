@@ -27,6 +27,7 @@ use_wandb: False
 run_name: s3f_pretrain
 project_name: s3f_pretrain
 data_dir: /cluster/CBIO/data2/vgertner/alphasurf/alphasurf/data/cath/dompdb
+precompute_dir: /cluster/CBIO/data2/vgertner/alphasurf/alphasurf/data/cath/s3f_exact_precomputed
 log_dir: "./"
 epochs: 100
 device: 0
@@ -69,7 +70,7 @@ train:
     check_val_every_n_epoch: 2
     limit_train_batches: 1.0
     limit_val_batches: 1.0
-    gradient_clip_val: 1.0
+    gradient_clip_val: null
     max_steps: -1
     log_every_n_steps: 50
     detect_anomaly: False

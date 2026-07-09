@@ -215,3 +215,40 @@ dmasif|pronet|gvp_normals:
     post_g_dim_out: ${model_hdim}
     neigh_thresh: 8
     sigma: 2.5
+
+# S3F-exact composable blocks (dual-branch GVP, no cross-talk)
+s3f_structure_init:
+    _target_: alphasurf.network_utils.misc_arch.s3f_blocks.S3FStructureInit
+    node_h_dim: [256, 16]
+    edge_h_dim: [64, 1]
+    vector_gate: true
+
+s3f_surface_init:
+    _target_: alphasurf.network_utils.misc_arch.s3f_blocks.S3FSurfaceInit
+    node_h_dim: [256, 16]
+    edge_h_dim: [64, 1]
+    num_surf_res_neighbor: 3
+    num_surf_graph_neighbor: 16
+    surf_geom_dim: 42
+    vector_gate: true
+
+s3f_structure_gvp:
+    _target_: alphasurf.network_utils.misc_arch.s3f_blocks.S3FStructureGVP
+    node_h_dim: [256, 16]
+    edge_h_dim: [64, 1]
+    num_layers: 5
+    drop_rate: 0.1
+    vector_gate: true
+
+s3f_surface_gvp:
+    _target_: alphasurf.network_utils.misc_arch.s3f_blocks.S3FSurfaceGVP
+    node_h_dim: [256, 16]
+    edge_h_dim: [64, 1]
+    num_layers: 5
+    drop_rate: 0.1
+    vector_gate: true
+
+s3f_fusion:
+    _target_: alphasurf.network_utils.misc_arch.s3f_blocks.S3FFusion
+    node_h_dim: [256, 16]
+    num_surf_res_neighbor: 20

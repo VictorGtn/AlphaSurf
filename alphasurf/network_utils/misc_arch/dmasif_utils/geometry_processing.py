@@ -10,7 +10,7 @@ from pykeops.torch import LazyTensor
 from pykeops.torch.cluster import grid_cluster
 
 from ..timing import time_operation
-from .helper import *
+from .helper import diagonal_ranges
 
 # Input-Output for tests =======================================================
 
@@ -49,11 +49,6 @@ def subsample(x, batch=None, scale=1.0):
             points = torch.zeros_like(x_1[:C])
             points.scatter_add_(0, labels[:, None].repeat(1, D), x_1)
             return (points[:, :-1] / points[:, -1:]).contiguous()
-
-        else:  # Older implementation;
-            points = scatter(points * weights[:, None], labels, dim=0)
-            weights = scatter(weights, labels, dim=0)
-            points = points / weights[:, None]
 
     else:  # We process proteins using a for loop.
         # This is probably sub-optimal, but I don't really know
@@ -94,31 +89,9 @@ def soft_distances(x, y, batch_x, batch_y, num_atoms, smoothness=0.01, atomtypes
     D_ij.ranges = diagonal_ranges(batch_x, batch_y)
 
     if atomtypes is not None:
-        atomic_radii = torch.cuda.FloatTensor(
-            [
-                120,
-                182,
-                170,
-                155,
-                152,
-                227,
-                173,
-                180,
-                180,
-                275,
-                231,
-                161,
-                156,
-                152,
-                126,
-                140,
-                139,
-                190,
-                249,
-                158,
-                343,
-                155,
-            ],
+        atomic_radii = torch.tensor(
+            [170, 110, 152, 155, 180, 190],  # {C, H, O, N, S, SE} in pm
+            dtype=x.dtype,
             device=x.device,
         )
         atomic_radii = atomic_radii / atomic_radii.min()
