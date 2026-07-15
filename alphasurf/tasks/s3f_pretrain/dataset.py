@@ -11,11 +11,10 @@ S3F's data pipeline:
   - Split ratios: [0.97, 0.02, 0.01] random on sorted file list
   - Masking: 15% of residues, 80% [MASK] / 10% random / 10% unchanged
 
-Surface leakage prevention: at masked residues, sidechain atoms beyond Cb
-are stripped from the coordinates BEFORE surface/graph generation. Both
-branches see an Alanine-like structure (backbone + Cb only) at masked
-positions, so no sidechain geometry leaks. Graph node features (one-hot,
-hphob) are still zeroed separately by the model forward.
+Surface leakage prevention: all sidechain atoms, including Cb, are stripped
+from masked residues BEFORE surface/graph generation. Both branches see the
+same N/CA/C/O atom template at every masked position, including glycine.
+Graph node features (one-hot, hphob) are still masked separately by the model.
 """
 
 from __future__ import annotations
@@ -28,6 +27,11 @@ import numpy as np
 import torch
 from alphasurf.protein.graphs import res_type_idx_to_1
 from alphasurf.protein.protein_loader import ProteinLoader
+from alphasurf.tasks.s3f_pretrain.sampling import (
+    masked_residue_count,
+    split_like_s3f,
+    worker_rng,
+)
 from torch.utils.data import Dataset
 from torch_geometric.data import Data
 
@@ -75,17 +79,11 @@ class CATHDataset(Dataset):
         self.k_surf_leak = k_surf_leak
 
         all_pdbs = sorted(os.listdir(pdb_dir))
-        n = len(all_pdbs)
-        n_train = int(n * self.SPLIT_RATIOS[0])
-        n_val = int(n * self.SPLIT_RATIOS[1])
-        if split == "train":
-            self.pdbs = all_pdbs[:n_train]
-        elif split == "val":
-            self.pdbs = all_pdbs[n_train : n_train + n_val]
-        else:
-            self.pdbs = all_pdbs[n_train + n_val :]
+        self.pdbs = split_like_s3f(all_pdbs, split, self.SPLIT_RATIOS)
 
-        self._rng = np.random.default_rng(seed)
+        self.seed = int(seed)
+        self._rng = None
+        self._rng_seed = None
 
     def __len__(self) -> int:
         return len(self.pdbs)
@@ -109,6 +107,7 @@ class CATHDataset(Dataset):
                 pdb_path=pdb_path,
                 crop_window=crop_window,
                 ala_strip_positions=masked_positions.tolist(),
+                ala_strip_keep_cb=False,
             )
         except Exception as e:
             logger.warning(f"Failed to load {pdb_name}: {e}")
@@ -155,7 +154,7 @@ class CATHDataset(Dataset):
         n_res = self._count_residues_fast(pdb_path)
         if n_res <= self.max_length:
             return None
-        start = int(self._rng.integers(0, n_res - self.max_length + 1))
+        start = int(worker_rng(self).integers(0, n_res - self.max_length + 1))
         return (start, start + self.max_length)
 
     @staticmethod
@@ -168,14 +167,14 @@ class CATHDataset(Dataset):
         return count
 
     def _sample_positions(self, n_res: int) -> torch.Tensor:
-        n_mask = max(1, int(round(n_res * self.mask_rate)))
-        n_mask = min(n_mask, n_res)
-        positions = self._rng.choice(n_res, size=n_mask, replace=False)
+        n_mask = masked_residue_count(n_res, self.mask_rate)
+        positions = worker_rng(self).choice(n_res, size=n_mask, replace=False)
         return torch.from_numpy(positions).long()
 
     def _complete_masking_plan(self, graph, positions: torch.Tensor):
         n_mask = len(positions)
-        r = self._rng.random(n_mask)
+        rng = worker_rng(self)
+        r = rng.random(n_mask)
         mask_types = np.where(
             r < 0.8,
             MASK_TYPE_MASK,
@@ -187,7 +186,7 @@ class CATHDataset(Dataset):
         target_residues = aa_idx[positions]
 
         all_aa = list(range(20))
-        random_aa = self._rng.choice(all_aa, size=n_mask)
+        random_aa = rng.choice(all_aa, size=n_mask)
         random_aa_indices = torch.from_numpy(random_aa).long()
         random_aa_indices = torch.where(
             mask_types == MASK_TYPE_RANDOM,

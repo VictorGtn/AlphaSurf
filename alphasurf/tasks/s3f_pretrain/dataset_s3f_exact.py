@@ -7,14 +7,15 @@ Loads .pt files produced by precompute_s3f_exact.py. Each file contains:
   - bb_pos: (n_res, 3, 3) — N/CA/C per residue
   - surf_pos: (M, 3)
   - surf_normals: (M, 3)
-  - surf_feat: (M, 42) — curvature(10) + HKS(32)
+  - surf_feat: (M, 42) — HKS(32) + curvature(10)
+  - res2surf: (n_res, 3, 21) full-protein correspondence
 
 Per-epoch operations:
   - Random crop to [0, max_length) if longer
-  - Filter surface points whose 3-NN residue mean falls in crop
+  - Keep the union of surface points referenced by cropped residues
   - Build Cα radius=10 graph + RBF(D_max=20) edges
   - Build surface kNN k=16 graph + RBF edges
-  - Compute res2surf (60 NN per residue: 20 per backbone atom × 3)
+  - Remap res2surf (63 NN per residue: released S3F's effective 21 × 3)
   - Sample masked residues (15%, 80/10/10 split)
   - Build torch_geometric Data with everything S3FPretrainNet needs
 
@@ -34,6 +35,12 @@ from torch.utils.data import Dataset
 from torch_geometric.data import Data
 from torch_geometric.nn import knn_graph
 from torch_geometric.utils import to_undirected
+
+from alphasurf.tasks.s3f_pretrain.sampling import (
+    masked_residue_count,
+    split_like_s3f,
+    worker_rng,
+)
 
 
 class S3FSurfaceData(Data):
@@ -65,7 +72,7 @@ RADIUS_CUTOFF = 10.0
 RBF_D_MAX = 20.0
 RBF_DIM = 16
 SURF_KNN = 16
-FUSION_K_PER_ATOM = 20
+FUSION_K_PER_ATOM = 21
 SURF_INIT_K = 3
 
 
@@ -103,7 +110,7 @@ class CATHDatasetS3FExact(Dataset):
       - graph.node_pos: (n_res, 3) Cα
       - graph.edge_index, graph.edge_rbf, graph.edge_vec: precomputed
       - surface.verts, surface.vnormals, surface.x: (M, *) precomputed feats
-      - surface.res2surf: (n_res, 60) fusion-pool indices
+      - surface.res2surf: (n_res, 63) fusion-pool indices
       - surface.edge_index, surface.edge_rbf, surface.edge_vec
       - sequence: str
       - masked_positions, mask_types, target_residues, random_aa_indices
@@ -128,17 +135,11 @@ class CATHDatasetS3FExact(Dataset):
         self.max_length = max_length
 
         all_pts = sorted(f for f in os.listdir(precompute_dir) if f.endswith(".pt"))
-        n = len(all_pts)
-        n_train = int(n * self.SPLIT_RATIOS[0])
-        n_val = int(n * self.SPLIT_RATIOS[1])
-        if split == "train":
-            self.files = all_pts[:n_train]
-        elif split == "val":
-            self.files = all_pts[n_train : n_train + n_val]
-        else:
-            self.files = all_pts[n_train + n_val :]
+        self.files = split_like_s3f(all_pts, split, self.SPLIT_RATIOS)
 
-        self._rng = np.random.default_rng(seed)
+        self.seed = int(seed)
+        self._rng = None
+        self._rng_seed = None
 
     def __len__(self) -> int:
         return len(self.files)
@@ -158,37 +159,51 @@ class CATHDatasetS3FExact(Dataset):
         surf_normals = d["surf_normals"].float()
         surf_feat = d["surf_feat"].float()
 
+        # Caches written before the exact-order fix used [curv(10), HKS(32)].
+        # Upgrade them in memory so old preprocessing remains usable.
+        if d.get("surf_feature_order") != "hks_curv":
+            surf_feat = torch.cat([surf_feat[:, 10:], surf_feat[:, :10]], dim=-1)
+
         n_res = len(sequence)
         n_surf = surf_pos.shape[0]
         if n_res < 32 or n_surf < 64:
             return None
 
-        crop_window = None
+        full_res2surf = d.get("res2surf")
+        if full_res2surf is None:
+            # Backward compatibility for existing cache files.  Crucially this
+            # is computed against the full protein, before residue cropping.
+            full_res2surf = self._compute_res2surf(bb_pos, surf_pos, flatten=False)
+        else:
+            full_res2surf = full_res2surf.long()
+            if full_res2surf.ndim == 2:
+                full_res2surf = full_res2surf.view(n_res, 3, -1)
+
         if self.max_length is not None and n_res > self.max_length:
-            start = int(self._rng.integers(0, n_res - self.max_length + 1))
-            crop_window = (start, start + self.max_length)
-            s, e = crop_window
+            start = int(worker_rng(self).integers(0, n_res - self.max_length + 1))
+            s, e = start, start + self.max_length
             sequence = sequence[s:e]
             ca_pos = ca_pos[s:e]
             bb_pos = bb_pos[s:e]
             n_res = e - s
 
-            surf_to_res = torch.cdist(surf_pos, ca_pos).argmin(dim=1)
-            keep = (surf_to_res >= 0) & (surf_to_res < n_res)
-            surf_pos = surf_pos[keep]
-            surf_normals = surf_normals[keep]
-            surf_feat = surf_feat[keep]
+            surf_pos, surf_normals, surf_feat, res2surf = self._crop_surface(
+                surf_pos,
+                surf_normals,
+                surf_feat,
+                full_res2surf[s:e],
+            )
             n_surf = surf_pos.shape[0]
             if n_surf < 64:
                 return None
+        else:
+            res2surf = full_res2surf.reshape(n_res, -1)
 
         res_edges = _radius_edges(ca_pos, RADIUS_CUTOFF)
         res_rbf, res_vec = _edge_attr(ca_pos, res_edges)
 
         surf_edges = knn_graph(surf_pos, k=SURF_KNN, loop=False)
         surf_rbf, surf_vec = _edge_attr(surf_pos, surf_edges)
-
-        res2surf = self._compute_res2surf(bb_pos, surf_pos)
 
         masked_positions = self._sample_positions(n_res)
         mask_types, target_residues, random_aa_indices, valid = self._masking_plan(
@@ -231,15 +246,29 @@ class CATHDatasetS3FExact(Dataset):
         )
 
     @staticmethod
-    def _compute_res2surf(bb_pos, surf_pos):
-        """For each backbone atom (n_res*3,), find 20 NN surface points.
-        Returns (n_res, 60) flattened index tensor."""
+    def _compute_res2surf(bb_pos, surf_pos, flatten=True):
+        """Reproduce released S3F's effective 21-NN backbone mapping."""
         n_res = bb_pos.shape[0]
         bb_flat = bb_pos.reshape(-1, 3)
         dists = torch.cdist(bb_flat, surf_pos)
         k = min(FUSION_K_PER_ATOM, surf_pos.shape[0])
         _, nn_idx = dists.topk(k, dim=1, largest=False)
-        return nn_idx.view(n_res, 3 * k)
+        nn_idx = nn_idx.view(n_res, 3, k)
+        return nn_idx.reshape(n_res, -1) if flatten else nn_idx
+
+    @staticmethod
+    def _crop_surface(surf_pos, surf_normals, surf_feat, crop_res2surf):
+        """Apply S3F's correspondence-based surface crop and reindex it."""
+        kept_indices, inverse = torch.unique(
+            crop_res2surf.reshape(-1), sorted=True, return_inverse=True
+        )
+        remapped = inverse.view_as(crop_res2surf).reshape(crop_res2surf.shape[0], -1)
+        return (
+            surf_pos[kept_indices],
+            surf_normals[kept_indices],
+            surf_feat[kept_indices],
+            remapped,
+        )
 
     @staticmethod
     def _compute_surf2res(surf_pos, ca_pos, k):
@@ -249,9 +278,8 @@ class CATHDatasetS3FExact(Dataset):
         return nn_idx
 
     def _sample_positions(self, n_res: int) -> torch.Tensor:
-        n_mask = max(1, int(round(n_res * self.mask_rate)))
-        n_mask = min(n_mask, n_res)
-        positions = self._rng.choice(n_res, size=n_mask, replace=False)
+        n_mask = masked_residue_count(n_res, self.mask_rate)
+        positions = worker_rng(self).choice(n_res, size=n_mask, replace=False)
         return torch.from_numpy(positions).long()
 
     def _masking_plan(self, sequence, positions):
@@ -278,7 +306,8 @@ class CATHDatasetS3FExact(Dataset):
             "V": 19,
         }
         n_mask = len(positions)
-        r = self._rng.random(n_mask)
+        rng = worker_rng(self)
+        r = rng.random(n_mask)
         mask_types = np.where(
             r < 0.8,
             MASK_TYPE_MASK,
@@ -291,7 +320,7 @@ class CATHDatasetS3FExact(Dataset):
             target_residues[i] = LETTER_TO_IDX.get(letter, -1)
 
         valid = target_residues >= 0
-        random_aa = self._rng.choice(20, size=n_mask)
+        random_aa = rng.choice(20, size=n_mask)
         random_aa_indices = np.where(mask_types == MASK_TYPE_RANDOM, random_aa, -1)
 
         return (

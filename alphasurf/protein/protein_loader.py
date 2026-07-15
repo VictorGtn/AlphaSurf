@@ -124,6 +124,7 @@ class ProteinLoader:
         pdb_path: Optional[str] = None,
         crop_window: Optional[Tuple[int, int]] = None,
         ala_strip_positions: Optional[list] = None,
+        ala_strip_keep_cb: bool = True,
     ) -> Optional[Protein]:
         """
         Load or generate a Protein.
@@ -142,6 +143,8 @@ class ProteinLoader:
                 atoms (beyond Cb) with nothing at these residue indices — only
                 N, CA, C, O, CB remain. Applied after crop, before surface/graph
                 generation. Used for S3F-style masked-residue leakage prevention.
+            ala_strip_keep_cb: retain CB at stripped positions. Disable for a
+                uniform N/CA/C/O backbone mask (including glycine).
 
         Returns:
             Protein object with surface and graph, or None on failure
@@ -154,6 +157,7 @@ class ProteinLoader:
                 pdb_path=pdb_path,
                 crop_window=crop_window,
                 ala_strip_positions=ala_strip_positions,
+                ala_strip_keep_cb=ala_strip_keep_cb,
             )
 
         if protein is None:
@@ -282,6 +286,7 @@ class ProteinLoader:
         pdb_path: Optional[str] = None,
         crop_window: Optional[Tuple[int, int]] = None,
         ala_strip_positions: Optional[list] = None,
+        ala_strip_keep_cb: bool = True,
     ) -> Optional[Protein]:
         """Generate surface and graph on-the-fly from PDB."""
         if "_patch_" in name:
@@ -307,7 +312,9 @@ class ProteinLoader:
 
         if ala_strip_positions:
             parsed_arrays = self._strip_sidechains_to_ala(
-                parsed_arrays, ala_strip_positions
+                parsed_arrays,
+                ala_strip_positions,
+                keep_cb=ala_strip_keep_cb,
             )
 
         if self.noise_augmentor is not None and self.noise_augmentor.enabled:
@@ -433,13 +440,17 @@ class ProteinLoader:
         )
 
     @staticmethod
-    def _strip_sidechains_to_ala(arrays: Tuple, positions) -> Tuple:
+    def _strip_sidechains_to_ala(
+        arrays: Tuple, positions, keep_cb: bool = True
+    ) -> Tuple:
         """Replace sidechain atoms (beyond Cb) with nothing at the given
         residues — keep only N, CA, C, O, CB. Residue-level arrays unchanged.
 
         Used for S3F-style masked-residue leakage prevention: the surface and
         graph are built from coordinates where masked residues look like
-        Alanine (backbone + Cb only), so no sidechain geometry leaks.
+        Alanine (backbone + Cb) when ``keep_cb`` is true. With ``keep_cb``
+        false, all residues use the same N/CA/C/O template, avoiding the
+        missing-CB glycine shortcut.
         """
         (
             amino_types,
@@ -456,13 +467,16 @@ class ProteinLoader:
         ) = arrays
 
         positions_set = {int(p) for p in positions}
+        retained_atom_names = BACKBONE_ATOM_NAMES
+        if not keep_cb:
+            retained_atom_names = BACKBONE_ATOM_NAMES - {"CB"}
 
         keep = np.ones(len(atom_amino_id), dtype=bool)
         for i in range(len(atom_amino_id)):
             res_id = int(atom_amino_id[i])
             if res_id in positions_set:
                 name = str(atom_names[i]).strip().upper()
-                if name not in BACKBONE_ATOM_NAMES:
+                if name not in retained_atom_names:
                     keep[i] = False
 
         atom_chain_id = atom_chain_id[keep]

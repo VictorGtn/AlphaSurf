@@ -9,9 +9,12 @@ Forward pass:
   2. Run frozen ESM2-650M -> per-residue 1280-dim embeddings
   3. Concatenate ESM embeddings into graph.x (31 -> 1311 dims)
   4. Apply mask plan to graph.x (AA one-hot + hphob)
-  5. Zero surface features at leaky vertices (k=20 nearest to masked Ca)
-  6. Run ProteinEncoder -> (N_res, 128) per-residue embeddings
-  7. Residue head (Dropout + Linear) -> (N_res, 21) logits
+  5. Run ProteinEncoder -> per-residue embeddings
+  6. Residue head (Dropout + Linear) -> (N_res, 20) logits
+
+For the AlphaSurf path, 3D masking happens before this forward pass by removing
+side-chain atoms and regenerating the mesh. The s3f_exact point cloud is built
+from N/CA/C only and therefore needs no point-level masking.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ logger = logging.getLogger(__name__)
 ESM_EMBED_DIM = 1280
 ESM_REPR_LAYER = 33
 NUM_AA_CLASSES = 20
+S3F_EXACT_OUTPUT_DIM = 256
 
 RES_TYPE_TO_LETTER = {
     "ALA": "A",
@@ -58,7 +62,11 @@ class S3FPretrainNet(nn.Module):
         super().__init__()
         self.encoder = ProteinEncoder(cfg_encoder)
         self.encoder_name = getattr(cfg_encoder, "name", "")
-        self.encoded_dim = cfg_head.encoded_dims
+        self.encoded_dim = (
+            S3F_EXACT_OUTPUT_DIM
+            if "s3f_exact" in self.encoder_name
+            else cfg_head.encoded_dims
+        )
         self.head_dropout = cfg_head.dropout
 
         self.residue_head = nn.Sequential(

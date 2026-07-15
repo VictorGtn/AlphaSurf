@@ -7,15 +7,15 @@ For each PDB in the input directory, produces <output_dir>/<name>.pt containing:
   - bb_pos: (n_res, 3, 3) N/CA/C coords per residue (for fusion pooling)
   - surf_pos: (M, 3) dMaSIF point cloud
   - surf_normals: (M, 3)
-  - surf_feat: (M, 42) concatenated [curv(10), hks(32)]
+  - surf_feat: (M, 42) concatenated [hks(32), curv(10)]
+  - res2surf: (n_res, 3, 21) full-protein residue-to-surface map
 
 dMaSIF point cloud uses N/CA/C backbone atoms only (S3F-exact). Curvature
 is computed at scales [1, 2, 3, 5, 10] (mean + Gauss = 10 dims). HKS uses
 robust_laplacian point-cloud Laplacian + eigsh, 32 time bins.
 
-Edges (Cα radius=10, surf kNN=16) and cross-mappings (res2surf 60-NN,
-surf2res 3-NN) are recomputed at load time after cropping — they are
-cheap and depend on the crop window.
+Edges are recomputed at load time.  The full-protein res2surf map is stored
+because S3F uses it to select and reindex the surface when cropping residues.
 
 Usage:
   python -m alphasurf.tasks.s3f_pretrain.precompute_s3f_exact \\
@@ -88,6 +88,9 @@ HKS_T_MAX = 1000.0
 HKS_SCALE = 1000.0
 HKS_MIN_EIGS = 50
 HKS_EIGS_RATIO = 0.06
+HKS_LARGE_EIGS_RATIO = 0.01
+HKS_LARGE_SURFACE = 20_000
+FUSION_K_PER_ATOM = 21
 
 
 def parse_backbone(pdb_path):
@@ -167,13 +170,15 @@ def compute_curvatures(points, normals, batch=None):
         curvatures,
     )
 
-    return curvatures(
+    result = curvatures(
         points.float(),
         triangles=None,
         normals=normals.float(),
         scales=CURV_SCALES,
         batch=batch,
     ).detach()
+    # Released S3F replaces undefined curvature estimates with zero.
+    return torch.nan_to_num(result, nan=0.0)
 
 
 def compute_hks(points):
@@ -196,20 +201,23 @@ def compute_hks(points):
         logger.warning("robust_laplacian failed (n=%d): %s", n, e)
         return np.zeros((n, HKS_DIM), dtype=np.float32)
 
-    n_eigs = max(min(HKS_MIN_EIGS, n - 2), int(n * HKS_EIGS_RATIO))
-    n_eigs = min(n_eigs, n - 2)
+    eigs_ratio = HKS_LARGE_EIGS_RATIO if n > HKS_LARGE_SURFACE else HKS_EIGS_RATIO
+    n_eigs = max(HKS_MIN_EIGS, int(n * eigs_ratio) + 1)
+    n_eigs = min(n_eigs, n - 1)
     if n_eigs < 4:
         return np.zeros((n, HKS_DIM), dtype=np.float32)
 
     try:
-        evals, evecs = eigsh(L, k=n_eigs, M=M, sigma=1e-8, which="LM")
+        # This regularization and shift match S3F's compute_eigens exactly.
+        L.data += 1e-8
+        evals, evecs = eigsh(L, k=n_eigs, M=M, sigma=0, which="LM")
     except Exception as e:
         logger.warning("eigsh failed (n=%d, k=%d): %s", n, n_eigs, e)
         return np.zeros((n, HKS_DIM), dtype=np.float32)
 
     order = np.argsort(evals)
     evals, evecs = evals[order], evecs[:, order]
-    evals = np.clip(evals, 0, None)
+    evals[0] = 0.0
     if evals[1] <= 0:
         return np.zeros((n, HKS_DIM), dtype=np.float32)
 
@@ -251,7 +259,16 @@ def process_one(pdb_path, output_path, device, overwrite=False):
     surf_pos_cpu = surf_pos.cpu()
     surf_normals_cpu = surf_normals.cpu()
     curv_cpu = curv.cpu()
-    surf_feat = torch.cat([curv_cpu, torch.from_numpy(hks).float()], dim=-1)
+    # load_surface() in released S3F concatenates HKS before curvatures.
+    surf_feat = torch.cat([torch.from_numpy(hks).float(), curv_cpu], dim=-1)
+
+    # Released knn_atoms(k=20) increments k internally and therefore stores
+    # 21 neighbors per N/CA/C atom.  Preserve that observable behavior.
+    bb_flat = torch.from_numpy(bb_pos.reshape(-1, 3)).float().to(surf_pos.device)
+    k = min(FUSION_K_PER_ATOM, surf_pos.shape[0])
+    res2surf = torch.cdist(bb_flat, surf_pos).topk(
+        k, dim=1, largest=False
+    ).indices.view(len(sequence), 3, k).cpu()
 
     data = {
         "sequence": sequence,
@@ -260,6 +277,8 @@ def process_one(pdb_path, output_path, device, overwrite=False):
         "surf_pos": surf_pos_cpu.float(),
         "surf_normals": surf_normals_cpu.float(),
         "surf_feat": surf_feat.float(),
+        "surf_feature_order": "hks_curv",
+        "res2surf": res2surf.long(),
     }
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
