@@ -38,8 +38,8 @@ eval_frame_index: 0
 noise_sigma: 0.0
 
 loader:
-    num_workers: 8
-    batch_size: 8
+    num_workers: 16
+    batch_size: 16
     pin_memory: false
     prefetch_factor: 2
     shuffle: true

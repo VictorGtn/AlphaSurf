@@ -102,13 +102,21 @@ def compute_bipartite_graphs(
         neighbors_g = []
         offset_surf, offset_graph = 0, 0
         for x in all_dists:
+            if x.shape[0] == 0 or x.shape[1] == 0:
+                raise ValueError("Cannot connect an empty surface or residue graph")
+
             # Find the closest ids
-            min_indices_v = torch.topk(-x, k=k, dim=1).indices
-            min_indices_g = torch.topk(-x.T, k=k, dim=1).indices
+            # Small proteins can have fewer than k residues, while very small
+            # surfaces can have fewer than k vertices. Keep the requested cap
+            # independently in each communication direction.
+            k_v = min(k, x.shape[1])
+            k_g = min(k, x.shape[0])
+            min_indices_v = torch.topk(-x, k=k_v, dim=1).indices
+            min_indices_g = torch.topk(-x.T, k=k_g, dim=1).indices
             vertex_ids = torch.arange(0, len(x), device=x.device)
             graph_ids = torch.arange(0, len(x.T), device=x.device)
-            repeated_tensor_vert = vertex_ids.repeat_interleave(k)
-            repeated_tensor_graph = graph_ids.repeat_interleave(k)
+            repeated_tensor_vert = vertex_ids.repeat_interleave(k_v)
+            repeated_tensor_graph = graph_ids.repeat_interleave(k_g)
 
             # We offset by hand to avoid slow batching.
             min_indices_v += offset_graph
