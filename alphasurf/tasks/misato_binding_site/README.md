@@ -25,6 +25,9 @@ bash alphasurf/tasks/misato_binding_site/download_misato.sh
 # Extract compact per-complex files, then train.
 sbatch alphasurf/tasks/misato_binding_site/preprocess.sh
 sbatch alphasurf/tasks/misato_binding_site/train.sh
+
+# Summarize protein sizes by official split (20 CPU workers).
+sbatch alphasurf/tasks/misato_binding_site/analyze_sizes.sh
 ```
 
 The split is always applied at complex level: all frames belonging to a complex
