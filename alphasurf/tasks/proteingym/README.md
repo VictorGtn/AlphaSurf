@@ -4,8 +4,24 @@ Zero-shot protein fitness prediction on the ProteinGym substitutions benchmark
 (217 DMS assays, single and multi-site mutants), following the reference
 implementation of S3F (NeurIPS 2024).
 
-This document captures the design notes for porting S3F's ProteinGym evaluation
-into AlphaSurf. Code is not implemented yet; this file is the spec.
+The `option_f` evaluator loads an AlphaSurf S3F-pretraining checkpoint and
+follows S3F's released ProteinGym protocol: one masked prediction per unique
+mutation-site set, a fixed WT structure/surface, 1,022-residue windows for long
+sequences, and mutant-versus-WT log-odds scoring.
+
+## Run on Jean-Zay
+
+From the AlphaSurf package directory, submit:
+
+```bash
+CKPT=/absolute/path/to/checkpoints/your.ckpt \
+sbatch alphasurf/tasks/proteingym/evaluate_jz_h100.sh
+```
+
+Use `LIMIT=2` for a first smoke test and optionally set `PROTEINGYM_DIR`,
+`OUTPUT_DIR`, or `BATCH_SIZE`. The expected data root contains
+`substitutions/DMS_ProteinGym_substitutions/` and
+`af2_structures/ProteinGym_AF2_structures/`.
 
 ---
 

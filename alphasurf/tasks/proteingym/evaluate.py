@@ -161,6 +161,8 @@ def score_one_assay(
             assay,
             device,
             batch_size=batch_size,
+            structure_length=int(graph.x.shape[0]),
+            reference_protein=ref_protein,
         )
     else:
         protein = loader.load(assay.assay_id, pdb_path=str(pdb_path))

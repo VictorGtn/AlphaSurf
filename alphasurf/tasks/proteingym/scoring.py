@@ -14,7 +14,7 @@ comparable to leaderboard rows (S3F, ESM-2, etc.).
 from __future__ import annotations
 
 import copy
-from typing import Dict, List, Sequence
+from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 from scipy.stats import pearsonr, spearmanr
@@ -24,7 +24,7 @@ from alphasurf.protein.graphs import (
     res_type_dict,
     res_type_to_hphob,
 )
-from alphasurf.tasks.proteingym.dataset import DMSAssay
+from alphasurf.tasks.proteingym.dataset import ASSAY_RESIDUE_RANGES, DMSAssay
 from alphasurf.tasks.proteingym.model import encode_graphs, encode_single_graph
 
 
@@ -32,6 +32,7 @@ from alphasurf.tasks.proteingym.model import encode_graphs, encode_single_graph
 # cols 22..30 = SSE one-hot. See ResidueGraphBuilder.arrays_to_resgraph.
 RES_TYPE_ONEHOT_SLICE = slice(1, 22)
 HPHOB_COL = 0
+ESM_MAX_RESIDUES = 1022
 
 
 def aa_one_letter_to_idx(aa: str) -> int:
@@ -118,6 +119,32 @@ def compute_metrics(targets: np.ndarray, predictions: np.ndarray) -> Dict[str, f
 # ── Option F: S3F-style log-odds scoring ──────────────────────────────
 
 
+def get_optimal_window(
+    mutation_position: int,
+    sequence_length: int,
+    model_window: int = ESM_MAX_RESIDUES,
+) -> Tuple[int, int]:
+    """Mirror S3F's released long-sequence window selection."""
+    if sequence_length <= model_window:
+        return 0, sequence_length
+    half_window = model_window // 2
+    if mutation_position < half_window:
+        return 0, model_window
+    if mutation_position >= sequence_length - half_window:
+        return sequence_length - model_window, sequence_length
+    return mutation_position - half_window, mutation_position + half_window
+
+
+def _scoring_window(
+    assay: DMSAssay, structure_length: int, positions: Sequence[int]
+) -> Tuple[int, int]:
+    residue_range = ASSAY_RESIDUE_RANGES.get(assay.assay_id)
+    if residue_range is not None:
+        start, end = residue_range
+        return start - 1, end
+    return get_optimal_window(positions[0], structure_length)
+
+
 def score_assay_option_f(
     module,
     loader,
@@ -126,6 +153,8 @@ def score_assay_option_f(
     assay: DMSAssay,
     device: str,
     batch_size: int = 8,
+    structure_length: int | None = None,
+    reference_protein=None,
 ) -> np.ndarray:
     """Score mutants with S3F-style log-odds from the residue head.
 
@@ -133,8 +162,10 @@ def score_assay_option_f(
     take log_softmax at masked positions, and compute:
         score = sum [log P(MT_AA) - log P(WT_AA)]
 
-    Each mutant's mutation positions are Ala-stripped from the coordinates
-    before loading (surface + graph built from stripped structure).
+    Mutants sharing the same set of positions reuse one masked forward pass,
+    as in S3F's released evaluator. The WT structure and surface remain fixed;
+    only the sequence and residue features are masked. Long sequences use
+    S3F's 1,022-residue window.
 
     Returns a float array of length len(assay.mutants).
     """
@@ -148,62 +179,98 @@ def score_assay_option_f(
     if not model._esm_loaded:
         model._load_esm(device)
 
-    scores: List[float] = []
-    for mutant in assay.mutants:
-        positions = list(mutant.positions)
-        wt_aas = mutant.wt_aas
-        mt_aas = mutant.mt_aas
+    if structure_length is None:
+        reference = reference_protein or loader.load(protein_name, pdb_path=pdb_path)
+        if reference is None or reference.graph is None:
+            return np.full(len(assay.mutants), np.nan, dtype=np.float64)
+        structure_length = int(reference.graph.x.shape[0])
 
-        protein = loader.load(
-            protein_name,
-            pdb_path=pdb_path,
-            ala_strip_positions=positions,
-        )
-        if protein is None or protein.graph is None or protein.surface is None:
-            scores.append(float("nan"))
+    groups: Dict[Tuple[int, ...], List[int]] = {}
+    for mutant_index, mutant in enumerate(assay.mutants):
+        groups.setdefault(tuple(mutant.positions), []).append(mutant_index)
+
+    scores = np.full(len(assay.mutants), np.nan, dtype=np.float64)
+    window_cache = {}
+    if reference_protein is not None:
+        window_cache[(0, structure_length)] = reference_protein
+    for group_batch in _batched(list(groups.items()), batch_size):
+        samples = []
+        metadata = []
+        for positions_key, mutant_indices in group_batch:
+            positions = list(positions_key)
+            start, end = _scoring_window(assay, structure_length, positions)
+            relative_positions = [position - start for position in positions]
+            if any(
+                position < 0 or position >= end - start
+                for position in relative_positions
+            ):
+                continue
+
+            window_key = (start, end)
+            protein = window_cache.get(window_key)
+            if protein is None:
+                crop_window = (
+                    None if start == 0 and end == structure_length else window_key
+                )
+                protein = loader.load(
+                    f"{protein_name}_{start}_{end}",
+                    pdb_path=pdb_path,
+                    crop_window=crop_window,
+                )
+                window_cache[window_key] = protein
+            if protein is None or protein.graph is None or protein.surface is None:
+                continue
+
+            graph = protein.graph
+            aa_idx = graph.x[:, RES_TYPE_ONEHOT_SLICE].argmax(dim=-1).cpu().long()
+            sequence = "".join(res_type_idx_to_1[i] for i in aa_idx.numpy())
+            masked_positions = _torch.tensor(relative_positions, dtype=_torch.long)
+            samples.append(
+                _Data(
+                    graph=graph,
+                    surface=protein.surface,
+                    sequence=sequence,
+                    masked_positions=masked_positions,
+                    mask_types=_torch.zeros(len(positions), dtype=_torch.long),
+                    target_residues=aa_idx[masked_positions],
+                    random_aa_indices=_torch.full(
+                        (len(positions),), -1, dtype=_torch.long
+                    ),
+                )
+            )
+            metadata.append((mutant_indices, len(positions)))
+
+        if not samples:
             continue
 
-        graph = protein.graph
-        surface = protein.surface
-        aa_idx = graph.x[:, RES_TYPE_ONEHOT_SLICE].argmax(dim=-1).cpu().long()
-        sequence = "".join(res_type_idx_to_1[i] for i in aa_idx.numpy())
-
-        masked_positions = _torch.tensor(positions, dtype=_torch.long)
-        mask_types = _torch.zeros(len(positions), dtype=_torch.long)
-        target_residues = aa_idx[masked_positions]
-        random_aa_indices = _torch.full((len(positions),), -1, dtype=_torch.long)
-
-        sample = _Data(
-            graph=graph,
-            surface=surface,
-            sequence=sequence,
-            masked_positions=masked_positions,
-            mask_types=mask_types,
-            target_residues=target_residues,
-            random_aa_indices=random_aa_indices,
-        )
-        batch = _AtomBatch.from_data_list([sample])
-
+        batch = _AtomBatch.from_data_list(samples)
+        batch.graph = batch.graph.to(device)
+        batch.surface = batch.surface.to(device)
         model.eval()
         with _torch.no_grad():
             out = model(batch, device)
-            logits = out["logits"]
-            global_masked = out["global_masked"]
+            masked_logits = out["logits"][out["global_masked"]]
+            cursor = 0
+            for mutant_indices, num_positions in metadata:
+                log_probs = _torch.log_softmax(
+                    masked_logits[cursor : cursor + num_positions], dim=-1
+                )
+                cursor += num_positions
+                pos_range = _torch.arange(num_positions, device=device)
+                for mutant_index in mutant_indices:
+                    mutant = assay.mutants[mutant_index]
+                    wt_idx = _torch.tensor(
+                        [aa_one_letter_to_idx(a) for a in mutant.wt_aas],
+                        device=device,
+                    )
+                    mt_idx = _torch.tensor(
+                        [aa_one_letter_to_idx(a) for a in mutant.mt_aas],
+                        device=device,
+                    )
+                    scores[mutant_index] = (
+                        (log_probs[pos_range, mt_idx] - log_probs[pos_range, wt_idx])
+                        .sum()
+                        .item()
+                    )
 
-            masked_logits = logits[global_masked]
-            log_probs = _torch.log_softmax(masked_logits, dim=-1)
-
-            wt_idx = _torch.tensor(
-                [aa_one_letter_to_idx(a) for a in wt_aas], device=device
-            )
-            mt_idx = _torch.tensor(
-                [aa_one_letter_to_idx(a) for a in mt_aas], device=device
-            )
-
-            pos_range = _torch.arange(len(positions), device=device)
-            log_p_wt = log_probs[pos_range, wt_idx]
-            log_p_mt = log_probs[pos_range, mt_idx]
-            score = (log_p_mt - log_p_wt).sum().item()
-            scores.append(float(score))
-
-    return np.array(scores, dtype=np.float64)
+    return scores
