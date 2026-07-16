@@ -28,6 +28,9 @@ sbatch alphasurf/tasks/misato_binding_site/train.sh
 
 # Summarize protein sizes by official split (20 CPU workers).
 sbatch alphasurf/tasks/misato_binding_site/analyze_sizes.sh
+
+# Jean Zay H100: defaults to 200 epochs and batch size 64.
+sbatch alphasurf/tasks/misato_binding_site/train_jz.sh
 ```
 
 The split is always applied at complex level: all frames belonging to a complex

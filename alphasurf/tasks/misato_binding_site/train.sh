@@ -14,6 +14,7 @@
 set -euo pipefail
 source /cluster/CBIO/home/vgertner/.bashrc
 conda activate atomsurf
+ulimit -n 65536
 export PYTHONUNBUFFERED=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
 export CUDA_VISIBLE_DEVICES=${SLURM_JOB_GPUS:-${GPU_DEVICE_ORDINAL:-0}}
 export KEOS_CACHE_FOLDER=/tmp/keos_cache_${SLURM_JOB_ID}

@@ -18,6 +18,8 @@ hydra:
 
 seed: 5721
 use_wandb: false
+profile_gpu_memory: false
+test_after_fit: true
 run_name: misato_binding_site
 project_name: misato_binding_site
 data_dir: /cluster/CBIO/data2/vgertner/alphasurf/alphasurf/data/misato

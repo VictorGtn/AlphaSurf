@@ -13,11 +13,15 @@ from pytorch_lightning.loggers.tensorboard import TensorBoardLogger
 
 from alphasurf.tasks.misato_binding_site.datamodule import MisatoBindingSiteDataModule
 from alphasurf.tasks.misato_binding_site.pl_model import MisatoBindingSiteModule
-from alphasurf.utils.callbacks import CommandLoggerCallback, add_wandb_logger
+from alphasurf.utils.callbacks import (
+    CommandLoggerCallback,
+    GPUMemoryCallback,
+    add_wandb_logger,
+)
 
 faulthandler.enable()
 torch.set_num_threads(1)
-torch.multiprocessing.set_sharing_strategy("file_system")
+torch.multiprocessing.set_sharing_strategy("file_descriptor")
 
 
 @hydra.main(version_base=None, config_path="conf", config_name="config")
@@ -57,6 +61,8 @@ def main(cfg=None):
         ),
         CommandLoggerCallback(f"python3 {' '.join(sys.argv)}"),
     ]
+    if cfg.profile_gpu_memory:
+        callbacks.append(GPUMemoryCallback())
     accelerator = (
         {"accelerator": "gpu", "devices": [cfg.device]}
         if torch.cuda.is_available()
@@ -77,7 +83,7 @@ def main(cfg=None):
         **accelerator,
     )
     trainer.fit(model, datamodule=datamodule, ckpt_path=cfg.ckpt_path)
-    if not cfg.train.fast_dev_run:
+    if cfg.test_after_fit and not cfg.train.fast_dev_run:
         trainer.test(model, datamodule=datamodule, ckpt_path="best")
 
 
