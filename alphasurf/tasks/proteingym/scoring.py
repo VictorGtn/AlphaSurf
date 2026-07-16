@@ -163,9 +163,9 @@ def score_assay_option_f(
         score = sum [log P(MT_AA) - log P(WT_AA)]
 
     Mutants sharing the same set of positions reuse one masked forward pass,
-    as in S3F's released evaluator. The WT structure and surface remain fixed;
-    only the sequence and residue features are masked. Long sequences use
-    S3F's 1,022-residue window.
+    as in S3F's released evaluator. For AlphaSurf, the masked residues are
+    reduced to N/CA/C/O and both graph and surface are regenerated, matching
+    AlphaSurf S3F pretraining. Long sequences use S3F's 1,022-residue window.
 
     Returns a float array of length len(assay.mutants).
     """
@@ -190,9 +190,6 @@ def score_assay_option_f(
         groups.setdefault(tuple(mutant.positions), []).append(mutant_index)
 
     scores = np.full(len(assay.mutants), np.nan, dtype=np.float64)
-    window_cache = {}
-    if reference_protein is not None:
-        window_cache[(0, structure_length)] = reference_protein
     for group_batch in _batched(list(groups.items()), batch_size):
         samples = []
         metadata = []
@@ -206,18 +203,16 @@ def score_assay_option_f(
             ):
                 continue
 
-            window_key = (start, end)
-            protein = window_cache.get(window_key)
-            if protein is None:
-                crop_window = (
-                    None if start == 0 and end == structure_length else window_key
-                )
-                protein = loader.load(
-                    f"{protein_name}_{start}_{end}",
-                    pdb_path=pdb_path,
-                    crop_window=crop_window,
-                )
-                window_cache[window_key] = protein
+            crop_window = (
+                None if start == 0 and end == structure_length else (start, end)
+            )
+            protein = loader.load(
+                f"{protein_name}_{start}_{end}_{'_'.join(map(str, positions))}",
+                pdb_path=pdb_path,
+                crop_window=crop_window,
+                ala_strip_positions=relative_positions,
+                ala_strip_keep_cb=False,
+            )
             if protein is None or protein.graph is None or protein.surface is None:
                 continue
 
