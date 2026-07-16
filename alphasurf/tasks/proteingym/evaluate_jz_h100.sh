@@ -9,7 +9,7 @@
 #SBATCH --time=20:00:00
 #SBATCH --qos=qos_gpu_h100-t3
 #SBATCH --output=/dev/null
-#SBATCH --error=log/proteingym_jz/%x_%j.err
+#SBATCH --error=/dev/null
 #SBATCH --hint=nomultithread
 
 set -euo pipefail
@@ -44,9 +44,9 @@ SUBSTITUTIONS_DIR=${SUBSTITUTIONS_DIR:-$PROTEINGYM_DIR/substitutions/DMS_Protein
 AF2_DIR=${AF2_DIR:-$PROTEINGYM_DIR/af2_structures/ProteinGym_AF2_structures}
 OUTPUT_DIR=${OUTPUT_DIR:-$REPO_ROOT/tasks/proteingym/runs/${SLURM_JOB_ID}}
 LOG_DIR=$REPO_ROOT/tasks/proteingym/log
-mkdir -p "$OUTPUT_DIR" "$LOG_DIR" log/proteingym_jz
+mkdir -p "$OUTPUT_DIR" "$LOG_DIR"
 
-exec >"$LOG_DIR/proteingym_alpha_${SLURM_JOB_ID}.out"
+exec >"$LOG_DIR/proteingym_alpha_${SLURM_JOB_ID}.out" 2>&1
 
 test -f "$CKPT"
 test -d "$SUBSTITUTIONS_DIR"
