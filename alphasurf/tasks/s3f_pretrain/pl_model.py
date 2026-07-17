@@ -12,6 +12,7 @@ import logging
 
 import torch
 import torch.nn as nn
+from alphasurf.tasks.s3f_pretrain.checkpointing import strip_frozen_esm_weights
 from alphasurf.tasks.s3f_pretrain.model import S3FPretrainNet
 from alphasurf.utils.learning_utils import AtomPLModule
 
@@ -76,3 +77,13 @@ class S3FPretrainModule(AtomPLModule):
     def on_fit_start(self):
         device = self.device
         self.model._load_esm(device)
+
+    def on_save_checkpoint(self, checkpoint):
+        removed = strip_frozen_esm_weights(checkpoint)
+        if removed:
+            logger.info("Excluded %d frozen ESM parameters from checkpoint", removed)
+
+    def on_load_checkpoint(self, checkpoint):
+        removed = strip_frozen_esm_weights(checkpoint)
+        if removed:
+            logger.info("Ignored %d frozen ESM parameters from checkpoint", removed)
