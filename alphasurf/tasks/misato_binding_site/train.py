@@ -50,17 +50,20 @@ def main(cfg=None):
             filename="{epoch}-{step}",
             dirpath=Path(tb_logger.log_dir) / "checkpoints",
             monitor=cfg.train.to_monitor,
-            mode="max",
+            mode=cfg.train.monitor_mode,
             save_last=True,
             save_top_k=cfg.train.save_top_k,
         ),
-        pl.callbacks.EarlyStopping(
-            monitor=cfg.train.to_monitor,
-            patience=cfg.train.early_stoping_patience,
-            mode="max",
-        ),
         CommandLoggerCallback(f"python3 {' '.join(sys.argv)}"),
     ]
+    if cfg.train.early_stopping:
+        callbacks.append(
+            pl.callbacks.EarlyStopping(
+                monitor=cfg.train.to_monitor,
+                patience=cfg.train.early_stoping_patience,
+                mode=cfg.train.monitor_mode,
+            )
+        )
     if cfg.profile_gpu_memory:
         callbacks.append(GPUMemoryCallback())
     accelerator = (
