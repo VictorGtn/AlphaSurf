@@ -119,6 +119,8 @@ def score_one_assay(
     loader,
     device: str,
     batch_size: int,
+    num_workers: int,
+    prefetch_factor: int,
     scoring_method: str,
     metadata: Optional[dict] = None,
 ) -> Optional[dict]:
@@ -172,6 +174,8 @@ def score_one_assay(
             assay,
             device,
             batch_size=batch_size,
+            num_workers=num_workers,
+            prefetch_factor=prefetch_factor,
             structure_length=int(graph.x.shape[0]),
             reference_protein=ref_protein,
         )
@@ -270,6 +274,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=8,
+        help="Worker processes for on-the-fly graph/surface generation.",
+    )
+    parser.add_argument("--prefetch-factor", type=int, default=2)
+    parser.add_argument(
         "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
     )
     return parser.parse_args()
@@ -324,6 +335,8 @@ def main() -> None:
             loader,
             device,
             batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            prefetch_factor=args.prefetch_factor,
             scoring_method=args.scoring_method,
             metadata=metadata_by_assay.get(csv_path.stem),
         )

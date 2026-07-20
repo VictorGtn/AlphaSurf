@@ -66,4 +66,6 @@ python -m alphasurf.tasks.proteingym.evaluate \
     --af2-dir "$AF2_DIR" \
     --output-dir "$OUTPUT_DIR" \
     --batch-size "${BATCH_SIZE:-4}" \
+    --num-workers "${NUM_WORKERS:-8}" \
+    --prefetch-factor "${PREFETCH_FACTOR:-2}" \
     "${EXTRA_ARGS[@]}"

@@ -23,6 +23,11 @@ from alphasurf.tasks.proteingym.scoring import (
 )
 
 
+class NullProteinLoader:
+    def load(self, *args, **kwargs):
+        return None
+
+
 class S3FWindowTest(TestCase):
     def test_short_sequence_uses_full_length(self):
         self.assertEqual(get_optimal_window(20, 250), (0, 250))
@@ -119,3 +124,31 @@ class S3FWindowTest(TestCase):
         kwargs = loader.calls[0][1]
         self.assertEqual(kwargs["ala_strip_positions"], [5])
         self.assertFalse(kwargs["ala_strip_keep_cb"])
+
+    def test_geometry_dataloader_runs_with_worker_processes(self):
+        mutant = Mutant(
+            mutant_str="A6V",
+            mutated_sequence="AAAAAVAAAA",
+            score=0.0,
+            positions=[5],
+            wt_aas=["A"],
+            mt_aas=["V"],
+        )
+        assay = DMSAssay(
+            assay_id="test",
+            uniprot_id="test",
+            wt_sequence="AAAAAAAAAA",
+            mutants=[mutant],
+        )
+        module = SimpleNamespace(model=SimpleNamespace(_esm_loaded=True))
+        scores = score_assay_option_f(
+            module,
+            NullProteinLoader(),
+            "test.pdb",
+            "test",
+            assay,
+            "cpu",
+            num_workers=2,
+            structure_length=10,
+        )
+        self.assertTrue(np.isnan(scores[0]))

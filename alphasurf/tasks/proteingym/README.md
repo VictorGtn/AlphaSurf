@@ -21,7 +21,8 @@ sbatch alphasurf/tasks/proteingym/evaluate_jz_h100.sh
 ```
 
 Use `LIMIT=2` for a first smoke test and optionally set `PROTEINGYM_DIR`,
-`OUTPUT_DIR`, or `BATCH_SIZE`. The expected data root contains
+`OUTPUT_DIR`, `BATCH_SIZE`, `NUM_WORKERS`, or `PREFETCH_FACTOR`. The expected
+data root contains
 `substitutions/DMS_ProteinGym_substitutions/` and
 `af2_structures/ProteinGym_AF2_structures/`.
 

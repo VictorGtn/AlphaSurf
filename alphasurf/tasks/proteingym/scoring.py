@@ -14,10 +14,13 @@ comparable to leaderboard rows (S3F, ESM-2, etc.).
 from __future__ import annotations
 
 import copy
+import logging
 from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 from scipy.stats import pearsonr, spearmanr
+from torch.utils.data import DataLoader, Dataset
+from torch_geometric.data import Data
 
 from alphasurf.protein.graphs import (
     protein_letters_1to3,
@@ -27,6 +30,7 @@ from alphasurf.protein.graphs import (
 from alphasurf.tasks.proteingym.dataset import ASSAY_RESIDUE_RANGES, DMSAssay
 from alphasurf.tasks.proteingym.model import encode_graphs, encode_single_graph
 
+logger = logging.getLogger("alphasurf.proteingym.scoring")
 
 # graph.x layout: col 0 = hphob, cols 1..21 = AA one-hot (21 classes, UNK at 20),
 # cols 22..30 = SSE one-hot. See ResidueGraphBuilder.arrays_to_resgraph.
@@ -136,15 +140,95 @@ def get_optimal_window(
 
 
 def _scoring_window(
-    assay: DMSAssay, structure_length: int, positions: Sequence[int]
+    assay: DMSAssay | str, structure_length: int, positions: Sequence[int]
 ) -> Tuple[int, int]:
-    residue_range = ASSAY_RESIDUE_RANGES.get(assay.assay_id)
+    assay_id = assay.assay_id if isinstance(assay, DMSAssay) else assay
+    residue_range = ASSAY_RESIDUE_RANGES.get(assay_id)
     if residue_range is not None:
         start, end = residue_range
         if structure_length == end - start:
             return 0, structure_length
         return start, end
     return get_optimal_window(positions[0], structure_length)
+
+
+class MaskedGeometryDataset(Dataset):
+    """Build one masked AlphaSurf graph/surface per unique mutation-site set."""
+
+    def __init__(
+        self,
+        protein_loader,
+        pdb_path: str,
+        protein_name: str,
+        assay_id: str,
+        structure_length: int,
+        group_items,
+    ):
+        self.protein_loader = protein_loader
+        self.pdb_path = pdb_path
+        self.protein_name = protein_name
+        self.assay_id = assay_id
+        self.structure_length = structure_length
+        self.group_items = group_items
+
+    def __len__(self):
+        return len(self.group_items)
+
+    def __getitem__(self, index):
+        import torch
+
+        from alphasurf.protein.graphs import res_type_idx_to_1
+
+        positions_key, mutant_indices = self.group_items[index]
+        positions = list(positions_key)
+        start, end = _scoring_window(self.assay_id, self.structure_length, positions)
+        relative_positions = [position - start for position in positions]
+        if any(
+            position < 0 or position >= end - start for position in relative_positions
+        ):
+            return None
+
+        crop_window = (
+            None if start == 0 and end == self.structure_length else (start, end)
+        )
+        try:
+            protein = self.protein_loader.load(
+                (f"{self.protein_name}_{start}_{end}_{'_'.join(map(str, positions))}"),
+                pdb_path=self.pdb_path,
+                crop_window=crop_window,
+                ala_strip_positions=relative_positions,
+                ala_strip_keep_cb=False,
+            )
+        except Exception as error:
+            logger.warning(
+                "[%s] failed to generate masked geometry at %s: %s",
+                self.assay_id,
+                positions,
+                error,
+            )
+            return None
+        if protein is None or protein.graph is None or protein.surface is None:
+            return None
+
+        graph = protein.graph
+        aa_idx = graph.x[:, RES_TYPE_ONEHOT_SLICE].argmax(dim=-1).cpu().long()
+        sequence = "".join(res_type_idx_to_1[i] for i in aa_idx.numpy())
+        masked_positions = torch.tensor(relative_positions, dtype=torch.long)
+        sample = Data(
+            graph=graph,
+            surface=protein.surface,
+            sequence=sequence,
+            masked_positions=masked_positions,
+            mask_types=torch.zeros(len(positions), dtype=torch.long),
+            target_residues=aa_idx[masked_positions],
+            random_aa_indices=torch.full((len(positions),), -1, dtype=torch.long),
+        )
+        return sample, mutant_indices, len(positions)
+
+
+def collate_masked_geometry(items):
+    """Keep worker-built samples as a list for AtomBatch collation on the GPU host."""
+    return [item for item in items if item is not None]
 
 
 def score_assay_option_f(
@@ -155,6 +239,8 @@ def score_assay_option_f(
     assay: DMSAssay,
     device: str,
     batch_size: int = 8,
+    num_workers: int = 0,
+    prefetch_factor: int = 2,
     structure_length: int | None = None,
     reference_protein=None,
 ) -> np.ndarray:
@@ -172,14 +258,10 @@ def score_assay_option_f(
     Returns a float array of length len(assay.mutants).
     """
     import torch as _torch
-    from torch_geometric.data import Data as _Data
 
     from alphasurf.utils.data_utils import AtomBatch as _AtomBatch
-    from alphasurf.protein.graphs import res_type_idx_to_1
 
     model = module.model
-    if not model._esm_loaded:
-        model._load_esm(device)
 
     if structure_length is None:
         reference = reference_protein or loader.load(protein_name, pdb_path=pdb_path)
@@ -191,60 +273,47 @@ def score_assay_option_f(
     for mutant_index, mutant in enumerate(assay.mutants):
         groups.setdefault(tuple(mutant.positions), []).append(mutant_index)
 
+    geometry_dataset = MaskedGeometryDataset(
+        protein_loader=loader,
+        pdb_path=str(pdb_path),
+        protein_name=protein_name,
+        assay_id=assay.assay_id,
+        structure_length=structure_length,
+        group_items=list(groups.items()),
+    )
+    dataloader_args = {
+        "dataset": geometry_dataset,
+        "batch_size": batch_size,
+        "shuffle": False,
+        "num_workers": num_workers,
+        "collate_fn": collate_masked_geometry,
+        "pin_memory": False,
+    }
+    if num_workers > 0:
+        dataloader_args["prefetch_factor"] = prefetch_factor
+        dataloader_args["persistent_workers"] = False
+    geometry_loader = DataLoader(**dataloader_args)
+    logger.info(
+        "[%s] generating %d unique masked geometries with %d workers",
+        assay.assay_id,
+        len(geometry_dataset),
+        num_workers,
+    )
+
     scores = np.full(len(assay.mutants), np.nan, dtype=np.float64)
-    for group_batch in _batched(list(groups.items()), batch_size):
-        samples = []
-        metadata = []
-        for positions_key, mutant_indices in group_batch:
-            positions = list(positions_key)
-            start, end = _scoring_window(assay, structure_length, positions)
-            relative_positions = [position - start for position in positions]
-            if any(
-                position < 0 or position >= end - start
-                for position in relative_positions
-            ):
-                continue
-
-            crop_window = (
-                None if start == 0 and end == structure_length else (start, end)
-            )
-            protein = loader.load(
-                f"{protein_name}_{start}_{end}_{'_'.join(map(str, positions))}",
-                pdb_path=pdb_path,
-                crop_window=crop_window,
-                ala_strip_positions=relative_positions,
-                ala_strip_keep_cb=False,
-            )
-            if protein is None or protein.graph is None or protein.surface is None:
-                continue
-
-            graph = protein.graph
-            aa_idx = graph.x[:, RES_TYPE_ONEHOT_SLICE].argmax(dim=-1).cpu().long()
-            sequence = "".join(res_type_idx_to_1[i] for i in aa_idx.numpy())
-            masked_positions = _torch.tensor(relative_positions, dtype=_torch.long)
-            samples.append(
-                _Data(
-                    graph=graph,
-                    surface=protein.surface,
-                    sequence=sequence,
-                    masked_positions=masked_positions,
-                    mask_types=_torch.zeros(len(positions), dtype=_torch.long),
-                    target_residues=aa_idx[masked_positions],
-                    random_aa_indices=_torch.full(
-                        (len(positions),), -1, dtype=_torch.long
-                    ),
-                )
-            )
-            metadata.append((mutant_indices, len(positions)))
-
-        if not samples:
+    for geometry_batch in geometry_loader:
+        if not geometry_batch:
             continue
+        samples = [item[0] for item in geometry_batch]
+        metadata = [(item[1], item[2]) for item in geometry_batch]
 
         batch = _AtomBatch.from_data_list(samples)
         batch.graph = batch.graph.to(device)
         batch.surface = batch.surface.to(device)
         model.eval()
         with _torch.no_grad():
+            if not model._esm_loaded:
+                model._load_esm(device)
             out = model(batch, device)
             masked_logits = out["logits"][out["global_masked"]]
             cursor = 0
