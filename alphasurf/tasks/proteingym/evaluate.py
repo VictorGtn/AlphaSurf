@@ -33,8 +33,10 @@ from alphasurf.tasks.proteingym.dataset import (
     ASSAY_RESIDUE_RANGES,
     DMSAssay,
     af2_structure_path,
+    find_reference_file,
     list_assay_csvs,
     load_dms_assay,
+    load_reference_metadata,
 )
 from alphasurf.tasks.proteingym.model import (
     build_protein_loader,
@@ -65,7 +67,7 @@ def resolve_position_offset(assay: DMSAssay, af2_graph_len: int) -> Optional[int
     if af2_graph_len == assay.seq_len:
         return 0
 
-    residue_range = ASSAY_RESIDUE_RANGES.get(assay.assay_id)
+    residue_range = assay.structure_range or ASSAY_RESIDUE_RANGES.get(assay.assay_id)
     if residue_range is None:
         logger.warning(
             f"[{assay.assay_id}] AF2 graph length {af2_graph_len} != WT "
@@ -118,14 +120,20 @@ def score_one_assay(
     device: str,
     batch_size: int,
     scoring_method: str,
+    metadata: Optional[dict] = None,
 ) -> Optional[dict]:
     assay = load_dms_assay(csv_path)
-    pdb_path = af2_structure_path(af2_dir, assay.uniprot_id)
+    structure_id = assay.uniprot_id
+    if metadata is not None:
+        assay.uniprot_id = str(metadata["UniProt_ID"])
+        structure_id = str(metadata["pdb_file"])
+        pdb_range = str(metadata["pdb_range"])
+        start, end = (int(value) for value in pdb_range.split("-"))
+        assay.structure_range = (start - 1, end)
+
+    pdb_path = af2_structure_path(af2_dir, structure_id)
     if pdb_path is None:
-        logger.warning(
-            f"[{assay.assay_id}] no AF2 structure for UniProt "
-            f"{assay.uniprot_id}; skipping."
-        )
+        logger.warning(f"[{assay.assay_id}] no AF2 structure {structure_id}; skipping.")
         return None
 
     if scoring_method == "option_f":
@@ -253,6 +261,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--substitutions-dir", required=True)
     parser.add_argument("--af2-dir", required=True)
+    parser.add_argument(
+        "--reference-file",
+        default=None,
+        help="ProteinGym DMS_substitutions.csv (auto-detected when omitted).",
+    )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=8)
@@ -282,6 +295,20 @@ def main() -> None:
         module, device = load_encoder_module(args.ckpt)
     loader = build_protein_loader(module)
 
+    reference_file = (
+        Path(args.reference_file)
+        if args.reference_file is not None
+        else find_reference_file(args.substitutions_dir)
+    )
+    metadata_by_assay = {}
+    if reference_file is not None:
+        metadata_by_assay = load_reference_metadata(reference_file)
+        logger.info(f"Loaded ProteinGym metadata from {reference_file}")
+    else:
+        logger.warning(
+            "DMS_substitutions.csv not found; inferring structure names from assay IDs."
+        )
+
     csv_paths = list_assay_csvs(args.substitutions_dir)
     if args.limit is not None:
         csv_paths = csv_paths[: args.limit]
@@ -298,6 +325,7 @@ def main() -> None:
             device,
             batch_size=args.batch_size,
             scoring_method=args.scoring_method,
+            metadata=metadata_by_assay.get(csv_path.stem),
         )
         if result is None:
             continue

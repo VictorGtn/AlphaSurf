@@ -20,6 +20,7 @@ PROTEINGYM_VERSION="${PROTEINGYM_VERSION:-v1.3}"
 BASE_URL="https://marks.hms.harvard.edu/proteingym/ProteinGym_${PROTEINGYM_VERSION}"
 DMS_URL="${BASE_URL}/DMS_ProteinGym_substitutions.zip"
 AF2_URL="${BASE_URL}/ProteinGym_AF2_structures.zip"
+REFERENCE_URL="https://raw.githubusercontent.com/OATML-Markslab/ProteinGym/main/reference_files/DMS_substitutions.csv"
 
 # marks.hms.harvard.edu is signed by InCommon RSA OV SSL CA 3, which is missing
 # from this cluster's CA bundle (curl 60 / wget "unable to get local issuer
@@ -42,6 +43,12 @@ fi
 if [ ! -d "$DATA_DIR/substitutions" ]; then
     echo "Extracting DMS substitutions..."
     unzip -q -o "$DATA_DIR/DMS_ProteinGym_substitutions.zip" -d "$DATA_DIR/substitutions"
+fi
+
+REFERENCE_FILE="$DATA_DIR/substitutions/DMS_substitutions.csv"
+if [ ! -f "$REFERENCE_FILE" ]; then
+    echo "Fetching ProteinGym substitution reference metadata..."
+    curl "${CURL_TRANSFER_OPTS[@]}" -o "$REFERENCE_FILE" "$REFERENCE_URL"
 fi
 
 if [ ! -f "$DATA_DIR/ProteinGym_AF2_structures.zip" ]; then

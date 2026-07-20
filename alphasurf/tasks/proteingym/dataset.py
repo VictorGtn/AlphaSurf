@@ -54,6 +54,7 @@ class DMSAssay:
     uniprot_id: str
     wt_sequence: str
     mutants: List[Mutant] = field(default_factory=list)
+    structure_range: Optional[Tuple[int, int]] = None
 
     @property
     def seq_len(self) -> int:
@@ -127,7 +128,7 @@ def load_dms_assay(csv_path: str | Path) -> DMSAssay:
     uniprot_id = (
         df["UniProt_ID"].iloc[0]
         if "UniProt_ID" in df.columns and pd.notna(df["UniProt_ID"].iloc[0])
-        else assay_id
+        else "_".join(assay_id.split("_")[:2])
     )
 
     mutants: List[Mutant] = []
@@ -179,22 +180,51 @@ def list_assay_csvs(substitutions_dir: str | Path) -> List[Path]:
     """Return every DMS CSV under `substitutions_dir`, sorted."""
     substitutions_dir = Path(substitutions_dir)
     csvs = sorted(substitutions_dir.rglob("*.csv"))
-    return [p for p in csvs if p.stem != "ProteinGym_info"]
+    metadata_stems = {"ProteinGym_info", "DMS_substitutions"}
+    return [p for p in csvs if p.stem not in metadata_stems]
 
 
-def af2_structure_path(af2_dir: str | Path, uniprot_id: str) -> Optional[Path]:
-    """Resolve the AF2 PDB for a UniProt id. Returns None if not found."""
-    af2_dir = Path(af2_dir)
+def find_reference_file(substitutions_dir: str | Path) -> Optional[Path]:
+    """Find ProteinGym's DMS_substitutions.csv near the assay directory."""
+    directory = Path(substitutions_dir)
     candidates = [
-        af2_dir / f"{uniprot_id}.pdb",
-        af2_dir / "AF2_structures" / f"{uniprot_id}.pdb",
-        af2_dir / f"{uniprot_id}.pdb.gz",
+        directory / "DMS_substitutions.csv",
+        directory.parent / "DMS_substitutions.csv",
+        directory.parent.parent / "DMS_substitutions.csv",
+    ]
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def load_reference_metadata(reference_file: str | Path) -> Dict[str, dict]:
+    """Load ProteinGym reference rows keyed by DMS_id."""
+    df = pd.read_csv(reference_file)
+    required = {"DMS_id", "UniProt_ID", "pdb_file", "pdb_range"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"{reference_file}: missing metadata columns {missing}")
+    return {str(row["DMS_id"]): row.to_dict() for _, row in df.iterrows()}
+
+
+def af2_structure_path(af2_dir: str | Path, structure_id: str) -> Optional[Path]:
+    """Resolve an exact PDB filename or a UniProt-like structure id."""
+    af2_dir = Path(af2_dir)
+    structure_id = str(structure_id)
+    pdb_name = (
+        structure_id
+        if structure_id.endswith((".pdb", ".pdb.gz"))
+        else f"{structure_id}.pdb"
+    )
+    candidates = [
+        af2_dir / pdb_name,
+        af2_dir / "AF2_structures" / pdb_name,
+        af2_dir / f"{structure_id}.pdb.gz",
     ]
     for p in candidates:
         if p.exists():
             return p
     # Fall back to a unique-prefix match if the layout is different.
-    matches = list(af2_dir.rglob(f"{uniprot_id}*.pdb"))
+    prefix = structure_id.removesuffix(".pdb").removesuffix(".pdb.gz")
+    matches = list(af2_dir.rglob(f"{prefix}*.pdb"))
     if len(matches) == 1:
         return matches[0]
     return None

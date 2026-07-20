@@ -1,11 +1,20 @@
 from types import SimpleNamespace
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
 import numpy as np
 import pandas as pd
 
-from alphasurf.tasks.proteingym.dataset import DMSAssay, Mutant, load_dms_assay
+from alphasurf.tasks.proteingym.dataset import (
+    DMSAssay,
+    Mutant,
+    af2_structure_path,
+    find_reference_file,
+    list_assay_csvs,
+    load_dms_assay,
+    load_reference_metadata,
+)
 from alphasurf.tasks.proteingym.evaluate import resolve_position_offset
 from alphasurf.tasks.proteingym.scoring import (
     _scoring_window,
@@ -32,18 +41,42 @@ class S3FWindowTest(TestCase):
                     "mutant": ["I291A"],
                     "mutated_sequence": [sequence],
                     "DMS_score": [0.0],
-                    "UniProt_ID": ["A0A140D2T1"],
                 }
             ).to_csv(csv_path, index=False)
             assay = load_dms_assay(csv_path)
 
         self.assertEqual(assay.seq_len, 3423)
+        self.assertEqual(assay.uniprot_id, "A0A140D2T1_ZIKV")
         self.assertEqual(assay.mutants[0].positions, [290])
         self.assertEqual(assay.wt_sequence[290], "I")
         self.assertEqual(resolve_position_offset(assay, 3423), 0)
         self.assertEqual(resolve_position_offset(assay, 504), -290)
         self.assertEqual(_scoring_window(assay, 3423, [290]), (290, 794))
         self.assertEqual(_scoring_window(assay, 504, [0]), (0, 504))
+
+    def test_reference_metadata_and_exact_pdb_filename_are_resolved(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            assay_dir = root / "DMS_ProteinGym_substitutions"
+            assay_dir.mkdir()
+            (assay_dir / "example.csv").touch()
+            reference_file = root / "DMS_substitutions.csv"
+            pd.DataFrame(
+                {
+                    "DMS_id": ["example"],
+                    "UniProt_ID": ["A0A140D2T1_ZIKV"],
+                    "pdb_file": ["A0A140D2T1_ZIKV.pdb"],
+                    "pdb_range": ["291-794"],
+                }
+            ).to_csv(reference_file, index=False)
+            pdb_path = root / "A0A140D2T1_ZIKV.pdb"
+            pdb_path.touch()
+
+            self.assertEqual(find_reference_file(assay_dir), reference_file)
+            self.assertEqual(list_assay_csvs(root), [assay_dir / "example.csv"])
+            metadata = load_reference_metadata(reference_file)
+            self.assertEqual(metadata["example"]["pdb_file"], "A0A140D2T1_ZIKV.pdb")
+            self.assertEqual(af2_structure_path(root, "A0A140D2T1_ZIKV.pdb"), pdb_path)
 
     def test_alpha_scoring_rebuilds_geometry_without_cbeta(self):
         mutant = Mutant(
