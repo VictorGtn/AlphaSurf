@@ -66,6 +66,7 @@ for split in train val test; do
 done
 
 export ATOMSURF_VERSION=${EXPERIMENT_ID:-${SLURM_JOB_ID:-$(date +%s)}}
+export ATOMSURF_RESUME=True
 RUN_NAME=${RUN_NAME:-misato_random_frame_bs${BATCH_SIZE:-64}}
 
 python -c "import sys; sys.path.insert(0, '$CGAL_BINDINGS_DIR'); import cgal_alpha_algo2; print('[CGAL OK]', cgal_alpha_algo2.__file__)"

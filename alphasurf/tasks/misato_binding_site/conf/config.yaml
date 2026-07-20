@@ -20,6 +20,11 @@ seed: 5721
 use_wandb: false
 profile_gpu_memory: false
 test_after_fit: true
+test_top_k: 4
+test_last_checkpoint: true
+checkpoint_dir: null
+include_last_checkpoint: true
+checkpoint_test_output: null
 run_name: misato_binding_site
 project_name: misato_binding_site
 data_dir: /cluster/CBIO/data2/vgertner/alphasurf/alphasurf/data/misato
@@ -48,7 +53,7 @@ loader:
     persistent_workers: true
 
 train:
-    save_top_k: 2
+    save_top_k: 4
     early_stopping: false
     early_stoping_patience: 15
     accumulate_grad_batches: 1
