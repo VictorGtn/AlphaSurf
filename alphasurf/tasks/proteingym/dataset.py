@@ -6,10 +6,9 @@ with their per-position WT/MT amino acids and measured fitness scores.
 
 The CSV schema is `mutant, mutated_sequence, DMS_score`. The `mutant` field
 is either `A123V` (single-site) or colon-separated for multi-site (`A123V:D45E`).
-Position numbering is 1-indexed relative to the assay's UniProt reference
-sequence. Three assays have mutant positions offset relative to the AF2
-structure residue numbering; S3F handles these with hardcoded crops and we
-preserve that behavior here.
+Position numbering is 1-indexed relative to the assay's full reference
+sequence. S3F applies hardcoded model-input crops for three assays while
+retaining those absolute mutation positions; we preserve that behavior here.
 """
 
 from __future__ import annotations
@@ -24,10 +23,8 @@ import pandas as pd
 from torch.utils.data import Dataset
 
 
-# Three assays where ProteinGym mutant numbering does not line up with the
-# UniProt / AF2 residue numbering. The tuple is the (start, end) UniProt
-# residue range the assay covers; positions inside the CSV are relative to
-# that range. Mirrors the hardcoded cases in S3F's script/evaluate.py.
+# Zero-indexed, half-open model-input crop windows from S3F's evaluate.py.
+# Mutation strings and mutated_sequence remain in full-sequence coordinates.
 ASSAY_RESIDUE_RANGES: Dict[str, Tuple[int, int]] = {
     "POLG_HCVJF_Qi_2014": (1981, 2225),
     "A0A140D2T1_ZIKV_Sourisseau_2019": (290, 794),
@@ -44,7 +41,7 @@ class Mutant:
     mutant_str: str
     mutated_sequence: str
     score: float
-    positions: List[int]  # 0-indexed into the (cropped) WT sequence
+    positions: List[int]  # 0-indexed into the full WT sequence
     wt_aas: List[str]  # WT amino acid at each position
     mt_aas: List[str]  # MT amino acid at each position
 
@@ -133,24 +130,10 @@ def load_dms_assay(csv_path: str | Path) -> DMSAssay:
         else assay_id
     )
 
-    residue_range = ASSAY_RESIDUE_RANGES.get(assay_id)
-    position_offset = 0
-    if residue_range is not None:
-        # CSV positions are 1-indexed within [start, end]; convert to
-        # 0-indexed into the cropped sequence.
-        start, _ = residue_range
-        position_offset = start - 1
-        cropped_len = residue_range[1] - residue_range[0] + 1
-        if cropped_len != seq_len:
-            raise ValueError(
-                f"{csv_path}: assay range {residue_range} implies length "
-                f"{cropped_len} but mutated_sequence has length {seq_len}"
-            )
-
     mutants: List[Mutant] = []
     for _, row in df.iterrows():
         wt_aas, positions_1, mt_aas = parse_mutant_field(row["mutant"])
-        positions_0 = [p - 1 - position_offset for p in positions_1]
+        positions_0 = [p - 1 for p in positions_1]
         for wt, pos_0, mt, p1 in zip(wt_aas, positions_0, mt_aas, positions_1):
             if pos_0 < 0 or pos_0 >= seq_len:
                 raise ValueError(
@@ -181,7 +164,7 @@ def load_dms_assay(csv_path: str | Path) -> DMSAssay:
         if wt_sequence[pos_0] != wt_aa:
             raise ValueError(
                 f"{csv_path}: derived WT has {wt_sequence[pos_0]} at position "
-                f"{pos_0 + 1 + position_offset}, mutant expected {wt_aa}"
+                f"{pos_0 + 1}, mutant expected {wt_aa}"
             )
 
     return DMSAssay(

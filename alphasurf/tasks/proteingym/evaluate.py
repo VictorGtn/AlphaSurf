@@ -58,15 +58,15 @@ def graph_aa_sequence(graph) -> np.ndarray:
 
 
 def resolve_position_offset(assay: DMSAssay, af2_graph_len: int) -> Optional[int]:
-    """Position offset to add to mutant positions (0-indexed into the cropped
-    WT sequence) so they index into the AF2 graph.
+    """Offset to add to full-sequence mutant positions to index the AF2 graph.
 
     Returns None if the assay cannot be mapped to the structure unambiguously.
     """
+    if af2_graph_len == assay.seq_len:
+        return 0
+
     residue_range = ASSAY_RESIDUE_RANGES.get(assay.assay_id)
     if residue_range is None:
-        if af2_graph_len == assay.seq_len:
-            return 0
         logger.warning(
             f"[{assay.assay_id}] AF2 graph length {af2_graph_len} != WT "
             f"sequence length {assay.seq_len} and no residue range is "
@@ -74,13 +74,16 @@ def resolve_position_offset(assay: DMSAssay, af2_graph_len: int) -> Optional[int
         )
         return None
     start, end = residue_range
-    if af2_graph_len < end:
-        logger.warning(
-            f"[{assay.assay_id}] AF2 graph length {af2_graph_len} < expected "
-            f"end residue {end}; skipping."
-        )
-        return None
-    return start - 1
+    if af2_graph_len == end - start:
+        return -start
+    if af2_graph_len >= end:
+        return 0
+    logger.warning(
+        f"[{assay.assay_id}] AF2 graph length {af2_graph_len} matches neither "
+        f"the full sequence ({assay.seq_len}) nor S3F crop [{start}:{end}] "
+        f"({end - start} residues); skipping."
+    )
+    return None
 
 
 def validate_aa_identity(assay: DMSAssay, graph, offset: int) -> bool:

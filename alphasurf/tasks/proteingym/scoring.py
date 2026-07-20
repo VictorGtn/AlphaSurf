@@ -141,7 +141,9 @@ def _scoring_window(
     residue_range = ASSAY_RESIDUE_RANGES.get(assay.assay_id)
     if residue_range is not None:
         start, end = residue_range
-        return start - 1, end
+        if structure_length == end - start:
+            return 0, structure_length
+        return start, end
     return get_optimal_window(positions[0], structure_length)
 
 
