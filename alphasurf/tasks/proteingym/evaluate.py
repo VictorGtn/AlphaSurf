@@ -25,6 +25,7 @@ from typing import List, Optional
 import numpy as np
 import pandas as pd
 import torch
+from tqdm import tqdm
 
 if __name__ == "__main__":
     sys.path.append(str(Path(__file__).absolute().parents[3]))
@@ -121,6 +122,7 @@ def score_one_assay(
     batch_size: int,
     num_workers: int,
     prefetch_factor: int,
+    progress: bool,
     scoring_method: str,
     metadata: Optional[dict] = None,
 ) -> Optional[dict]:
@@ -176,6 +178,7 @@ def score_one_assay(
             batch_size=batch_size,
             num_workers=num_workers,
             prefetch_factor=prefetch_factor,
+            progress=progress,
             structure_length=int(graph.x.shape[0]),
             reference_protein=ref_protein,
         )
@@ -281,6 +284,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--prefetch-factor", type=int, default=2)
     parser.add_argument(
+        "--progress",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Show global assay and per-assay geometry progress bars.",
+    )
+    parser.add_argument(
         "--log-level", default="INFO", choices=["DEBUG", "INFO", "WARNING", "ERROR"]
     )
     return parser.parse_args()
@@ -326,7 +335,18 @@ def main() -> None:
     logger.info(f"Scoring {len(csv_paths)} assays with {args.scoring_method}")
 
     summary_rows: List[dict] = []
-    for i, csv_path in enumerate(csv_paths, 1):
+    assay_iterator = tqdm(
+        csv_paths,
+        desc="ProteinGym assays",
+        unit="assay",
+        position=0,
+        leave=True,
+        mininterval=2.0,
+        dynamic_ncols=False,
+        file=sys.stdout,
+        disable=not args.progress,
+    )
+    for i, csv_path in enumerate(assay_iterator, 1):
         logger.info(f"[{i}/{len(csv_paths)}] {csv_path.stem}")
         result = score_one_assay(
             csv_path,
@@ -337,6 +357,7 @@ def main() -> None:
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             prefetch_factor=args.prefetch_factor,
+            progress=args.progress,
             scoring_method=args.scoring_method,
             metadata=metadata_by_assay.get(csv_path.stem),
         )

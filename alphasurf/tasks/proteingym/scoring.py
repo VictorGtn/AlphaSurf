@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import copy
 import logging
+import sys
 from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 from scipy.stats import pearsonr, spearmanr
 from torch.utils.data import DataLoader, Dataset
 from torch_geometric.data import Data
+from tqdm import tqdm
 
 from alphasurf.protein.graphs import (
     protein_letters_1to3,
@@ -228,7 +230,7 @@ class MaskedGeometryDataset(Dataset):
 
 def collate_masked_geometry(items):
     """Keep worker-built samples as a list for AtomBatch collation on the GPU host."""
-    return [item for item in items if item is not None]
+    return [item for item in items if item is not None], len(items)
 
 
 def score_assay_option_f(
@@ -241,6 +243,7 @@ def score_assay_option_f(
     batch_size: int = 8,
     num_workers: int = 0,
     prefetch_factor: int = 2,
+    progress: bool = False,
     structure_length: int | None = None,
     reference_protein=None,
 ) -> np.ndarray:
@@ -301,42 +304,57 @@ def score_assay_option_f(
     )
 
     scores = np.full(len(assay.mutants), np.nan, dtype=np.float64)
-    for geometry_batch in geometry_loader:
-        if not geometry_batch:
-            continue
-        samples = [item[0] for item in geometry_batch]
-        metadata = [(item[1], item[2]) for item in geometry_batch]
+    with tqdm(
+        total=len(geometry_dataset),
+        desc=assay.assay_id[:36],
+        unit="geometry",
+        position=1,
+        leave=False,
+        mininterval=2.0,
+        dynamic_ncols=False,
+        file=sys.stdout,
+        disable=not progress,
+    ) as geometry_progress:
+        for geometry_batch, attempted_count in geometry_loader:
+            geometry_progress.update(attempted_count)
+            if not geometry_batch:
+                continue
+            samples = [item[0] for item in geometry_batch]
+            metadata = [(item[1], item[2]) for item in geometry_batch]
 
-        batch = _AtomBatch.from_data_list(samples)
-        batch.graph = batch.graph.to(device)
-        batch.surface = batch.surface.to(device)
-        model.eval()
-        with _torch.no_grad():
-            if not model._esm_loaded:
-                model._load_esm(device)
-            out = model(batch, device)
-            masked_logits = out["logits"][out["global_masked"]]
-            cursor = 0
-            for mutant_indices, num_positions in metadata:
-                log_probs = _torch.log_softmax(
-                    masked_logits[cursor : cursor + num_positions], dim=-1
-                )
-                cursor += num_positions
-                pos_range = _torch.arange(num_positions, device=device)
-                for mutant_index in mutant_indices:
-                    mutant = assay.mutants[mutant_index]
-                    wt_idx = _torch.tensor(
-                        [aa_one_letter_to_idx(a) for a in mutant.wt_aas],
-                        device=device,
+            batch = _AtomBatch.from_data_list(samples)
+            batch.graph = batch.graph.to(device)
+            batch.surface = batch.surface.to(device)
+            model.eval()
+            with _torch.no_grad():
+                if not model._esm_loaded:
+                    model._load_esm(device)
+                out = model(batch, device)
+                masked_logits = out["logits"][out["global_masked"]]
+                cursor = 0
+                for mutant_indices, num_positions in metadata:
+                    log_probs = _torch.log_softmax(
+                        masked_logits[cursor : cursor + num_positions], dim=-1
                     )
-                    mt_idx = _torch.tensor(
-                        [aa_one_letter_to_idx(a) for a in mutant.mt_aas],
-                        device=device,
-                    )
-                    scores[mutant_index] = (
-                        (log_probs[pos_range, mt_idx] - log_probs[pos_range, wt_idx])
-                        .sum()
-                        .item()
-                    )
+                    cursor += num_positions
+                    pos_range = _torch.arange(num_positions, device=device)
+                    for mutant_index in mutant_indices:
+                        mutant = assay.mutants[mutant_index]
+                        wt_idx = _torch.tensor(
+                            [aa_one_letter_to_idx(a) for a in mutant.wt_aas],
+                            device=device,
+                        )
+                        mt_idx = _torch.tensor(
+                            [aa_one_letter_to_idx(a) for a in mutant.mt_aas],
+                            device=device,
+                        )
+                        scores[mutant_index] = (
+                            (
+                                log_probs[pos_range, mt_idx]
+                                - log_probs[pos_range, wt_idx]
+                            )
+                            .sum()
+                            .item()
+                        )
 
     return scores
