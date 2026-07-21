@@ -31,6 +31,7 @@ class MisatoBindingSiteDataset(Dataset):
         graph_cfg,
         frame_mode="first",
         frame_index=0,
+        frame_fraction=0.5,
         noise_sigma=0.0,
     ):
         self.pdb_ids = list(pdb_ids)
@@ -40,6 +41,7 @@ class MisatoBindingSiteDataset(Dataset):
         self.graph_cfg = graph_cfg
         self.frame_mode = frame_mode
         self.frame_index = int(frame_index)
+        self.frame_fraction = float(frame_fraction)
         self.noise_sigma = float(noise_sigma)
         self._md = None
         self._md_pid = None
@@ -78,8 +80,17 @@ class MisatoBindingSiteDataset(Dataset):
         n_frames = trajectory.shape[0]
         if self.frame_mode == "random":
             frame_idx = int(torch.randint(n_frames, (1,)).item())
-        elif self.frame_mode == "first":
+        elif self.frame_mode in {"first", "fixed"}:
             frame_idx = self.frame_index
+        elif self.frame_mode == "middle":
+            frame_idx = n_frames // 2
+        elif self.frame_mode == "fraction":
+            if not 0.0 <= self.frame_fraction <= 1.0:
+                raise ValueError(
+                    f"frame_fraction must be in [0, 1], got {self.frame_fraction}"
+                )
+            # Round halves upward so fraction=0.5 agrees with n_frames // 2.
+            frame_idx = int(self.frame_fraction * (n_frames - 1) + 0.5)
         else:
             raise ValueError(f"Unsupported frame_mode: {self.frame_mode}")
         if not 0 <= frame_idx < n_frames:

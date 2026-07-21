@@ -35,11 +35,14 @@ epochs: 50
 device: 0
 ckpt_path: null
 
-# Training sees one uniformly sampled trajectory frame per complex and epoch.
-# Validation/test are deterministic and always use the first trajectory frame.
+# Supported modes: random, first/fixed, middle, and fraction. Targets always
+# remain the cached frame-0 bound-pose contacts, regardless of input frame.
 train_frame_mode: random
 eval_frame_mode: first
+train_frame_index: 0
 eval_frame_index: 0
+train_frame_fraction: 0.5
+eval_frame_fraction: 0.5
 
 # No trajectory-derived summary (adaptability/correlation) enters the model.
 noise_sigma: 0.0

@@ -66,9 +66,21 @@ class MisatoBindingSiteDataModule(pl.LightningDataModule):
             ids = ids[:50]
         noise_sigma = 0.0
         frame_mode = getattr(self.cfg, "eval_frame_mode", "first")
+        frame_index = getattr(self.cfg, "eval_frame_index", 0)
+        frame_fraction = getattr(self.cfg, "eval_frame_fraction", 0.5)
         if split == "train":
             noise_sigma = float(getattr(self.cfg, "noise_sigma", 0.0))
             frame_mode = getattr(self.cfg, "train_frame_mode", "random")
+            frame_index = getattr(
+                self.cfg,
+                "train_frame_index",
+                getattr(self.cfg, "eval_frame_index", 0),
+            )
+            frame_fraction = getattr(
+                self.cfg,
+                "train_frame_fraction",
+                getattr(self.cfg, "eval_frame_fraction", 0.5),
+            )
         return MisatoBindingSiteDataset(
             pdb_ids=ids,
             data_dir=self.sample_dir,
@@ -76,7 +88,8 @@ class MisatoBindingSiteDataModule(pl.LightningDataModule):
             surface_cfg=self.cfg.cfg_surface,
             graph_cfg=self.cfg.cfg_graph,
             frame_mode=frame_mode,
-            frame_index=getattr(self.cfg, "eval_frame_index", 0),
+            frame_index=frame_index,
+            frame_fraction=frame_fraction,
             noise_sigma=noise_sigma,
         )
 
