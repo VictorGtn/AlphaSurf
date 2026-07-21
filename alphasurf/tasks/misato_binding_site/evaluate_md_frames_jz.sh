@@ -45,6 +45,17 @@ export NUMEXPR_MAX_THREADS=1
 
 checkpoint_list=""
 for checkpoint in "$@"; do
+    # Slurm starts the job independently of the shell that submitted it, and
+    # this script later changes directory to the repository root. Resolve
+    # relative checkpoint arguments against the submission directory first.
+    if [[ "$checkpoint" != /* ]]; then
+        checkpoint="${SLURM_SUBMIT_DIR:-$PWD}/$checkpoint"
+    fi
+    if [ ! -f "$checkpoint" ]; then
+        echo "Checkpoint not found: $checkpoint" >&2
+        exit 2
+    fi
+    checkpoint=$(realpath "$checkpoint")
     if [ -n "$checkpoint_list" ]; then
         checkpoint_list+=","
     fi
