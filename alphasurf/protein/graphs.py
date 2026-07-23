@@ -238,15 +238,106 @@ def extract_chains(
         )
 
 
-def parse_pdb_path(pdb_path, use_pqr=True):
+def _parse_cif_path(cif_path):
+    """Parse an mmCIF structure with Gemmi using AlphaSurf's atom selection."""
+    import gemmi
+
     from alphasurf.utils.timing_stats import Timer
+
+    with Timer("GemmiCIFParser"):
+        structure = gemmi.read_structure(str(cif_path))
+        if len(structure) == 0:
+            raise ValueError(f"No model found in {cif_path}")
+
+        amino_types = []
+        atom_chain_id = []
+        atom_amino_id = []
+        atom_names = []
+        atom_types = []
+        atom_pos = []
+        atom_radius = []
+        amino_ids = []
+        atom_ids = []
+
+        res_id = 0
+        for model in structure:
+            for chain in model:
+                for residue in chain:
+                    if residue.het_flag != "A":
+                        continue
+
+                    resname_str = residue.name.upper()
+                    resname = res_type_dict.get(resname_str, res_type_dict["UNK"])
+                    res_unique_id = (
+                        f"{chain.name}:"
+                        f"{res_type_idx_to_1[resname]}{residue.seqid.num}"
+                    )
+                    amino_types.append(resname)
+                    amino_ids.append(res_unique_id)
+
+                    for atom in residue.first_conformer():
+                        atom_name = atom.name.strip()
+                        if atom_name.startswith("H"):
+                            continue
+
+                        element = atom.element.name
+                        atom_chain_id.append(chain.name)
+                        atom_types.append(
+                            atom_type_dict.get(element, atom_type_dict["UNK"])
+                        )
+                        atom_names.append(atom_name)
+                        atom_pos.append((atom.pos.x, atom.pos.y, atom.pos.z))
+                        atom_amino_id.append(res_id)
+                        atom_ids.append(f"{res_unique_id}_{atom_name}")
+                        atom_radius.append(
+                            get_sbl_radius(atom_name, resname_str, element.upper())
+                        )
+
+                    res_id += 1
+
+    amino_types = np.asarray(amino_types, dtype=np.int32)
+    atom_pos = np.asarray(atom_pos, dtype=np.float32)
+    if atom_pos.size == 0:
+        raise ValueError(f"No standard heavy atoms found in {cif_path}")
+    if not np.isfinite(atom_pos).all():
+        raise ValueError(f"Non-finite atom coordinate found in {cif_path}")
+
+    return (
+        amino_types,
+        np.asarray(atom_chain_id),
+        np.asarray(atom_amino_id, dtype=np.int32),
+        np.asarray(atom_names),
+        np.asarray(atom_types, dtype=np.int32),
+        atom_pos,
+        None,
+        np.asarray(atom_radius, dtype=np.float32),
+        np.full_like(amino_types, len(SSE_type_dict), dtype=np.int64),
+        np.asarray(amino_ids, dtype=object),
+        np.asarray(atom_ids, dtype=object),
+    )
+
+
+def parse_pdb_path(pdb_path, use_pqr=True):
+    """Parse a PDB/PQR or mmCIF protein structure into AlphaSurf arrays.
+
+    mmCIF inputs are supported only with ``use_pqr=False``. They are parsed
+    directly with Gemmi and therefore do not run PDB2PQR or DSSP: atom charges
+    are returned as ``None`` and all secondary-structure labels are unknown.
+    """
+    from alphasurf.utils.timing_stats import Timer
+
+    pdb_path = Path(pdb_path)
+    if not use_pqr and {suffix.lower() for suffix in pdb_path.suffixes} & {
+        ".cif",
+        ".mmcif",
+    }:
+        return _parse_cif_path(pdb_path)
 
     if use_pqr:
         pdb2pqr_bin = shutil.which("pdb2pqr")
         if pdb2pqr_bin is None:
             raise RuntimeError("pdb2pqr executable not found")
 
-        pdb_path = Path(pdb_path)
         # process pqr
         out_dir = pdb_path.parent
         pdb_id = pdb_path.stem
