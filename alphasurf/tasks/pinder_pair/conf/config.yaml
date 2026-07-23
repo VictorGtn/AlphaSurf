@@ -47,6 +47,11 @@ interface_distance_surface: 6.0 # Distance threshold (Å) for surface mesh inter
 # - 'af2': AlphaFold2 predicted structures
 test_setting: apo
 
+# Cluster sampling for train (requires --all_members CSV from preprocess.py):
+# - 'single': one row per system (current behavior).
+# - 'multi': group rows by cluster_id and sample one member per draw.
+cluster_sampling: single
+
 # On-the-fly mode (set to null for disk mode)
 on_fly:
     surface_method: alpha_complex

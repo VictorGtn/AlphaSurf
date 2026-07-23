@@ -36,12 +36,24 @@ warnings.filterwarnings("ignore", category=UserWarning, module="fastpdb")
 warnings.filterwarnings("ignore", category=FutureWarning, module="google.api_core")
 
 
+def _count_atoms_in_pdb(pdb_path: Path) -> int:
+    if not pdb_path.exists():
+        return 0
+    count = 0
+    with open(pdb_path, "r") as f:
+        for line in f:
+            if line.startswith("ATOM"):
+                count += 1
+    return count
+
+
 def process_id_chunk(
     ids: List[str],
     output_dir: str,
     split: str,
     test_setting: str,
     overwrite: bool = False,
+    cluster_id_by_system: Dict[str, str] = None,
 ) -> Tuple[int, List[Dict]]:
     """Process a chunk of systems using PinderSystem properties directly."""
     try:
@@ -91,14 +103,19 @@ def process_id_chunk(
             if overwrite or not ligand_dest.exists():
                 l_struct.to_pdb(ligand_dest)
 
-            systems_info.append(
-                {
-                    "id": system_id,
-                    "receptor_id": f"{system_id}_R",
-                    "ligand_id": f"{system_id}_L",
-                    "setting": setting,
-                }
-            )
+            entry = {
+                "id": system_id,
+                "receptor_id": f"{system_id}_R",
+                "ligand_id": f"{system_id}_L",
+                "setting": setting,
+                "n_atoms_R": _count_atoms_in_pdb(receptor_dest),
+                "n_atoms_L": _count_atoms_in_pdb(ligand_dest),
+            }
+            if cluster_id_by_system is not None:
+                cid = cluster_id_by_system.get(system_id)
+                if cid is not None:
+                    entry["cluster_id"] = cid
+            systems_info.append(entry)
 
         except Exception as e:
             sys_id_str = ids[i] if i < len(ids) else f"index_{i}"
@@ -115,9 +132,13 @@ def download_pinder_clustered(
     num_workers: int = 8,
     limit: int = None,
     overwrite: bool = False,
+    all_members: bool = False,
 ) -> List[Dict]:
-    """
-    Download PINDER clustered dataset (~42k structures) using multiprocessing.
+    """Download PINDER split using multiprocessing.
+
+    all_members=True keeps every system in the split (no cluster dedup) and
+    attaches cluster_id to each row so the dataset can group and sample at
+    draw time.
     """
     try:
         from pinder.core import get_index
@@ -134,10 +155,17 @@ def download_pinder_clustered(
     index = get_index()
     split_index = index[index["split"] == split].copy()
 
-    print("Sampling 1 representative per cluster (seed=42)...")
-    split_index = split_index.sample(frac=1, random_state=42).drop_duplicates(
-        subset=["cluster_id"]
-    )
+    cluster_id_by_system = None
+    if all_members:
+        print(f"Keeping ALL members per cluster ({len(split_index)} systems)...")
+        cluster_id_by_system = dict(
+            zip(split_index["id"].tolist(), split_index["cluster_id"].tolist())
+        )
+    else:
+        print("Sampling 1 representative per cluster (seed=42)...")
+        split_index = split_index.sample(frac=1, random_state=42).drop_duplicates(
+            subset=["cluster_id"]
+        )
 
     if limit:
         print(f"Limiting to first {limit} systems for testing...")
@@ -145,38 +173,38 @@ def download_pinder_clustered(
 
     print(f"Processing {len(split_index)} systems with {num_workers} workers...")
 
-    # Get list of IDs
     all_ids = split_index["id"].tolist()
 
-    # Split IDs into chunks
-    # Split IDs into small chunks for smooth progress bar
     chunk_size = 50
     chunks = [all_ids[i : i + chunk_size] for i in range(0, len(all_ids), chunk_size)]
 
-    # Prepare arguments for each chunk
     process_func = functools.partial(
         process_id_chunk,
         output_dir=output_dir,
         split=split,
         test_setting=test_setting,
         overwrite=overwrite,
+        cluster_id_by_system=cluster_id_by_system,
     )
 
     systems_info = []
 
     if num_workers > 1:
         with multiprocessing.Pool(processes=num_workers) as pool:
-            # Use imap_unordered for smoother updates
             with tqdm(total=len(all_ids), desc=f"Processing {split}") as pbar:
                 for count, result in pool.imap_unordered(process_func, chunks):
                     systems_info.extend(result)
                     pbar.update(count)
     else:
-        # Serial processing
         with tqdm(total=len(all_ids), desc=f"Processing {split}") as pbar:
             for chunk in chunks:
                 count, result = process_id_chunk(
-                    chunk, output_dir, split, test_setting, overwrite
+                    chunk,
+                    output_dir,
+                    split,
+                    test_setting,
+                    overwrite,
+                    cluster_id_by_system,
                 )
                 systems_info.extend(result)
                 pbar.update(count)
@@ -258,6 +286,15 @@ def main():
         action="store_true",
         help="Overwrite existing PDB files (default: False)",
     )
+    parser.add_argument(
+        "--all_members",
+        action="store_true",
+        help=(
+            "Keep every system in the split (no 1-per-cluster dedup). "
+            "Attaches cluster_id to each CSV row so the dataset can sample "
+            "members per draw. Typically used with --split train."
+        ),
+    )
 
     args = parser.parse_args()
     output_dir = Path(args.output_dir)
@@ -282,7 +319,13 @@ def main():
         for setting in settings_to_process:
             print(f"  > Setting: {setting}")
             systems = download_pinder_clustered(
-                output_dir, split, setting, args.num_workers, args.limit, args.overwrite
+                output_dir,
+                split,
+                setting,
+                args.num_workers,
+                args.limit,
+                args.overwrite,
+                all_members=args.all_members,
             )
             save_split(systems, output_dir, split, setting if split == "test" else None)
 

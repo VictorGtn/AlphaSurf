@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Tuple
 import biotite.sequence as seq
 import biotite.sequence.align as align
 import numpy as np
+import pandas as pd
 import torch
 from alphasurf.protein.protein_loader import ProteinLoader
 from Bio import SeqUtils
@@ -68,8 +69,6 @@ def load_pinder_split(
     Returns:
         List of dicts with keys: id, receptor_id, ligand_id
     """
-    import pandas as pd
-
     data_dir = Path(data_dir) if not isinstance(data_dir, Path) else data_dir
 
     # For test split, try setting-specific file first
@@ -225,18 +224,22 @@ def _df_to_systems(df) -> List[Dict]:
     systems = []
     for _, row in df.iterrows():
         system_id = row.get("id", str(row.name))
-        systems.append(
-            {
-                "id": system_id,
-                "receptor_id": row.get("receptor_id", f"{system_id}_R"),
-                "ligand_id": row.get("ligand_id", f"{system_id}_L"),
-                "setting": row.get("setting"),
-                "split": row.get("split"),
-                # Allow pre-computed paths if in CSV
-                "receptor_path": row.get("receptor_path"),
-                "ligand_path": row.get("ligand_path"),
-            }
-        )
+        entry = {
+            "id": system_id,
+            "receptor_id": row.get("receptor_id", f"{system_id}_R"),
+            "ligand_id": row.get("ligand_id", f"{system_id}_L"),
+            "setting": row.get("setting"),
+            "split": row.get("split"),
+            "receptor_path": row.get("receptor_path"),
+            "ligand_path": row.get("ligand_path"),
+        }
+        if "cluster_id" in df.columns and pd.notna(row.get("cluster_id")):
+            entry["cluster_id"] = row["cluster_id"]
+        if "n_atoms_R" in df.columns and pd.notna(row.get("n_atoms_R")):
+            entry["n_atoms_R"] = int(row["n_atoms_R"])
+        if "n_atoms_L" in df.columns and pd.notna(row.get("n_atoms_L")):
+            entry["n_atoms_L"] = int(row["n_atoms_L"])
+        systems.append(entry)
     return systems
 
 
@@ -271,6 +274,7 @@ class PinderPairDataset(Dataset):
         interface_distance: float = 8.0,
         surface_neg_to_pos_ratio: float = 10.0,
         interface_dir: Optional[str] = None,
+        cluster_sampling: str = "single",
     ):
         """
         Args:
@@ -284,6 +288,9 @@ class PinderPairDataset(Dataset):
             interface_distance_graph: Distance threshold (Å) for residue graph interface
             interface_distance_surface: Distance threshold (Å) for surface mesh interface
             interface_dir: Directory with precomputed interface pairs (disk mode)
+            cluster_sampling: "single" treats each row as its own sample (current
+                behavior). "multi" groups rows by cluster_id and samples one member
+                per __getitem__ draw — requires cluster_id on each system dict.
         """
         self.systems = systems
         self.protein_loader = protein_loader
@@ -297,8 +304,38 @@ class PinderPairDataset(Dataset):
         self.surface_neg_to_pos_ratio = surface_neg_to_pos_ratio
         self.interface_dir = interface_dir
 
-        # Cache clean interface pairs when using noise (keyed by system ID)
         self._interface_cache = {}
+
+        if cluster_sampling not in ("single", "multi"):
+            raise ValueError(
+                f"cluster_sampling must be 'single' or 'multi', got {cluster_sampling!r}"
+            )
+        self.cluster_sampling = cluster_sampling
+        self._clusters: Optional[List[List[Dict]]] = None
+        if cluster_sampling == "multi":
+            self._build_cluster_index()
+
+    def _build_cluster_index(self):
+        """Group self.systems by cluster_id, preserving first-seen order."""
+        self._clusters = []
+        seen: Dict = {}
+        missing = 0
+        for sys in self.systems:
+            cid = sys.get("cluster_id")
+            if cid is None:
+                missing += 1
+                cid = sys["id"]
+            if cid not in seen:
+                seen[cid] = len(self._clusters)
+                self._clusters.append([])
+            self._clusters[seen[cid]].append(sys)
+        if missing:
+            logger.warning(
+                "cluster_sampling='multi' but %d/%d systems lack cluster_id; "
+                "treating each as its own cluster.",
+                missing,
+                len(self.systems),
+            )
 
     @property
     def _noise_enabled(self) -> bool:
@@ -353,6 +390,8 @@ class PinderPairDataset(Dataset):
         )
 
     def __len__(self) -> int:
+        if self._clusters is not None:
+            return len(self._clusters)
         return len(self.systems)
 
     def _load_precomputed_interface(self, system_id: str):
@@ -939,7 +978,11 @@ class PinderPairDataset(Dataset):
         }
 
     def __getitem__(self, idx: int) -> Optional[Data]:
-        system = self.systems[idx]
+        if self._clusters is not None:
+            cluster = self._clusters[idx]
+            system = cluster[np.random.randint(len(cluster))]
+        else:
+            system = self.systems[idx]
 
         # Resolve paths
         receptor_path = self._get_pdb_path(system, "receptor")

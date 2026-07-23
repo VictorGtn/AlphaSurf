@@ -270,6 +270,16 @@ class PinderPairDataModule(pl.LightningDataModule):
             surface_label_mode = getattr(self.cfg.on_fly, "surface_label_mode", "atom")
         else:
             surface_label_mode = getattr(self.cfg, "surface_label_mode", "atom")
+
+        # Multi-member cluster sampling only applies to train; val/test are
+        # singletons by PINDER design and PinderAlignedDataset relies on
+        # one-to-one alignment.
+        cluster_sampling = (
+            getattr(self.cfg, "cluster_sampling", "single")
+            if split == "train"
+            else "single"
+        )
+
         dataset = DatasetClass(
             systems=self.systems[split],
             protein_loader=protein_loader,
@@ -280,6 +290,7 @@ class PinderPairDataModule(pl.LightningDataModule):
             interface_distance_surface=self.interface_distance_surface,
             surface_neg_to_pos_ratio=self.surface_neg_to_pos_ratio,
             interface_dir=self.interface_dir,
+            cluster_sampling=cluster_sampling,
         )
         dataset.SURFACE_LABEL_MODE = surface_label_mode
         return dataset
@@ -298,30 +309,36 @@ class PinderPairDataModule(pl.LightningDataModule):
             print("Computing atom counts for dynamic batching...")
             sizes = self._compute_atom_counts(self.systems["train"], dataset)
 
-            # Check if numpy is available (it should be in this env)
             import numpy as np
 
-            # Filter outliers: keep middle 98% (drop bottom 1% and top 1%)
             p1 = np.percentile(sizes, 1)
             p99 = np.percentile(sizes, 99)
             print(
                 f"Filtering training systems by size: keeping range [{p1:.1f}, {p99:.1f}] (1%-99%)"
             )
 
-            # We enforce the percentile range
-            valid_indices = [i for i, s in enumerate(sizes) if s >= p1 and s <= p99]
-
-            if len(valid_indices) < len(sizes):
+            keep_mask = [p1 <= s <= p99 for s in sizes]
+            n_dropped = len(sizes) - sum(keep_mask)
+            if n_dropped:
                 print(
-                    f"Filtering {len(sizes) - len(valid_indices)} systems (size outside [{p1:.1f}, {p99:.1f}])."
+                    f"Filtering {n_dropped} samples (size outside [{p1:.1f}, {p99:.1f}])."
                 )
-                filtered_systems = [self.systems["train"][i] for i in valid_indices]
-                filtered_sizes = [sizes[i] for i in valid_indices]
+
+            if dataset._clusters is not None:
+                retained_clusters = [
+                    c for i, c in enumerate(dataset._clusters) if keep_mask[i]
+                ]
+                filtered_systems = [s for c in retained_clusters for s in c]
+                filtered_sizes = [s for i, s in enumerate(sizes) if keep_mask[i]]
             else:
-                filtered_systems = self.systems["train"]
-                filtered_sizes = sizes
+                filtered_systems = [
+                    s for i, s in enumerate(self.systems["train"]) if keep_mask[i]
+                ]
+                filtered_sizes = [s for i, s in enumerate(sizes) if keep_mask[i]]
 
             dataset.systems = filtered_systems
+            if dataset._clusters is not None:
+                dataset._build_cluster_index()
             dataset.prepopulate_interface_cache()
             dataset = self._maybe_wrap_timing(dataset)
 
@@ -344,14 +361,31 @@ class PinderPairDataModule(pl.LightningDataModule):
             return DataLoader(dataset, shuffle=shuffle, **self.loader_args)
 
     def _compute_atom_counts(self, systems, dataset) -> list:
-        """Compute total atom count for each system (R + L)."""
-        sizes = []
-        for sys in systems:
-            r_path = dataset._get_pdb_path(sys, "receptor")
-            l_path = dataset._get_pdb_path(sys, "ligand")
-            total = self._count_atoms(r_path) + self._count_atoms(l_path)
-            sizes.append(total)
-        return sizes
+        """Compute total atom count per dataset item.
+
+        In single mode (or any time dataset._clusters is None), returns one
+        size per system, indexed by position in `systems`.
+
+        In multi mode, returns one size per cluster (aligned with
+        dataset._clusters order), taking the max over cluster members so the
+        sampler is pessimistic about which member gets drawn.
+
+        Prefers the n_atoms_R / n_atoms_L fields written by preprocess.py;
+        falls back to counting ATOM records in the PDB files.
+        """
+        if dataset._clusters is not None:
+            return [
+                max(self._system_atom_count(s, dataset) for s in cluster)
+                for cluster in dataset._clusters
+            ]
+        return [self._system_atom_count(s, dataset) for s in systems]
+
+    def _system_atom_count(self, sys, dataset) -> int:
+        if "n_atoms_R" in sys and "n_atoms_L" in sys:
+            return int(sys["n_atoms_R"]) + int(sys["n_atoms_L"])
+        r_path = dataset._get_pdb_path(sys, "receptor")
+        l_path = dataset._get_pdb_path(sys, "ligand")
+        return self._count_atoms(r_path) + self._count_atoms(l_path)
 
     @staticmethod
     def _count_atoms(pdb_path: str) -> int:
