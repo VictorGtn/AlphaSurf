@@ -67,8 +67,11 @@ train:
     gradient_clip_val: 1.0
     log_every_n_steps: 25
     fast_dev_run: false
-    to_monitor: loss/val
-    monitor_mode: min
+    # Binding residues are strongly imbalanced, so select checkpoints using
+    # threshold-independent validation average precision rather than loss or
+    # F1 at an arbitrary 0.5 decision threshold.
+    to_monitor: auprc/val
+    monitor_mode: max
 
 cfg_surface:
     use_surfaces: true
