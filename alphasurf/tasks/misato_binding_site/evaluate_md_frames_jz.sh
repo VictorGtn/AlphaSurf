@@ -64,7 +64,14 @@ done
 
 fractions=${FRAME_FRACTIONS:-"0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9"}
 random_calibration_fractions=${RANDOM_CALIBRATION_FRACTIONS:-"0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0"}
+source_calibration_fractions=${SOURCE_CALIBRATION_FRACTIONS:-}
 output_path=$REPO_ROOT/tasks/misato_binding_site/log/md_frame_evaluation_${SLURM_JOB_ID}.json
+source_calibration_args=()
+if [ -n "$source_calibration_fractions" ]; then
+    source_calibration_args+=(
+        "+md_eval_source_calibration_frame_fractions=[$source_calibration_fractions]"
+    )
+fi
 
 cd "$REPO_ROOT/.."
 srun --export=ALL "$CONDA_PREFIX/bin/python" \
@@ -80,4 +87,5 @@ srun --export=ALL "$CONDA_PREFIX/bin/python" \
     "+md_eval_checkpoint_paths=[$checkpoint_list]" \
     "+md_eval_frame_fractions=[$fractions]" \
     "+md_eval_random_calibration_frame_fractions=[$random_calibration_fractions]" \
+    "${source_calibration_args[@]}" \
     +md_eval_output="$output_path"

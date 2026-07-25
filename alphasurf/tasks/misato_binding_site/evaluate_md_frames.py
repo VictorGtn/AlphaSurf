@@ -225,6 +225,16 @@ def main(cfg=None):
             )
         }
     )
+    forced_source_fractions_raw = OmegaConf.select(
+        cfg,
+        "md_eval_source_calibration_frame_fractions",
+        default=None,
+    )
+    forced_source_fractions = (
+        sorted({float(value) for value in forced_source_fractions_raw})
+        if forced_source_fractions_raw is not None
+        else None
+    )
     if not checkpoint_paths:
         raise ValueError("Provide +md_eval_checkpoint_paths=[/path/a.ckpt,...]")
     if not fractions or any(not 0.0 <= value <= 1.0 for value in fractions):
@@ -233,6 +243,11 @@ def main(cfg=None):
         not 0.0 <= value <= 1.0 for value in random_calibration_fractions
     ):
         raise ValueError("Random calibration frame fractions must lie in [0, 1]")
+    if forced_source_fractions is not None and (
+        not forced_source_fractions
+        or any(not 0.0 <= value <= 1.0 for value in forced_source_fractions)
+    ):
+        raise ValueError("Forced source calibration fractions must lie in [0, 1]")
     missing = [str(path) for path in checkpoint_paths if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"Missing checkpoints: {missing}")
@@ -248,9 +263,23 @@ def main(cfg=None):
     for checkpoint_path in checkpoint_paths:
         print(f"\nLoading {checkpoint_path}")
         training_cfg = checkpoint_training_cfg(checkpoint_path)
-        source_calibration = training_frame_calibration_specs(
-            training_cfg, random_calibration_fractions
-        )
+        if forced_source_fractions is None:
+            source_calibration = training_frame_calibration_specs(
+                training_cfg, random_calibration_fractions
+            )
+        else:
+            source_calibration = {
+                "training_frame_mode": str(
+                    OmegaConf.select(
+                        training_cfg, "train_frame_mode", default="unknown"
+                    )
+                ),
+                "protocol": "explicit shared source-validation frame fractions",
+                "frame_specs": [
+                    frame_spec("fraction", fraction=fraction)
+                    for fraction in forced_source_fractions
+                ],
+            }
         source_specs = source_calibration["frame_specs"]
         model = MisatoBindingSiteModule.load_from_checkpoint(
             str(checkpoint_path), cfg=cfg, map_location=device
