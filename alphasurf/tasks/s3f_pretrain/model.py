@@ -9,8 +9,10 @@ Forward pass:
   2. Run frozen ESM2-650M -> per-residue 1280-dim embeddings
   3. Concatenate ESM embeddings into graph.x (31 -> 1311 dims)
   4. Apply mask plan to graph.x (AA one-hot + hphob)
-  5. Run ProteinEncoder -> per-residue embeddings
-  6. Residue head (Dropout + Linear) -> (N_res, 20) logits
+  5. Optionally lift masked ESM + distance from 3 nearby residues to each
+     AlphaSurf vertex and concatenate with its geometric features
+  6. Run ProteinEncoder -> per-residue embeddings
+  7. Residue head (Dropout + Linear) -> (N_res, 20) logits
 
 For the AlphaSurf path, 3D masking happens before this forward pass by removing
 side-chain atoms and regenerating the mesh. The s3f_exact point cloud is built
@@ -24,6 +26,7 @@ import logging
 import torch
 import torch.nn as nn
 from alphasurf.networks.protein_encoder import ProteinEncoder
+from alphasurf.network_utils.misc_arch.s3f_blocks import _surface_residue_knn
 from alphasurf.protein.graphs import res_type_dict, res_type_to_hphob
 
 logger = logging.getLogger(__name__)
@@ -57,17 +60,68 @@ RES_TYPE_TO_LETTER = {
 }
 
 
+class SurfaceESMInjector(nn.Module):
+    """Lift masked residue ESM embeddings directly onto surface vertices.
+
+    For each surface vertex, the ``k`` nearest C-alpha residues are found
+    independently within each protein in the batch. A bias-free linear map of
+    ``[ESM, distance]`` is mean-pooled over those neighbours. The linear map is
+    evaluated as two terms so raw 1280-dimensional ESM vectors are projected
+    once per residue rather than materialized ``k`` times per surface vertex.
+    """
+
+    def __init__(self, output_dim: int, k: int = 3):
+        super().__init__()
+        if k < 1:
+            raise ValueError(f"surface_esm.k must be positive, got {k}")
+        self.k = k
+        self.esm_projection = nn.Linear(ESM_EMBED_DIM, output_dim, bias=False)
+        self.distance_projection = nn.Linear(1, output_dim, bias=False)
+
+    def forward(self, surface, graph, esm_emb):
+        if surface is None or not hasattr(surface, "x") or surface.x is None:
+            return surface
+
+        nn_idx, nn_dists = _surface_residue_knn(
+            graph.node_pos.float(),
+            surface.verts.float(),
+            self.k,
+            res_batch=getattr(graph, "batch", None),
+            surf_batch=getattr(surface, "batch", None),
+        )
+        residue_features = self.esm_projection(esm_emb.float())
+        distance_features = self.distance_projection(nn_dists.unsqueeze(-1))
+        lifted = (residue_features[nn_idx] + distance_features).mean(dim=1)
+        surface.x = torch.cat(
+            [surface.x, lifted.to(dtype=surface.x.dtype)],
+            dim=-1,
+        )
+        return surface
+
+
 class S3FPretrainNet(nn.Module):
-    def __init__(self, cfg_encoder, cfg_head):
+    def __init__(self, cfg_encoder, cfg_head, cfg_surface_esm=None):
         super().__init__()
         self.encoder = ProteinEncoder(cfg_encoder)
         self.encoder_name = getattr(cfg_encoder, "name", "")
+        self.is_s3f_exact = "s3f_exact" in self.encoder_name
         self.encoded_dim = (
-            S3F_EXACT_OUTPUT_DIM
-            if "s3f_exact" in self.encoder_name
-            else cfg_head.encoded_dims
+            S3F_EXACT_OUTPUT_DIM if self.is_s3f_exact else cfg_head.encoded_dims
         )
         self.head_dropout = cfg_head.dropout
+        surface_esm_enabled = bool(
+            cfg_surface_esm is not None
+            and getattr(cfg_surface_esm, "enabled", False)
+            and not self.is_s3f_exact
+        )
+        self.surface_esm_injector = (
+            SurfaceESMInjector(
+                output_dim=cfg_head.encoded_dims,
+                k=int(getattr(cfg_surface_esm, "k", 3)),
+            )
+            if surface_esm_enabled
+            else None
+        )
 
         self.residue_head = nn.Sequential(
             nn.Dropout(self.head_dropout),
@@ -138,6 +192,8 @@ class S3FPretrainNet(nn.Module):
             x = torch.cat([graph.x, esm_emb], dim=-1)
             x = self._apply_node_mask(x, per_protein, ptr, B)
             graph.x = x
+            if self.surface_esm_injector is not None:
+                surface = self.surface_esm_injector(surface, graph, esm_emb)
 
         _, graph_out = self.encoder(graph=graph, surface=surface)
         logits = self.residue_head(graph_out.x)

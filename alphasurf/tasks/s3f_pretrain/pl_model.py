@@ -26,7 +26,11 @@ class S3FPretrainModule(AtomPLModule):
         super().__init__()
         self.save_hyperparameters()
         self.cfg = cfg
-        self.model = S3FPretrainNet(cfg.encoder, cfg.cfg_head)
+        self.model = S3FPretrainNet(
+            cfg.encoder,
+            cfg.cfg_head,
+            cfg_surface_esm=getattr(cfg, "surface_esm", None),
+        )
         self.criterion = nn.CrossEntropyLoss()
 
     def step(self, batch):

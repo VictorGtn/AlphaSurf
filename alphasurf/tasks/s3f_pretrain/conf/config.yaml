@@ -38,6 +38,16 @@ mask_rate: 0.15
 max_length: 250
 k_surf_leak: 20
 
+# Lightweight S3F-style sequence initialization of AlphaSurf vertices.
+# Each vertex receives the mean of a shared linear projection of the masked
+# ESM embeddings and distances of its k nearest C-alpha residues. The lifted
+# feature is concatenated with the existing geometric surface features before
+# the first encoder block. This is ignored by the s3f_exact encoder, which has
+# its own released-code-compatible surface initializer.
+surface_esm:
+    enabled: true
+    k: 3
+
 on_fly:
     surface_method: alpha_complex
     alpha_value: 0

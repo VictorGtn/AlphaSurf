@@ -90,6 +90,17 @@ class S3FPretrainDataModule(pl.LightningDataModule):
             block0 = cfg.encoder.blocks[0]
             if "g_pre_block" in block0:
                 block0.g_pre_block.dim_in = 31 + ESM_EMBED_DIM
+            surface_esm_cfg = getattr(cfg, "surface_esm", None)
+            surface_esm_enabled = bool(
+                surface_esm_cfg is not None
+                and getattr(surface_esm_cfg, "enabled", False)
+            )
+            if surface_esm_enabled:
+                if "s_pre_block" not in block0:
+                    raise ValueError(
+                        "surface_esm requires an s_pre_block in the first encoder block"
+                    )
+                block0.s_pre_block.dim_in += cfg.cfg_head.encoded_dims
 
     @staticmethod
     def _collate_fn(batch):
