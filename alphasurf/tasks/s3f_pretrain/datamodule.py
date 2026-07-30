@@ -83,6 +83,7 @@ class S3FPretrainDataModule(pl.LightningDataModule):
             mask_rate=getattr(cfg, "mask_rate", 0.15),
             max_length=getattr(cfg, "max_length", 250),
             k_surf_leak=getattr(cfg, "k_surf_leak", 20),
+            structure_mask_mode=self._structure_mask_mode(cfg),
         )
         update_model_input_dim(cfg, temp_dataset, gkey="graph", skey="surface")
 
@@ -133,8 +134,14 @@ class S3FPretrainDataModule(pl.LightningDataModule):
             mask_rate=getattr(self.cfg, "mask_rate", 0.15),
             max_length=getattr(self.cfg, "max_length", 250),
             k_surf_leak=getattr(self.cfg, "k_surf_leak", 20),
+            structure_mask_mode=self._structure_mask_mode(self.cfg),
             seed=seed,
         )
+
+    @staticmethod
+    def _structure_mask_mode(cfg) -> str:
+        mask_cfg = getattr(cfg, "structure_mask", None)
+        return str(getattr(mask_cfg, "mode", "backbone"))
 
     def train_dataloader(self) -> DataLoader:
         dataset = self._create_dataset("train")

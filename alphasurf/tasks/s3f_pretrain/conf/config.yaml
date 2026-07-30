@@ -38,6 +38,13 @@ mask_rate: 0.15
 max_length: 250
 k_surf_leak: 20
 
+# Geometry used at every masked residue before rebuilding the AlphaSurf graph
+# and surface. "alanine" removes the native sidechain (including native CB)
+# and synthesizes the same ideal L-alanine CB from N/CA/C for every residue.
+# "backbone" retains only N/CA/C/O and reproduces the previous behavior.
+structure_mask:
+    mode: alanine
+
 # Lightweight S3F-style sequence initialization of AlphaSurf vertices.
 # Each vertex receives the mean of a shared linear projection of the masked
 # ESM embeddings and distances of its k nearest C-alpha residues. The lifted

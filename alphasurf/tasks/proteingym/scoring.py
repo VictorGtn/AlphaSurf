@@ -165,6 +165,7 @@ class MaskedGeometryDataset(Dataset):
         assay_id: str,
         structure_length: int,
         group_items,
+        structure_mask_mode: str = "backbone",
     ):
         self.protein_loader = protein_loader
         self.pdb_path = pdb_path
@@ -172,6 +173,12 @@ class MaskedGeometryDataset(Dataset):
         self.assay_id = assay_id
         self.structure_length = structure_length
         self.group_items = group_items
+        if structure_mask_mode not in {"alanine", "backbone"}:
+            raise ValueError(
+                "structure_mask_mode must be alanine or backbone, got "
+                f"{structure_mask_mode}"
+            )
+        self.structure_mask_mode = structure_mask_mode
 
     def __len__(self):
         return len(self.group_items)
@@ -199,7 +206,7 @@ class MaskedGeometryDataset(Dataset):
                 pdb_path=self.pdb_path,
                 crop_window=crop_window,
                 ala_strip_positions=relative_positions,
-                ala_strip_keep_cb=False,
+                ala_strip_keep_cb=self.structure_mask_mode == "alanine",
             )
         except Exception as error:
             logger.warning(
@@ -255,8 +262,9 @@ def score_assay_option_f(
 
     Mutants sharing the same set of positions reuse one masked forward pass,
     as in S3F's released evaluator. For AlphaSurf, the masked residues are
-    reduced to N/CA/C/O and both graph and surface are regenerated, matching
-    AlphaSurf S3F pretraining. Long sequences use S3F's 1,022-residue window.
+    replaced with the checkpoint's configured alanine or N/CA/C/O geometry,
+    and both graph and surface are regenerated to match pretraining. Long
+    sequences use S3F's 1,022-residue window.
 
     Returns a float array of length len(assay.mutants).
     """
@@ -276,6 +284,11 @@ def score_assay_option_f(
     for mutant_index, mutant in enumerate(assay.mutants):
         groups.setdefault(tuple(mutant.positions), []).append(mutant_index)
 
+    cfg = getattr(getattr(module, "hparams", None), "cfg", None)
+    structure_mask_cfg = getattr(cfg, "structure_mask", None)
+    # Checkpoints predating configurable structural masking were all trained
+    # with the N/CA/C/O-only behavior.
+    structure_mask_mode = str(getattr(structure_mask_cfg, "mode", "backbone"))
     geometry_dataset = MaskedGeometryDataset(
         protein_loader=loader,
         pdb_path=str(pdb_path),
@@ -283,6 +296,7 @@ def score_assay_option_f(
         assay_id=assay.assay_id,
         structure_length=structure_length,
         group_items=list(groups.items()),
+        structure_mask_mode=structure_mask_mode,
     )
     dataloader_args = {
         "dataset": geometry_dataset,
@@ -297,9 +311,10 @@ def score_assay_option_f(
         dataloader_args["persistent_workers"] = False
     geometry_loader = DataLoader(**dataloader_args)
     logger.info(
-        "[%s] generating %d unique masked geometries with %d workers",
+        "[%s] generating %d unique %s-masked geometries with %d workers",
         assay.assay_id,
         len(geometry_dataset),
+        structure_mask_mode,
         num_workers,
     )
 

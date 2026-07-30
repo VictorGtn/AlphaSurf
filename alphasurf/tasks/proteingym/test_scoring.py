@@ -125,6 +125,52 @@ class S3FWindowTest(TestCase):
         self.assertEqual(kwargs["ala_strip_positions"], [5])
         self.assertFalse(kwargs["ala_strip_keep_cb"])
 
+    def test_alpha_scoring_uses_checkpoint_alanine_mask(self):
+        mutant = Mutant(
+            mutant_str="A6V",
+            mutated_sequence="AAAAAVAAAA",
+            score=0.0,
+            positions=[5],
+            wt_aas=["A"],
+            mt_aas=["V"],
+        )
+        assay = DMSAssay(
+            assay_id="test",
+            uniprot_id="test",
+            wt_sequence="AAAAAAAAAA",
+            mutants=[mutant],
+        )
+
+        class RecordingLoader:
+            def __init__(self):
+                self.calls = []
+
+            def load(self, *args, **kwargs):
+                self.calls.append((args, kwargs))
+                return None
+
+        loader = RecordingLoader()
+        module = SimpleNamespace(
+            model=SimpleNamespace(_esm_loaded=True),
+            hparams=SimpleNamespace(
+                cfg=SimpleNamespace(structure_mask=SimpleNamespace(mode="alanine"))
+            ),
+        )
+        scores = score_assay_option_f(
+            module,
+            loader,
+            "test.pdb",
+            "test",
+            assay,
+            "cpu",
+            structure_length=10,
+        )
+
+        self.assertTrue(np.isnan(scores[0]))
+        kwargs = loader.calls[0][1]
+        self.assertEqual(kwargs["ala_strip_positions"], [5])
+        self.assertTrue(kwargs["ala_strip_keep_cb"])
+
     def test_geometry_dataloader_runs_with_worker_processes(self):
         mutant = Mutant(
             mutant_str="A6V",

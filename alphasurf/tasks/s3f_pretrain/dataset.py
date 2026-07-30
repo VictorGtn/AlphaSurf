@@ -11,9 +11,10 @@ S3F's data pipeline:
   - Split ratios: [0.97, 0.02, 0.01] random on sorted file list
   - Masking: 15% of residues, 80% [MASK] / 10% random / 10% unchanged
 
-Surface leakage prevention: all sidechain atoms, including Cb, are stripped
-from masked residues BEFORE surface/graph generation. Both branches see the
-same N/CA/C/O atom template at every masked position, including glycine.
+Surface leakage prevention: the native sidechain, including native Cb, is
+removed from each masked residue BEFORE surface/graph generation. By default,
+the same ideal L-alanine Cb is reconstructed from N/CA/C at every masked
+position, including glycine. A backbone-only N/CA/C/O ablation is retained.
 Graph node features (one-hot, hphob) are still masked separately by the model.
 """
 
@@ -66,6 +67,7 @@ class CATHDataset(Dataset):
         mask_rate: float = 0.15,
         max_length: int = 250,
         k_surf_leak: int = 20,
+        structure_mask_mode: str = "backbone",
         seed: int = 0,
     ):
         super().__init__()
@@ -77,6 +79,12 @@ class CATHDataset(Dataset):
         self.mask_rate = mask_rate
         self.max_length = max_length
         self.k_surf_leak = k_surf_leak
+        if structure_mask_mode not in {"alanine", "backbone"}:
+            raise ValueError(
+                "structure_mask_mode must be alanine or backbone, got "
+                f"{structure_mask_mode}"
+            )
+        self.structure_mask_mode = structure_mask_mode
 
         all_pdbs = sorted(os.listdir(pdb_dir))
         self.pdbs = split_like_s3f(all_pdbs, split, self.SPLIT_RATIOS)
@@ -107,7 +115,7 @@ class CATHDataset(Dataset):
                 pdb_path=pdb_path,
                 crop_window=crop_window,
                 ala_strip_positions=masked_positions.tolist(),
-                ala_strip_keep_cb=False,
+                ala_strip_keep_cb=self.structure_mask_mode == "alanine",
             )
         except Exception as e:
             logger.warning(f"Failed to load {pdb_name}: {e}")
