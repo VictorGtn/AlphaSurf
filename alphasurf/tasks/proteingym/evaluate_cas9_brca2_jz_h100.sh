@@ -15,6 +15,7 @@
 set -euo pipefail
 : "${CKPT:?Set CKPT to the S3F AlphaSurf .ckpt file}"
 
+source /etc/profile
 module purge
 module load arch/h100
 module load anaconda-py3
