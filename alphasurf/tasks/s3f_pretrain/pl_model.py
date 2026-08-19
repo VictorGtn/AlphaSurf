@@ -55,8 +55,11 @@ class S3FPretrainModule(AtomPLModule):
         if result is None or result[0] is None:
             return None
         loss, logits, targets, extra = result
-        self.log("loss/train", loss, prog_bar=True, batch_size=logits.shape[0])
-        self.log("acc/train", extra["acc"], prog_bar=True, batch_size=logits.shape[0])
+        metric_batch_size = targets.numel()
+        self.log("loss/train", loss, prog_bar=True, batch_size=metric_batch_size)
+        self.log(
+            "acc/train", extra["acc"], prog_bar=True, batch_size=metric_batch_size
+        )
         return loss
 
     def validation_step(self, batch, batch_idx):
@@ -65,8 +68,11 @@ class S3FPretrainModule(AtomPLModule):
         if result is None or result[0] is None:
             return None
         loss, logits, targets, extra = result
-        self.log("loss/val", loss, prog_bar=True, batch_size=logits.shape[0])
-        self.log("acc/val", extra["acc"], prog_bar=True, batch_size=logits.shape[0])
+        metric_batch_size = targets.numel()
+        self.log("loss/val", loss, prog_bar=True, batch_size=metric_batch_size)
+        self.log(
+            "acc/val", extra["acc"], prog_bar=True, batch_size=metric_batch_size
+        )
 
     def configure_optimizers(self):
         lr = self.cfg.optimizer.lr

@@ -52,7 +52,7 @@ structure_mask:
 # the first encoder block. This is ignored by the s3f_exact encoder, which has
 # its own released-code-compatible surface initializer.
 surface_esm:
-    enabled: true
+    enabled: false
     k: 3
 
 on_fly:
