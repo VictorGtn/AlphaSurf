@@ -12,10 +12,11 @@
 #SBATCH --error=/lustre/fsn1/projects/rech/pyg/ust26qt/alphasurf/alphasurf/alphasurf/tasks/proteingym/log/proteingym_cas9_brca2/%x_%j.err
 #SBATCH --hint=nomultithread
 
+source /etc/profile
+
 set -euo pipefail
 : "${CKPT:?Set CKPT to the S3F AlphaSurf .ckpt file}"
 
-source /etc/profile
 module purge
 module load arch/h100
 module load anaconda-py3
