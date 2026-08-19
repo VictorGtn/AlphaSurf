@@ -3,7 +3,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
-import numpy as np
 import pandas as pd
 import torch
 
@@ -28,6 +27,20 @@ from alphasurf.tasks.proteingym.scoring import (
 class NullProteinLoader:
     def load(self, *args, **kwargs):
         return None
+
+
+class FakeESMModel:
+    _esm_loaded = True
+
+    def eval(self):
+        return self
+
+    def _run_esm_masked(self, sequences, plans, device, dtype):
+        total_residues = sum(len(sequence) for sequence in sequences)
+        return (
+            torch.zeros(total_residues, 1280, device=device, dtype=dtype),
+            torch.zeros(total_residues, 20, device=device),
+        )
 
 
 class S3FWindowTest(TestCase):
@@ -184,7 +197,7 @@ class S3FWindowTest(TestCase):
                 return None
 
         loader = RecordingLoader()
-        module = SimpleNamespace(model=SimpleNamespace(_esm_loaded=True))
+        module = SimpleNamespace(model=FakeESMModel())
         scores = score_assay_option_f(
             module,
             loader,
@@ -195,7 +208,7 @@ class S3FWindowTest(TestCase):
             structure_length=10,
         )
 
-        self.assertTrue(np.isnan(scores[0]))
+        self.assertEqual(scores[0], 0.0)
         self.assertEqual(len(loader.calls), 1)
         kwargs = loader.calls[0][1]
         self.assertEqual(kwargs["ala_strip_positions"], [5])
@@ -227,7 +240,7 @@ class S3FWindowTest(TestCase):
 
         loader = RecordingLoader()
         module = SimpleNamespace(
-            model=SimpleNamespace(_esm_loaded=True),
+            model=FakeESMModel(),
             hparams=SimpleNamespace(
                 cfg=SimpleNamespace(structure_mask=SimpleNamespace(mode="alanine"))
             ),
@@ -242,7 +255,7 @@ class S3FWindowTest(TestCase):
             structure_length=10,
         )
 
-        self.assertTrue(np.isnan(scores[0]))
+        self.assertEqual(scores[0], 0.0)
         kwargs = loader.calls[0][1]
         self.assertEqual(kwargs["ala_strip_positions"], [5])
         self.assertTrue(kwargs["ala_strip_keep_cb"])
@@ -262,7 +275,7 @@ class S3FWindowTest(TestCase):
             wt_sequence="AAAAAAAAAA",
             mutants=[mutant],
         )
-        module = SimpleNamespace(model=SimpleNamespace(_esm_loaded=True))
+        module = SimpleNamespace(model=FakeESMModel())
         scores = score_assay_option_f(
             module,
             NullProteinLoader(),
@@ -273,4 +286,4 @@ class S3FWindowTest(TestCase):
             num_workers=2,
             structure_length=10,
         )
-        self.assertTrue(np.isnan(scores[0]))
+        self.assertEqual(scores[0], 0.0)

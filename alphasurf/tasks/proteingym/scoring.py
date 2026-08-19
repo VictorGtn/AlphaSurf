@@ -287,6 +287,113 @@ def collate_masked_geometry(items):
     return [item for item in items if item is not None], len(items)
 
 
+def _score_esm_fallback_groups(
+    model,
+    assay: DMSAssay,
+    groups,
+    scores: np.ndarray,
+    device: str,
+    batch_size: int,
+    sequence_length: int,
+    structure_offset: int,
+) -> int:
+    """Fill failed structural groups with masked ESM-2 log-odds."""
+    import torch as _torch
+
+    if not model._esm_loaded:
+        model._load_esm(device)
+
+    fallback_groups = []
+    for positions, mutant_indices in groups:
+        sequence_positions = [position - structure_offset for position in positions]
+        if any(
+            position < 0 or position >= sequence_length
+            for position in sequence_positions
+        ):
+            logger.warning(
+                "[%s] cannot use ESM fallback for positions %s outside the sequence",
+                assay.assay_id,
+                positions,
+            )
+            continue
+        sequence_start, sequence_end = _sequence_scoring_window(
+            assay, sequence_length, sequence_positions
+        )
+        relative_positions = [position - sequence_start for position in sequence_positions]
+        sequence = assay.wt_sequence[sequence_start:sequence_end]
+        if (
+            not sequence
+            or len(sequence) > ESM_MAX_RESIDUES
+            or any(position < 0 or position >= len(sequence) for position in relative_positions)
+        ):
+            logger.warning(
+                "[%s] cannot use ESM fallback for positions %s in sequence window [%d:%d]",
+                assay.assay_id,
+                positions,
+                sequence_start,
+                sequence_end,
+            )
+            continue
+        fallback_groups.append(
+            (
+                sequence,
+                relative_positions,
+                mutant_indices,
+            )
+        )
+
+    fallback_positions = 0
+    model.eval()
+    for start in range(0, len(fallback_groups), batch_size):
+        batch_groups = fallback_groups[start : start + batch_size]
+        sequences = [group[0] for group in batch_groups]
+        plans = []
+        for _, relative_positions, _ in batch_groups:
+            masked = _torch.tensor(relative_positions, dtype=_torch.long, device=device)
+            plans.append(
+                {
+                    "masked": masked,
+                    "types": _torch.zeros_like(masked),
+                    "targets": _torch.zeros_like(masked),
+                    "random_aa": _torch.full_like(masked, -1),
+                }
+            )
+        with _torch.no_grad():
+            _, sequence_logits = model._run_esm_masked(
+                sequences, plans, device, _torch.float32
+            )
+            sequence_logits = _torch.log_softmax(sequence_logits, dim=-1)
+
+        cursor = 0
+        for (_, relative_positions, mutant_indices), sequence in zip(
+            batch_groups, sequences
+        ):
+            num_residues = len(sequence)
+            log_probs = sequence_logits[cursor : cursor + num_residues]
+            cursor += num_residues
+            position_indices = _torch.tensor(relative_positions, device=device)
+            for mutant_index in mutant_indices:
+                mutant = assay.mutants[mutant_index]
+                wt_idx = _torch.tensor(
+                    [aa_one_letter_to_idx(aa) for aa in mutant.wt_aas],
+                    device=device,
+                )
+                mt_idx = _torch.tensor(
+                    [aa_one_letter_to_idx(aa) for aa in mutant.mt_aas],
+                    device=device,
+                )
+                scores[mutant_index] = (
+                    (
+                        log_probs[position_indices, mt_idx]
+                        - log_probs[position_indices, wt_idx]
+                    )
+                    .sum()
+                    .item()
+                )
+            fallback_positions += len(relative_positions)
+    return fallback_positions
+
+
 def score_assay_option_f(
     module,
     loader,
@@ -316,7 +423,8 @@ def score_assay_option_f(
     and both graph and surface are regenerated to match pretraining. Long
     sequences use S3F's 1,022-residue window. At mutation sites with an AF2
     B-factor below ``plddt_threshold``, the ESM-2 logits replace the structural
-    logits, matching S3F's low-confidence fallback.
+    logits, matching S3F's low-confidence fallback. If masked geometry
+    generation fails, the same masked ESM-2 log-odds are used for that group.
 
     Returns a float array of length len(assay.mutants).
     """
@@ -473,4 +581,27 @@ def score_assay_option_f(
             assay.assay_id,
             fallback_positions,
         )
+    failed_groups = [
+        (positions, mutant_indices)
+        for positions, mutant_indices in groups.items()
+        if any(np.isnan(scores[index]) for index in mutant_indices)
+    ]
+    if failed_groups:
+        geometry_fallback_positions = _score_esm_fallback_groups(
+            model,
+            assay,
+            failed_groups,
+            scores,
+            device,
+            batch_size,
+            sequence_length,
+            structure_offset,
+        )
+        if geometry_fallback_positions:
+            logger.info(
+                "[%s] used ESM-only fallback for %d masked positions in %d failed geometries",
+                assay.assay_id,
+                geometry_fallback_positions,
+                len(failed_groups),
+            )
     return scores
