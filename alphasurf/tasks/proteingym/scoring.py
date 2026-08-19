@@ -141,17 +141,47 @@ def get_optimal_window(
     return mutation_position - half_window, mutation_position + half_window
 
 
-def _scoring_window(
-    assay: DMSAssay | str, structure_length: int, positions: Sequence[int]
+def _sequence_scoring_window(
+    assay: DMSAssay | str, sequence_length: int, positions: Sequence[int]
 ) -> Tuple[int, int]:
     assay_id = assay.assay_id if isinstance(assay, DMSAssay) else assay
     residue_range = ASSAY_RESIDUE_RANGES.get(assay_id)
     if residue_range is not None:
         start, end = residue_range
-        if structure_length == end - start:
-            return 0, structure_length
+        if sequence_length == end - start:
+            return 0, sequence_length
         return start, end
-    return get_optimal_window(positions[0], structure_length)
+    return get_optimal_window(positions[0], sequence_length)
+
+
+def _scoring_window(
+    assay: DMSAssay | str,
+    sequence_length: int,
+    positions: Sequence[int],
+    *,
+    structure_length: int | None = None,
+    structure_offset: int = 0,
+) -> Tuple[int, int] | None:
+    """Map S3F's sequence window into structure coordinates.
+
+    S3F chooses the window from the target sequence and then truncates the
+    structure using its metadata range. ``positions`` are structure-relative
+    when ``structure_offset`` is nonzero.
+    """
+    sequence_positions = [position - structure_offset for position in positions]
+    if any(position < 0 or position >= sequence_length for position in sequence_positions):
+        return None
+    sequence_start, sequence_end = _sequence_scoring_window(
+        assay, sequence_length, sequence_positions
+    )
+    if structure_length is None:
+        return sequence_start, sequence_end
+
+    start = sequence_start + structure_offset
+    end = sequence_end + structure_offset
+    if start < 0 or end > structure_length:
+        return None
+    return start, end
 
 
 class MaskedGeometryDataset(Dataset):
@@ -166,12 +196,18 @@ class MaskedGeometryDataset(Dataset):
         structure_length: int,
         group_items,
         structure_mask_mode: str = "backbone",
+        sequence_length: int | None = None,
+        structure_offset: int = 0,
     ):
         self.protein_loader = protein_loader
         self.pdb_path = pdb_path
         self.protein_name = protein_name
         self.assay_id = assay_id
         self.structure_length = structure_length
+        self.sequence_length = (
+            structure_length if sequence_length is None else sequence_length
+        )
+        self.structure_offset = structure_offset
         self.group_items = group_items
         if structure_mask_mode not in {"alanine", "backbone"}:
             raise ValueError(
@@ -190,12 +226,22 @@ class MaskedGeometryDataset(Dataset):
 
         positions_key, mutant_indices = self.group_items[index]
         positions = list(positions_key)
-        start, end = _scoring_window(self.assay_id, self.structure_length, positions)
-        relative_positions = [position - start for position in positions]
-        if any(
-            position < 0 or position >= end - start for position in relative_positions
-        ):
+        window = _scoring_window(
+            self.assay_id,
+            self.sequence_length,
+            positions,
+            structure_length=self.structure_length,
+            structure_offset=self.structure_offset,
+        )
+        if window is None:
+            logger.warning(
+                "[%s] sequence crop for %s is not covered by the structure",
+                self.assay_id,
+                positions,
+            )
             return None
+        start, end = window
+        relative_positions = [position - start for position in positions]
 
         crop_window = (
             None if start == 0 and end == self.structure_length else (start, end)
@@ -228,6 +274,7 @@ class MaskedGeometryDataset(Dataset):
             surface=protein.surface,
             sequence=sequence,
             masked_positions=masked_positions,
+            structure_positions=torch.tensor(positions, dtype=torch.long),
             mask_types=torch.zeros(len(positions), dtype=torch.long),
             target_residues=aa_idx[masked_positions],
             random_aa_indices=torch.full((len(positions),), -1, dtype=torch.long),
@@ -252,7 +299,10 @@ def score_assay_option_f(
     prefetch_factor: int = 2,
     progress: bool = False,
     structure_length: int | None = None,
+    sequence_length: int | None = None,
+    structure_offset: int = 0,
     reference_protein=None,
+    plddt_threshold: float | None = 70.0,
 ) -> np.ndarray:
     """Score mutants with S3F-style log-odds from the residue head.
 
@@ -264,7 +314,9 @@ def score_assay_option_f(
     as in S3F's released evaluator. For AlphaSurf, the masked residues are
     replaced with the checkpoint's configured alanine or N/CA/C/O geometry,
     and both graph and surface are regenerated to match pretraining. Long
-    sequences use S3F's 1,022-residue window.
+    sequences use S3F's 1,022-residue window. At mutation sites with an AF2
+    B-factor below ``plddt_threshold``, the ESM-2 logits replace the structural
+    logits, matching S3F's low-confidence fallback.
 
     Returns a float array of length len(assay.mutants).
     """
@@ -274,11 +326,25 @@ def score_assay_option_f(
 
     model = module.model
 
+    reference_b_factors = None
+    if plddt_threshold is not None and reference_protein is not None:
+        reference_graph = getattr(reference_protein, "graph", None)
+        reference_b_factors = getattr(reference_graph, "b_factor", None)
+        if reference_b_factors is not None:
+            reference_b_factors = reference_b_factors.to(device)
+        else:
+            logger.warning(
+                "[%s] AF2 B-factors unavailable; disabling pLDDT fallback",
+                assay.assay_id,
+            )
+
     if structure_length is None:
         reference = reference_protein or loader.load(protein_name, pdb_path=pdb_path)
         if reference is None or reference.graph is None:
             return np.full(len(assay.mutants), np.nan, dtype=np.float64)
         structure_length = int(reference.graph.x.shape[0])
+    if sequence_length is None:
+        sequence_length = assay.seq_len
 
     groups: Dict[Tuple[int, ...], List[int]] = {}
     for mutant_index, mutant in enumerate(assay.mutants):
@@ -297,6 +363,8 @@ def score_assay_option_f(
         structure_length=structure_length,
         group_items=list(groups.items()),
         structure_mask_mode=structure_mask_mode,
+        sequence_length=sequence_length,
+        structure_offset=structure_offset,
     )
     dataloader_args = {
         "dataset": geometry_dataset,
@@ -319,6 +387,7 @@ def score_assay_option_f(
     )
 
     scores = np.full(len(assay.mutants), np.nan, dtype=np.float64)
+    fallback_positions = 0
     with tqdm(
         total=len(geometry_dataset),
         desc=assay.assay_id[:36],
@@ -346,13 +415,39 @@ def score_assay_option_f(
                     model._load_esm(device)
                 out = model(batch, device)
                 masked_logits = out["logits"][out["global_masked"]]
+                sequence_logits = out.get("sequence_logits")
                 cursor = 0
-                for mutant_indices, num_positions in metadata:
-                    log_probs = _torch.log_softmax(
+                for sample_index, (mutant_indices, num_positions) in enumerate(
+                    metadata
+                ):
+                    structural_log_probs = _torch.log_softmax(
                         masked_logits[cursor : cursor + num_positions], dim=-1
                     )
                     cursor += num_positions
                     pos_range = _torch.arange(num_positions, device=device)
+                    log_probs = structural_log_probs
+                    if reference_b_factors is not None and plddt_threshold is not None:
+                        structure_positions = samples[sample_index].structure_positions
+                        plddt = reference_b_factors[structure_positions.to(device)]
+                        low_plddt = _torch.isfinite(plddt) & (plddt < plddt_threshold)
+                        if low_plddt.any():
+                            if sequence_logits is None:
+                                raise RuntimeError(
+                                    "S3F model output is missing ESM sequence logits"
+                                )
+                            graph_positions = (
+                                batch.graph.ptr[sample_index]
+                                + samples[sample_index].masked_positions.to(device)
+                            )
+                            esm_log_probs = _torch.log_softmax(
+                                sequence_logits[graph_positions], dim=-1
+                            )
+                            log_probs = _torch.where(
+                                low_plddt.unsqueeze(-1),
+                                esm_log_probs,
+                                structural_log_probs,
+                            )
+                            fallback_positions += int(low_plddt.sum().item())
                     for mutant_index in mutant_indices:
                         mutant = assay.mutants[mutant_index]
                         wt_idx = _torch.tensor(
@@ -372,4 +467,10 @@ def score_assay_option_f(
                             .item()
                         )
 
+    if fallback_positions:
+        logger.info(
+            "[%s] used ESM logits for %d low-pLDDT masked positions",
+            assay.assay_id,
+            fallback_positions,
+        )
     return scores

@@ -15,13 +15,14 @@ from typing import Tuple
 import torch
 
 from alphasurf.protein.protein_loader import ProteinLoader
-from alphasurf.tasks.pinder_pair.pl_model import PinderPairModule
 from alphasurf.utils.config_utils import merge_surface_config
 from alphasurf.utils.data_utils import AtomBatch
 
 
 def load_encoder_module(ckpt_path: str | Path) -> Tuple[PinderPairModule, str]:
     """Load the PINDER checkpoint and put the encoder in eval mode."""
+    from alphasurf.tasks.pinder_pair.pl_model import PinderPairModule
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     module = PinderPairModule.load_from_checkpoint(str(ckpt_path), map_location=device)
     module.eval()

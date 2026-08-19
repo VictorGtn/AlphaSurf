@@ -125,6 +125,7 @@ def score_one_assay(
     progress: bool,
     scoring_method: str,
     metadata: Optional[dict] = None,
+    plddt_threshold: float | None = 70.0,
 ) -> Optional[dict]:
     assay = load_dms_assay(csv_path)
     structure_id = assay.uniprot_id
@@ -180,7 +181,10 @@ def score_one_assay(
             prefetch_factor=prefetch_factor,
             progress=progress,
             structure_length=int(graph.x.shape[0]),
+            sequence_length=assay.seq_len,
+            structure_offset=offset,
             reference_protein=ref_protein,
+            plddt_threshold=plddt_threshold,
         )
     else:
         protein = loader.load(assay.assay_id, pdb_path=str(pdb_path))
@@ -275,6 +279,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--assay-id",
+        dest="assay_ids",
+        action="append",
+        default=None,
+        help="Score only the named assay; repeat for multiple assays.",
+    )
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument(
         "--num-workers",
@@ -283,6 +294,12 @@ def parse_args() -> argparse.Namespace:
         help="Worker processes for on-the-fly graph/surface generation.",
     )
     parser.add_argument("--prefetch-factor", type=int, default=2)
+    parser.add_argument(
+        "--plddt-threshold",
+        type=float,
+        default=70.0,
+        help="Use ESM logits for mutation sites below this AF2 pLDDT; set to -1 to disable.",
+    )
     parser.add_argument(
         "--progress",
         action=argparse.BooleanOptionalAction,
@@ -330,9 +347,16 @@ def main() -> None:
         )
 
     csv_paths = list_assay_csvs(args.substitutions_dir)
+    if args.assay_ids is not None:
+        csv_by_assay = {path.stem: path for path in csv_paths}
+        missing = sorted(set(args.assay_ids) - csv_by_assay.keys())
+        if missing:
+            raise ValueError(f"Requested assays not found: {', '.join(missing)}")
+        csv_paths = [csv_by_assay[assay_id] for assay_id in args.assay_ids]
     if args.limit is not None:
         csv_paths = csv_paths[: args.limit]
     logger.info(f"Scoring {len(csv_paths)} assays with {args.scoring_method}")
+    plddt_threshold = None if args.plddt_threshold < 0 else args.plddt_threshold
 
     summary_rows: List[dict] = []
     assay_iterator = tqdm(
@@ -360,6 +384,7 @@ def main() -> None:
             progress=args.progress,
             scoring_method=args.scoring_method,
             metadata=metadata_by_assay.get(csv_path.stem),
+            plddt_threshold=plddt_threshold,
         )
         if result is None:
             continue

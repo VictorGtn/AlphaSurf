@@ -7,7 +7,9 @@ implementation of S3F (NeurIPS 2024).
 The `option_f` evaluator loads an AlphaSurf S3F-pretraining checkpoint and
 follows S3F's released ProteinGym scoring protocol: one masked prediction per
 unique mutation-site set, 1,022-residue windows for long sequences, and
-mutant-versus-WT log-odds scoring. Because AlphaSurf uses full-atom geometry,
+mutant-versus-WT log-odds scoring. Mutation sites with AF2 pLDDT below 70 use
+the frozen ESM-2 logits, matching S3F's low-confidence fallback. Because
+AlphaSurf uses full-atom geometry,
 the graph and Alpha-complex surface are regenerated after removing C-beta and
 side-chain atoms at each unique masked-position set, matching pretraining.
 

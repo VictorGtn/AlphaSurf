@@ -1,15 +1,15 @@
 #!/bin/bash
-#SBATCH --job-name=proteingym_alpha
-#SBATCH -A pyg@h100
+#SBATCH --job-name=proteingym_cas9_brca2
+#SBATCH -A hhy@h100
 #SBATCH -C h100
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=21
 #SBATCH --gres=gpu:1
-#SBATCH --time=20:00:00
+#SBATCH --time=04:00:00
 #SBATCH --qos=qos_gpu_h100-t3
-#SBATCH --output=/lustre/fsn1/projects/rech/pyg/ust26qt/alphasurf/alphasurf/alphasurf/tasks/proteingym/log/proteingym_alpha_%j.out
-#SBATCH --error=/lustre/fsn1/projects/rech/pyg/ust26qt/alphasurf/alphasurf/alphasurf/tasks/proteingym/log/proteingym_alpha_%j.err
+#SBATCH --output=/lustre/fsn1/projects/rech/pyg/ust26qt/alphasurf/alphasurf/alphasurf/tasks/proteingym/log/proteingym_cas9_brca2/%x_%j.out
+#SBATCH --error=/lustre/fsn1/projects/rech/pyg/ust26qt/alphasurf/alphasurf/alphasurf/tasks/proteingym/log/proteingym_cas9_brca2/%x_%j.err
 #SBATCH --hint=nomultithread
 
 set -euo pipefail
@@ -46,18 +46,11 @@ OUTPUT_DIR=${OUTPUT_DIR:-$REPO_ROOT/tasks/proteingym/runs/${SLURM_JOB_ID}}
 LOG_DIR=$REPO_ROOT/tasks/proteingym/log
 mkdir -p "$OUTPUT_DIR" "$LOG_DIR"
 
-exec >"$LOG_DIR/proteingym_alpha_${SLURM_JOB_ID}.out" 2>&1
-
 test -f "$CKPT"
 test -d "$SUBSTITUTIONS_DIR"
 test -d "$AF2_DIR"
 
 cd "$REPO_ROOT"
-
-EXTRA_ARGS=()
-if [[ -n "${LIMIT:-}" ]]; then
-    EXTRA_ARGS+=(--limit "$LIMIT")
-fi
 
 python -m alphasurf.tasks.proteingym.evaluate \
     --ckpt "$CKPT" \
@@ -65,8 +58,9 @@ python -m alphasurf.tasks.proteingym.evaluate \
     --substitutions-dir "$SUBSTITUTIONS_DIR" \
     --af2-dir "$AF2_DIR" \
     --output-dir "$OUTPUT_DIR" \
-    --batch-size "${BATCH_SIZE:-4}" \
+    --assay-id CAS9_STRP1_Spencer_2017_positive \
+    --assay-id BRCA2_HUMAN_Erwood_2022_HEK293T \
+    --batch-size "${BATCH_SIZE:-32}" \
     --num-workers "${NUM_WORKERS:-8}" \
     --prefetch-factor "${PREFETCH_FACTOR:-2}" \
-    --plddt-threshold "${PLDDT_THRESHOLD:-70}" \
-    "${EXTRA_ARGS[@]}"
+    --plddt-threshold "${PLDDT_THRESHOLD:-70}"

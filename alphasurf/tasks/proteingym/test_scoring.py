@@ -5,6 +5,7 @@ from unittest import TestCase
 
 import numpy as np
 import pandas as pd
+import torch
 
 from alphasurf.tasks.proteingym.dataset import (
     DMSAssay,
@@ -17,6 +18,7 @@ from alphasurf.tasks.proteingym.dataset import (
 )
 from alphasurf.tasks.proteingym.evaluate import resolve_position_offset
 from alphasurf.tasks.proteingym.scoring import (
+    MaskedGeometryDataset,
     _scoring_window,
     get_optimal_window,
     score_assay_option_f,
@@ -36,6 +38,54 @@ class S3FWindowTest(TestCase):
         self.assertEqual(get_optimal_window(10, 2000), (0, 1022))
         self.assertEqual(get_optimal_window(1000, 2000), (489, 1511))
         self.assertEqual(get_optimal_window(1900, 2000), (978, 2000))
+
+    def test_generic_window_uses_sequence_length_before_structure_truncation(self):
+        assay = DMSAssay(
+            assay_id="CAS9_STRP1_Spencer_2017_positive",
+            uniprot_id="CAS9_STRP1",
+            wt_sequence="A" * 1368,
+        )
+        self.assertEqual(
+            _scoring_window(
+                assay,
+                1368,
+                [1022],
+                structure_length=1390,
+            ),
+            (346, 1368),
+        )
+
+    def test_sequence_window_outside_partial_structure_is_not_clipped(self):
+        assay = DMSAssay(
+            assay_id="BRCA2_HUMAN_Erwood_2022_HEK293T",
+            uniprot_id="BRCA2_HUMAN",
+            wt_sequence="A" * 3418,
+        )
+        self.assertIsNone(
+            _scoring_window(
+                assay,
+                3418,
+                [2645],
+                structure_length=2832,
+            )
+        )
+
+    def test_partial_structure_offset_maps_sequence_window(self):
+        assay = DMSAssay(
+            assay_id="A0A140D2T1_ZIKV_Sourisseau_2019",
+            uniprot_id="A0A140D2T1_ZIKV",
+            wt_sequence="A" * 3423,
+        )
+        self.assertEqual(
+            _scoring_window(
+                assay,
+                3423,
+                [0],
+                structure_length=504,
+                structure_offset=-290,
+            ),
+            (0, 504),
+        )
 
     def test_special_assay_keeps_absolute_csv_positions(self):
         sequence = "A" * 3423
@@ -58,6 +108,32 @@ class S3FWindowTest(TestCase):
         self.assertEqual(resolve_position_offset(assay, 504), -290)
         self.assertEqual(_scoring_window(assay, 3423, [290]), (290, 794))
         self.assertEqual(_scoring_window(assay, 504, [0]), (0, 504))
+
+    def test_masked_geometry_keeps_reference_position_after_crop(self):
+        class Loader:
+            def __init__(self):
+                self.kwargs = None
+
+            def load(self, *args, **kwargs):
+                self.kwargs = kwargs
+                graph = SimpleNamespace(x=torch.zeros(78, 31))
+                return SimpleNamespace(graph=graph, surface=SimpleNamespace())
+
+        loader = Loader()
+        dataset = MaskedGeometryDataset(
+            protein_loader=loader,
+            pdb_path="test.pdb",
+            protein_name="test",
+            assay_id="B2L11_HUMAN_Dutta_2010_binding-Mcl-1",
+            structure_length=300,
+            group_items=[((130,), [0])],
+        )
+
+        sample, _, _ = dataset[0]
+        self.assertEqual(loader.kwargs["crop_window"], (119, 197))
+        self.assertEqual(loader.kwargs["ala_strip_positions"], [11])
+        self.assertEqual(sample.masked_positions.tolist(), [11])
+        self.assertEqual(sample.structure_positions.tolist(), [130])
 
     def test_reference_metadata_and_exact_pdb_filename_are_resolved(self):
         with TemporaryDirectory() as directory:
