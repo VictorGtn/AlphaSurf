@@ -12,6 +12,8 @@ the frozen ESM-2 logits, matching S3F's low-confidence fallback. Because
 AlphaSurf uses full-atom geometry,
 the graph and Alpha-complex surface are regenerated after removing C-beta and
 side-chain atoms at each unique masked-position set, matching pretraining.
+If a masked Alpha-complex cannot be generated, that group falls back to the
+same masked ESM-2 log-odds instead of producing missing predictions.
 
 ## Run on Jean-Zay
 
