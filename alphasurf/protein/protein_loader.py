@@ -712,6 +712,7 @@ class ProteinLoader:
         use_igl_normals = getattr(cfg, "use_igl_normals", False)
         nanoshaper_grid_scale = getattr(cfg, "nanoshaper_grid_scale", 0.3)
         edtsurf_grid_scale = getattr(cfg, "edtsurf_grid_scale", 0.5)
+        edtsurf_surface_mode = getattr(cfg, "edtsurf_surface_mode", 1)
         use_poisson = getattr(cfg, "use_poisson", False)
         poisson_high_precision = getattr(cfg, "poisson_high_precision", True)
         tufting = getattr(cfg, "tufting", False)
@@ -719,7 +720,7 @@ class ProteinLoader:
         try:
             extra_kwargs = {}
             if (
-                surface_method in ("alpha_complex", "nanoshaper")
+                surface_method in ("alpha_complex", "nanoshaper", "msms")
                 and parsed_arrays is not None
             ):
                 extra_kwargs["atom_pos"] = parsed_arrays[5]
@@ -752,35 +753,46 @@ class ProteinLoader:
                         pdb_to_surf_with_min,
                     )
 
-                    if surface_method == "msms":
-                        verts, faces = pdb_to_surf_with_min(
-                            pdb_path, min_number=min_vert_number
-                        )
-                    elif surface_method == "alpha_complex":
-                        verts, faces = pdb_to_alpha_complex(
-                            pdb_path,
-                            alpha_value=alpha_value,
-                            atom_pos=extra_kwargs.get("atom_pos"),
-                            atom_radius=extra_kwargs.get("atom_radius"),
-                        )
-                    elif surface_method == "edtsurf":
-                        verts, faces = pdb_to_edtsurf(
-                            pdb_path, grid_scale=edtsurf_grid_scale
-                        )
-                    elif surface_method == "nanoshaper":
-                        verts, faces = pdb_to_nanoshaper(
-                            pdb_path,
-                            grid_scale=nanoshaper_grid_scale,
-                            atom_pos=extra_kwargs.get("atom_pos"),
-                            atom_radius=extra_kwargs.get("atom_radius"),
-                        )
-                    else:
-                        raise ValueError(f"Unknown surface method: {surface_method}")
+                    from alphasurf.utils.timing_stats import Timer
+
+                    with Timer("surface_mesh_generation"):
+                        if surface_method == "msms":
+                            verts, faces = pdb_to_surf_with_min(
+                                pdb_path,
+                                min_number=min_vert_number,
+                                atom_pos=extra_kwargs.get("atom_pos"),
+                                atom_radius=extra_kwargs.get("atom_radius"),
+                            )
+                        elif surface_method == "alpha_complex":
+                            verts, faces = pdb_to_alpha_complex(
+                                pdb_path,
+                                alpha_value=alpha_value,
+                                atom_pos=extra_kwargs.get("atom_pos"),
+                                atom_radius=extra_kwargs.get("atom_radius"),
+                            )
+                        elif surface_method == "edtsurf":
+                            verts, faces = pdb_to_edtsurf(
+                                pdb_path,
+                                grid_scale=edtsurf_grid_scale,
+                                surface_mode=edtsurf_surface_mode,
+                            )
+                        elif surface_method == "nanoshaper":
+                            verts, faces = pdb_to_nanoshaper(
+                                pdb_path,
+                                grid_scale=nanoshaper_grid_scale,
+                                atom_pos=extra_kwargs.get("atom_pos"),
+                                atom_radius=extra_kwargs.get("atom_radius"),
+                            )
+                        else:
+                            raise ValueError(
+                                f"Unknown surface method: {surface_method}"
+                            )
 
                     if self.patch_extractor is not None and pocket_name is not None:
-                        result = self.patch_extractor.extract_patch(
-                            verts, faces, pocket_name
-                        )
+                        with Timer("patch_extraction"):
+                            result = self.patch_extractor.extract_patch(
+                                verts, faces, pocket_name
+                            )
                         if result is None:
                             logger.debug("Patch extraction failed for %s", pocket_name)
                             return None
@@ -818,7 +830,10 @@ class ProteinLoader:
 
                 if surface_method == "msms":
                     verts, faces = pdb_to_surf_with_min(
-                        pdb_path, min_number=min_vert_number
+                        pdb_path,
+                        min_number=min_vert_number,
+                        atom_pos=extra_kwargs.get("atom_pos"),
+                        atom_radius=extra_kwargs.get("atom_radius"),
                     )
                 elif surface_method == "alpha_complex":
                     verts, faces = pdb_to_alpha_complex(
@@ -829,7 +844,9 @@ class ProteinLoader:
                     )
                 elif surface_method == "edtsurf":
                     verts, faces = pdb_to_edtsurf(
-                        pdb_path, grid_scale=edtsurf_grid_scale
+                        pdb_path,
+                        grid_scale=edtsurf_grid_scale,
+                        surface_mode=edtsurf_surface_mode,
                     )
                 elif surface_method == "nanoshaper":
                     verts, faces = pdb_to_nanoshaper(
