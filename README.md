@@ -14,6 +14,7 @@ Official implementation of AlphaSurf (published at the [LMRL workshop, ICLR 2026
 - [Tasks](#tasks)
     - [MasifLigand](#masifligand)
     - [PINDER-Pair](#pinder-pair)
+    - [MISATO binding-site prediction](#misato-binding-site-prediction)
 
 ## Description
 
@@ -198,3 +199,60 @@ python train.py \
 python precompute.py data_dir=/path/to/pinder
 python train.py data_dir=/path/to/pinder on_fly=null
 ```
+
+#### Noise augmentation
+
+PINDER-Pair supports `joint_mesh` train-time augmentation when surfaces are generated on the fly. It first adds Gaussian noise to the atom coordinates used by both the residue graph and surface generator, then independently displaces the resulting surface vertices along their normals. Validation and testing always use clean structures. Set `noise_mode=none` to disable augmentation.
+
+Train with `joint_mesh` noise:
+
+```bash
+cd alphasurf/tasks/pinder_pair
+
+python train.py \
+  data_dir=/path/to/pinder \
+  on_fly.surface_method=alpha_complex \
+  on_fly.noise_mode=joint_mesh \
+  on_fly.sigma_graph=0.3 \
+  on_fly.sigma_mesh=0.3 \
+  on_fly.clip_sigma=3.0
+```
+
+A trained checkpoint can be evaluated on all three clean structural settings with:
+
+```bash
+python test.py \
+  data_dir=/path/to/pinder \
+  ckpt_path=/path/to/model.ckpt \
+  test_setting=all
+```
+
+### MISATO binding-site prediction
+
+Residue-level ligand binding-site prediction on the [MISATO](https://zenodo.org/records/7711953) molecular-dynamics dataset. The ligand is used only to construct fixed binary labels: a residue is positive when its C-alpha atom is within 10 Å of a ligand heavy atom in trajectory frame 0. The model receives only the protein graph and alpha-complex surface.
+
+The official sequence-clustered train, validation, and test splits are applied at the complex level. Training samples a random trajectory frame, while validation and testing use frame 0.
+
+**Location:** `alphasurf/tasks/misato_binding_site/`
+
+Download the MISATO trajectory file and official splits. The preprocessing command then reads frame 0 and writes `binding_site/<pdb_id>.pt` files containing the protein atom metadata, residue indices, and fixed binding-site labels required for training:
+
+```bash
+bash alphasurf/tasks/misato_binding_site/download_misato.sh /path/to/misato
+
+python -m alphasurf.tasks.misato_binding_site.preprocess \
+  --data-dir /path/to/misato
+```
+
+`MD.hdf5` is approximately 133 GB. The trajectory coordinates remain in that file; training reads one frame per complex lazily instead of copying trajectories into the preprocessed cache.
+
+Train with random MD frames and evaluate on frame 0:
+
+```bash
+python -m alphasurf.tasks.misato_binding_site.train \
+  data_dir=/path/to/misato \
+  train_frame_mode=random \
+  eval_frame_mode=first
+```
+
+See the [MISATO task README](alphasurf/tasks/misato_binding_site/README.md) for the SLURM launchers and additional evaluation utilities.
