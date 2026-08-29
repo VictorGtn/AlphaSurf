@@ -43,8 +43,8 @@ on_fly:
   # Patch extraction (set use_whole_surfaces: true for full proteins)
   use_whole_surfaces: false
   patch_radius: 6.0
-  min_verts: 140
-  patch_max_radius: 12.0
+  min_verts: 100
+  patch_max_radius: null
   
   # ESM embeddings directory
   esm_dir: null
@@ -74,6 +74,7 @@ train:
   val_check_interval: 1.0
   check_val_every_n_epoch: 1
   limit_train_batches: 1.0
+  limit_test_batches: 1.0
   limit_val_batches: 1.0
   gradient_clip_val: 1.0
   max_steps: -1

@@ -188,14 +188,15 @@ class PatchExtractor:
         patch_dir: str,
         radius: float = 6.0,
         min_verts: int = 140,
-        max_radius: float = 12.0,
+        max_radius: Optional[float] = 12.0,
     ):
         """
         Args:
             patch_dir: Path to directory containing *.npz patch files
             radius: Initial distance threshold in Angstroms for including vertices
             min_verts: Minimum number of vertices required in patch
-            max_radius: Maximum distance threshold when iterating
+            max_radius: Maximum distance threshold when iterating. If None,
+                expand until the full mesh has been considered.
         """
         self.patch_dir = patch_dir
         self.radius = radius
@@ -256,7 +257,7 @@ class PatchExtractor:
         distances, _ = tree.query(verts, k=1)
 
         current_radius = self.radius
-        while current_radius <= self.max_radius:
+        while True:
             vertex_mask = distances <= current_radius
 
             if vertex_mask.sum() > 0:
@@ -267,15 +268,23 @@ class PatchExtractor:
                     if result is not None:
                         return result
 
+            if self.max_radius is not None and current_radius >= self.max_radius:
+                break
+            if vertex_mask.sum() == len(verts):
+                break
             current_radius += 2.0
 
         import logging
 
+        if self.max_radius is None:
+            limit = "before the full mesh was exhausted"
+        else:
+            limit = f"within max_radius={self.max_radius:.1f}"
         logging.getLogger(__name__).warning(
-            "Patch extraction failed for %s: no connected component reached min_verts=%d within max_radius=%.1f",
+            "Patch extraction failed for %s: no connected component reached min_verts=%d %s",
             pocket_name,
             self.min_verts,
-            self.max_radius,
+            limit,
         )
         return None
 

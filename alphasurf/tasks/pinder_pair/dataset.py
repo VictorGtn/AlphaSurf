@@ -367,10 +367,17 @@ class PinderPairDataset(Dataset):
                 continue
             precomputed = self._load_precomputed_interface(sid)
             if precomputed is not None:
-                self._interface_cache[sid] = {
+                cached_pairs = {
                     k: (v.numpy() if isinstance(v, torch.Tensor) else v)
                     for k, v in precomputed.items()
                 }
+                # Some legacy offline caches contain only a randomly sampled
+                # subset of graph negatives.  Positive pairs plus the current
+                # graph dimensions are sufficient to sample the true
+                # complement in __getitem__, so never trust persisted
+                # negatives here.
+                cached_pairs.pop("neg_pairs", None)
+                self._interface_cache[sid] = cached_pairs
                 cached += 1
                 from_disk += 1
                 continue
@@ -715,6 +722,77 @@ class PinderPairDataset(Dataset):
 
         return idx_left, idx_right, labels
 
+    def _sample_graph_pairs_from_complement(
+        self,
+        pos_pairs: np.ndarray,
+        n1: int,
+        n2: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Sample graph pairs when an offline cache stores positives only.
+
+        Positive graph ratios sample unique negatives lazily from the
+        complement.  The historical ``-1`` setting means all negatives, so
+        that case intentionally materializes the complete complement.
+        """
+        ratio = self.neg_to_pos_ratio
+        max_p = self.max_pos_per_pair
+        num_pos = pos_pairs.shape[1]
+        if num_pos == 0:
+            return None, None, None
+        if ratio != -1 and ratio <= 0:
+            raise ValueError(f"neg_to_pos_ratio must be -1 or positive, got {ratio}")
+
+        total_pairs = int(n1) * int(n2)
+        pos_flat = np.unique(
+            pos_pairs[0].astype(np.int64) * int(n2) + pos_pairs[1].astype(np.int64)
+        )
+        total_neg = total_pairs - len(pos_flat)
+        if total_neg <= 0:
+            return None, None, None
+
+        if ratio == -1:
+            # Preserve the existing meaning of -1 exactly: use every
+            # positive and every pair outside the positive set.
+            neg_pairs = _generate_negative_pairs(pos_pairs, n1, n2)
+            return self._sample_pairs(pos_pairs, neg_pairs)
+
+        num_pos_use = min(num_pos, int(total_neg / ratio))
+        if max_p > 0:
+            num_pos_use = min(num_pos_use, max_p)
+        num_pos_use = max(1, int(math.ceil(num_pos_use)))
+        num_neg_use = min(total_neg, max(1, int(math.ceil(num_pos_use * ratio))))
+
+        pos_idx = np.random.choice(num_pos, size=num_pos_use, replace=False)
+        pos_sampled = pos_pairs[:, pos_idx]
+
+        # For a large requested fraction, constructing the complement is
+        # faster than rejection sampling.  Otherwise retain only the sampled
+        # flat indices, keeping memory proportional to the requested ratio.
+        if num_neg_use * 3 >= total_neg:
+            all_neg = _generate_negative_pairs(pos_pairs, n1, n2)
+            neg_idx = np.random.choice(
+                all_neg.shape[1], size=num_neg_use, replace=False
+            )
+            neg_sampled = all_neg[:, neg_idx]
+        else:
+            positive = set(pos_flat.tolist())
+            selected = set()
+            batch_size = max(1024, num_neg_use * 3)
+            while len(selected) < num_neg_use:
+                candidates = np.random.randint(0, total_pairs, size=batch_size)
+                for flat in candidates.tolist():
+                    if flat not in positive:
+                        selected.add(flat)
+                        if len(selected) == num_neg_use:
+                            break
+            neg_flat = np.fromiter(selected, dtype=np.int64, count=num_neg_use)
+            neg_sampled = np.stack([neg_flat // int(n2), neg_flat % int(n2)], axis=0)
+
+        idx_left = torch.from_numpy(np.concatenate([pos_sampled[0], neg_sampled[0]]))
+        idx_right = torch.from_numpy(np.concatenate([pos_sampled[1], neg_sampled[1]]))
+        labels = torch.cat([torch.ones(num_pos_use), torch.zeros(num_neg_use)])
+        return idx_left, idx_right, labels
+
     def _sample_pairs(
         self,
         pos_pairs: np.ndarray,
@@ -995,10 +1073,12 @@ class PinderPairDataset(Dataset):
             if sid not in self._interface_cache:
                 precomputed = self._load_precomputed_interface(sid)
                 if precomputed is not None:
-                    self._interface_cache[sid] = {
+                    cached_pairs = {
                         k: (v.numpy() if isinstance(v, torch.Tensor) else v)
                         for k, v in precomputed.items()
                     }
+                    cached_pairs.pop("neg_pairs", None)
+                    self._interface_cache[sid] = cached_pairs
                 else:
                     pairs = self._compute_clean_pairs(
                         system, receptor_path, ligand_path
@@ -1008,7 +1088,7 @@ class PinderPairDataset(Dataset):
                     self._interface_cache[sid] = pairs
             pairs = self._interface_cache[sid]
             pos_pairs = pairs["pos_pairs"]
-            neg_pairs = pairs["neg_pairs"]
+            neg_pairs = pairs.get("neg_pairs")
 
         # Load proteins (with noise for training, without for eval)
         # In disk mode, test systems use setting suffix for precomputed filenames
@@ -1064,7 +1144,7 @@ class PinderPairDataset(Dataset):
             # Cache already populated by the early block above
             pairs = self._interface_cache[sid]
             pos_pairs = pairs["pos_pairs"]
-            neg_pairs = pairs["neg_pairs"]
+            neg_pairs = pairs.get("neg_pairs")
         else:
             precomputed = self._load_precomputed_interface(system["id"])
 
@@ -1293,7 +1373,12 @@ class PinderPairDataset(Dataset):
                 surf_n2 = len(protein_2.surface.verts)
 
         # Sample graph pairs
-        idx_left, idx_right, labels = self._sample_pairs(pos_pairs, neg_pairs)
+        if neg_pairs is None:
+            idx_left, idx_right, labels = self._sample_graph_pairs_from_complement(
+                pos_pairs, g1_len, g2_len
+            )
+        else:
+            idx_left, idx_right, labels = self._sample_pairs(pos_pairs, neg_pairs)
         if idx_left is None:
             return None
 

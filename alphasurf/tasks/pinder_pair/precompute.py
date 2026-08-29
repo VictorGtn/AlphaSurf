@@ -24,6 +24,7 @@ if __name__ == "__main__":
     sys.path.append(str(Path(__file__).absolute().parents[3]))
 
 from alphasurf.protein.protein_loader import ProteinLoader
+from alphasurf.protein.transforms import PatchExtractor
 from alphasurf.tasks.pinder_pair.dataset import load_pinder_split
 
 
@@ -51,12 +52,23 @@ def get_loader(cfg):
         surface_cfg = OmegaConf.merge(cfg.cfg_surface, cfg.on_fly)
         surface_cfg.use_poisson = "poisson" in cfg.encoder.name
 
+    patch_extractor = None
+    patch_dir = getattr(surface_cfg, "reference_patch_dir", None)
+    if not getattr(surface_cfg, "use_whole_surfaces", True) and patch_dir:
+        patch_extractor = PatchExtractor(
+            patch_dir=patch_dir,
+            radius=getattr(surface_cfg, "patch_radius", 6.0),
+            min_verts=getattr(surface_cfg, "min_verts", 140),
+            max_radius=getattr(surface_cfg, "patch_max_radius", 12.0),
+        )
+
     return ProteinLoader(
         mode="on_fly",
         pdb_dir=os.path.join(cfg.data_dir, "pdb"),
         surface_config=surface_cfg,
         graph_config=cfg.cfg_graph,
         noise_augmentor=None,
+        patch_extractor=patch_extractor,
     )
 
 
@@ -141,6 +153,12 @@ def main(cfg):
             gs = cfg.on_fly.get("nanoshaper_grid_scale")
         if gs is not None:
             method_str += f"_gs{gs}"
+        if cfg.on_fly.surface_method == "edtsurf":
+            surface_mode = cfg.on_fly.get("edtsurf_surface_mode", 1)
+            if surface_mode != 1:
+                method_str += f"_h{surface_mode}"
+
+    method_str += cfg.get("preprocessing", {}).get("output_suffix", "")
 
     surface_dir = os.path.join(cfg.data_dir, "surfaces", method_str)
     graph_dir = os.path.join(cfg.data_dir, "graphs", method_str)
@@ -167,14 +185,16 @@ def main(cfg):
     pdb_dir_path = os.path.join(cfg.data_dir, "pdb")
     all_tasks = []
 
-    # 1. Train/Val (Holo) — save with _holo suffix, PDB has no suffix
-    for split in ["train", "val"]:
-        systems = load_pinder_split(cfg.data_dir, split)
-        print(f"Loaded {len(systems)} systems from {split}")
-        for s in systems:
-            for key in ("receptor_id", "ligand_id"):
-                pdb_path = os.path.join(pdb_dir_path, f"{s[key]}.pdb")
-                all_tasks.append((f"{s[key]}_holo", pdb_path))
+    test_only = cfg.get("preprocessing", {}).get("test_only", False)
+
+    if not test_only:
+        for split in ["train", "val"]:
+            systems = load_pinder_split(cfg.data_dir, split)
+            print(f"Loaded {len(systems)} systems from {split}")
+            for s in systems:
+                for key in ("receptor_id", "ligand_id"):
+                    pdb_path = os.path.join(pdb_dir_path, f"{s[key]}.pdb")
+                    all_tasks.append((f"{s[key]}_holo", pdb_path))
 
     # 2. Test (All settings) — save with setting suffix
     csv_files = list(Path(cfg.data_dir).glob("systems_test_*.csv"))
@@ -196,6 +216,10 @@ def main(cfg):
         if save_name not in seen:
             seen.add(save_name)
             unique_tasks.append((save_name, pdb))
+
+    max_proteins = cfg.get("preprocessing", {}).get("max_proteins")
+    if max_proteins is not None:
+        unique_tasks = unique_tasks[: int(max_proteins)]
 
     print(f"Total unique proteins to process: {len(unique_tasks)}")
 

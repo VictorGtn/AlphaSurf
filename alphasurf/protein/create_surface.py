@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 
 import numpy as np
@@ -161,7 +162,14 @@ def parse_verts(vert_file, face_file, keep_normals=False):
         return verts, faces
 
 
-def pdb_to_surf(pdb_path, out_name=None, density=1.0, remove_files=True):
+def pdb_to_surf(
+    pdb_path,
+    out_name=None,
+    density=1.0,
+    remove_files=True,
+    atom_pos=None,
+    atom_radius=None,
+):
     """
     Runs msms on the input PDB file and dumps the output in out_name
     :param pdb_path:
@@ -169,8 +177,10 @@ def pdb_to_surf(pdb_path, out_name=None, density=1.0, remove_files=True):
     :return:
     """
     if out_name is None:
-        # Avoid writing into the dataset's pdb directory; use a temp location instead
-        out_name = os.path.join(tempfile.gettempdir(), Path(pdb_path).stem)
+        out_name = os.path.join(
+            tempfile.gettempdir(),
+            f"{Path(pdb_path).stem}_{os.getpid()}_{uuid.uuid4().hex}",
+        )
     out_name = str(Path(out_name).with_suffix(""))
     vert_file = out_name + ".vert"
     face_file = out_name + ".face"
@@ -193,14 +203,20 @@ def pdb_to_surf(pdb_path, out_name=None, density=1.0, remove_files=True):
 
     binary_path = os.path.join(binary_base_path, platform_dir)
     msms_path = os.path.abspath(os.path.join(binary_path, "msms"))
-    pdb2xyzr_path = os.path.abspath(os.path.join(binary_path, "pdb_to_xyzr"))
     success = False
     try:
-        # First get the xyzr file (run from bin so pdb_to_xyzr finds atmtypenumbers reliably)
         with open(xyzr_name, "w") as f:
-            subprocess.run(
-                [pdb2xyzr_path, pdb_path], stdout=f, cwd=binary_path, check=True
-            )
+            if atom_pos is not None and atom_radius is not None:
+                for pos, radius in zip(atom_pos, atom_radius):
+                    f.write(
+                        f"{pos[0]:.6f} {pos[1]:.6f} {pos[2]:.6f} "
+                        f"{float(radius):.6f}\n"
+                    )
+            else:
+                pdb2xyzr_path = os.path.join(binary_path, "pdb_to_xyzr")
+                subprocess.run(
+                    [pdb2xyzr_path, pdb_path], stdout=f, cwd=binary_path, check=True
+                )
 
         # Then run msms on this file
         msms_args = [
@@ -235,7 +251,14 @@ def pdb_to_surf(pdb_path, out_name=None, density=1.0, remove_files=True):
     return verts, faces
 
 
-def pdb_to_surf_with_min(pdb_path, out_name=None, min_number=256, remove_files=True):
+def pdb_to_surf_with_min(
+    pdb_path,
+    out_name=None,
+    min_number=256,
+    remove_files=True,
+    atom_pos=None,
+    atom_radius=None,
+):
     """
     This function is useful to retrieve at least min_number vertices, which is useful for later use in DiffNets
     :param pdb_path:
@@ -253,6 +276,8 @@ def pdb_to_surf_with_min(pdb_path, out_name=None, min_number=256, remove_files=T
             out_name=out_name,
             density=density,
             remove_files=remove_files,
+            atom_pos=atom_pos,
+            atom_radius=atom_radius,
         )
         number_of_vertices = len(verts)
         density += 1
@@ -485,6 +510,7 @@ def mesh_simplification(
     surface_method="msms",
     obj_name=None,
     tufting=False,
+    allow_multiple_components=False,
 ):
     """
     Simplify and clean a mesh.
@@ -535,9 +561,10 @@ def mesh_simplification(
 
             largest_cluster_size = np.max(vc_cluster_n)
             cutoff = int(0.01 * largest_cluster_size)
-            assert (
-                (vc_cluster_n >= cutoff).sum() == 1
-            ), f"Multi-cluster ({surface_method}): {vc_cluster_n} (cutoff={cutoff})"
+            if not allow_multiple_components:
+                assert (
+                    (vc_cluster_n >= cutoff).sum() == 1
+                ), f"Multi-cluster ({surface_method}): {vc_cluster_n} (cutoff={cutoff})"
 
             triangles_to_remove = vc_cluster_n[vc_clusters] < cutoff
             dropped_faces = np.sum(triangles_to_remove)
@@ -555,9 +582,10 @@ def mesh_simplification(
 
             largest_cluster_size = np.max(cluster_n_triangles)
             cutoff = int(0.01 * largest_cluster_size)
-            assert (
-                (cluster_n_triangles >= cutoff).sum() == 1
-            ), f"Multi-cluster ({surface_method}): {cluster_n_triangles} (cutoff={cutoff})"
+            if not allow_multiple_components:
+                assert (
+                    (cluster_n_triangles >= cutoff).sum() == 1
+                ), f"Multi-cluster ({surface_method}): {cluster_n_triangles} (cutoff={cutoff})"
 
             triangles_to_remove = cluster_n_triangles[triangle_clusters] < cutoff
             dropped_faces = np.sum(triangles_to_remove)
@@ -654,6 +682,9 @@ def mesh_simplification(
     faces_out = faces_out.astype(np.int32)
     # remove duplicate
     mesh = trimesh.Trimesh(vertices=verts_out, faces=faces_out, process=not tufting)
+    if not tufting:
+        mesh.update_faces(mesh.unique_faces())
+        mesh.remove_unreferenced_vertices()
     # save_debug_ply(mesh, base_name, "12_after_trimesh_preprocess")
     verts_out = np.array(mesh.vertices).astype(np.float32)
     faces_out = np.array(mesh.faces).astype(np.int32)
@@ -663,7 +694,7 @@ def mesh_simplification(
     return verts_out, faces_out, drop_ratio, drop_ratio_vertex
 
 
-def pdb_to_edtsurf(pdb_path, grid_scale=0.5):
+def pdb_to_edtsurf(pdb_path, grid_scale=0.5, surface_mode=1):
     """Generate molecular surface using EDTSurf."""
     EDTSURF_BIN = str(Path(__file__).resolve().parents[3] / "EDTSurf" / "EDTSurf")
     out_base = os.path.join(tempfile.gettempdir(), f"edtsurf_{os.getpid()}")
@@ -683,6 +714,8 @@ def pdb_to_edtsurf(pdb_path, grid_scale=0.5):
                 "1.4",
                 "-f",
                 str(grid_scale),
+                "-h",
+                str(surface_mode),
             ],
             capture_output=True,
             text=True,

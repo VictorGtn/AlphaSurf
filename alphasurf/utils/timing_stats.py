@@ -1,10 +1,7 @@
-"""
-Timing statistics collector for surface preprocessing.
-Collects timing data across multiple samples and prints summary stats.
-Uses per-process files for multiprocessing compatibility, aggregates at summary time.
-"""
+"""Timing statistics for surface preprocessing."""
 
 import glob
+import multiprocessing.util
 import os
 import tempfile
 import time
@@ -12,10 +9,18 @@ import time
 import numpy as np
 
 _TIMING_PREFIX = "alphasurf_timing_"
+_FLUSH_SIZE = 512
+_buffer = []
+_buffer_pid = None
+_finalizer = None
 
 
 def _get_timing_dir():
-    """Get timing directory, isolated by SLURM job ID if available."""
+    configured_dir = os.environ.get("ALPHASURF_TIMING_DIR")
+    if configured_dir:
+        os.makedirs(configured_dir, exist_ok=True)
+        return configured_dir
+
     base_dir = tempfile.gettempdir()
     job_id = os.environ.get("SLURM_JOB_ID")
     if job_id:
@@ -26,33 +31,54 @@ def _get_timing_dir():
 
 
 def _get_timing_file():
-    """Get per-process timing file path."""
     return os.path.join(_get_timing_dir(), f"{_TIMING_PREFIX}{os.getpid()}.csv")
 
 
+def _flush():
+    if not _buffer:
+        return
+    with open(_get_timing_file(), "a") as handle:
+        handle.writelines(_buffer)
+    _buffer.clear()
+
+
+def _prepare_process_buffer():
+    global _buffer, _buffer_pid, _finalizer
+
+    pid = os.getpid()
+    if _buffer_pid == pid:
+        return
+    _buffer = []
+    _buffer_pid = pid
+    _finalizer = multiprocessing.util.Finalize(None, _flush, exitpriority=10)
+
+
 def reset():
-    """Clear all timing files in the job-specific directory."""
+    global _buffer, _buffer_pid, _finalizer
+
+    _buffer = []
+    _buffer_pid = None
+    if _finalizer is not None:
+        _finalizer.cancel()
+        _finalizer = None
+
     timing_dir = _get_timing_dir()
     pattern = os.path.join(timing_dir, f"{_TIMING_PREFIX}*.csv")
-    for f in glob.glob(pattern):
-        try:
-            os.remove(f)
-        except OSError:
-            pass
+    for path in glob.glob(pattern):
+        os.remove(path)
 
 
 def record(name: str, elapsed: float):
-    """Append timing entry to per-process file."""
-    filepath = _get_timing_file()
-    try:
-        with open(filepath, "a") as f:
-            f.write(f"{name},{elapsed}\n")
-    except Exception:
-        pass
+    if os.environ.get("ALPHASURF_TIMING_ENABLED", "1") != "1":
+        return
+    _prepare_process_buffer()
+    _buffer.append(f"{name},{elapsed}\n")
+    if len(_buffer) >= _FLUSH_SIZE:
+        _flush()
 
 
 def print_summary():
-    """Aggregate all per-process timing files and print summary."""
+    _flush()
     timing_dir = _get_timing_dir()
     pattern = os.path.join(timing_dir, f"{_TIMING_PREFIX}*.csv")
     all_files = glob.glob(pattern)
@@ -61,25 +87,12 @@ def print_summary():
         print("No timing data recorded.")
         return
 
-    # Aggregate all timing data
     data = {}
     for filepath in all_files:
-        try:
-            with open(filepath, "r") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or "," not in line:
-                        continue
-                    try:
-                        name, elapsed = line.rsplit(",", 1)
-                        elapsed = float(elapsed)
-                        if name not in data:
-                            data[name] = []
-                        data[name].append(elapsed)
-                    except ValueError:
-                        continue
-        except Exception:
-            continue
+        with open(filepath) as handle:
+            for line in handle:
+                name, elapsed = line.rstrip().rsplit(",", 1)
+                data.setdefault(name, []).append(float(elapsed))
 
     if not data:
         print("No timing data recorded.")
@@ -89,7 +102,6 @@ def print_summary():
     print("TIMING SUMMARY")
     print("=" * 60)
 
-    # Print priority metrics first
     for name in [
         "train_fwd_bwd",
         "surface_generation",
@@ -106,7 +118,6 @@ def print_summary():
         total = np.sum(t)
         print(f"{name:20s}: {mean:.4f}s ± {std:.4f}s  (n={n}, total={total:.2f}s)")
 
-    # Print remaining metrics
     for name in sorted(data.keys()):
         if name in [
             "train_fwd_bwd",

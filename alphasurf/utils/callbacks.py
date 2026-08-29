@@ -2,7 +2,6 @@ import os
 from pathlib import Path
 
 import torch
-import wandb
 
 # 3p
 from pytorch_lightning import Callback
@@ -11,11 +10,11 @@ from pytorch_lightning.loggers import WandbLogger
 
 def add_wandb_logger(loggers, projectname, runname):
     # init logger
-    wand_id = wandb.util.generate_id()
     tb_logger = loggers[-1]
     tags = []
     log_dir = Path(tb_logger.log_dir).absolute()
     log_dir.mkdir(parents=True, exist_ok=True)
+    wand_id = os.environ.get("ATOMSURF_WANDB_ID", log_dir.stem)
 
     # Respect WANDB_DIR env var when set; otherwise fall back to TB log dir
     wandb_save_dir = os.environ.get("WANDB_DIR", str(log_dir))
@@ -24,8 +23,7 @@ def add_wandb_logger(loggers, projectname, runname):
         project=projectname,
         name=runname,
         tags=tags,
-        version=log_dir.stem,
-        id=wand_id,
+        version=wand_id,
         save_dir=wandb_save_dir,
         log_model=False,
     )

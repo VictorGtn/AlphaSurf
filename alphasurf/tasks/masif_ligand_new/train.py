@@ -73,22 +73,27 @@ def main(cfg=None):
     # Callbacks
     callbacks = [
         pl.callbacks.LearningRateMonitor(),
-        pl.callbacks.ModelCheckpoint(
-            filename="{epoch}-{accuracy_balanced/val:.2f}",
-            dirpath=Path(tb_logger.log_dir) / "checkpoints",
-            monitor=cfg.train.to_monitor,
-            mode="max",
-            save_last=True,
-            save_top_k=cfg.train.save_top_k,
-            verbose=False,
-        ),
-        pl.callbacks.EarlyStopping(
-            monitor=cfg.train.to_monitor,
-            patience=cfg.train.early_stoping_patience,
-            mode="max",
-        ),
         CommandLoggerCallback(command),
     ]
+    if os.environ.get("TIMING", "0") != "1":
+        callbacks.extend(
+            [
+                pl.callbacks.ModelCheckpoint(
+                    filename="{epoch}-{accuracy_balanced/val:.2f}",
+                    dirpath=Path(tb_logger.log_dir) / "checkpoints",
+                    monitor=cfg.train.to_monitor,
+                    mode="max",
+                    save_last=True,
+                    save_top_k=cfg.train.save_top_k,
+                    verbose=False,
+                ),
+                pl.callbacks.EarlyStopping(
+                    monitor=cfg.train.to_monitor,
+                    patience=cfg.train.early_stoping_patience,
+                    mode="max",
+                ),
+            ]
+        )
 
     # Trainer
     params = {}
@@ -104,6 +109,7 @@ def main(cfg=None):
         val_check_interval=cfg.train.val_check_interval,
         limit_train_batches=cfg.train.limit_train_batches,
         limit_val_batches=cfg.train.limit_val_batches,
+        limit_test_batches=cfg.train.limit_test_batches,
         log_every_n_steps=cfg.train.log_every_n_steps,
         max_steps=cfg.train.max_steps,
         gradient_clip_val=cfg.train.gradient_clip_val,
@@ -116,16 +122,29 @@ def main(cfg=None):
     ckpt_path = getattr(cfg, "ckpt_path", None)
     trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt_path)
 
+    if os.environ.get("TIMING", "0") == "1":
+        return
+
     # Test
     print("=" * 40 + " TEST BEST " + "=" * 40)
     results = trainer.test(model, ckpt_path="best", datamodule=datamodule)
-    acc_best = results[0]["accuracy_balanced/test"]
-    trainer.logger.log_metrics({"accuracy_balanced/test_best": acc_best})
+    if results and "accuracy_balanced/test" in results[0]:
+        acc_best = results[0]["accuracy_balanced/test"]
+        trainer.logger.log_metrics({"accuracy_balanced/test_best": acc_best})
+    else:
+        print(
+            "No usable test batches produced accuracy_balanced/test for best checkpoint"
+        )
 
     print("=" * 40 + " TEST LAST " + "=" * 40)
     results = trainer.test(model, ckpt_path="last", datamodule=datamodule)
-    acc_last = results[0]["accuracy_balanced/test"]
-    trainer.logger.log_metrics({"accuracy_balanced/test_last": acc_last})
+    if results and "accuracy_balanced/test" in results[0]:
+        acc_last = results[0]["accuracy_balanced/test"]
+        trainer.logger.log_metrics({"accuracy_balanced/test_last": acc_last})
+    else:
+        print(
+            "No usable test batches produced accuracy_balanced/test for last checkpoint"
+        )
 
 
 if __name__ == "__main__":

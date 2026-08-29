@@ -13,7 +13,22 @@ from alphasurf.tasks.masif_ligand_new.dataset import (
     load_ligand_data,
 )
 from alphasurf.utils.data_utils import AtomBatch, update_model_input_dim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
+
+
+class _RetryDataset(Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        for offset in range(len(self.dataset)):
+            result = self.dataset[(idx + offset) % len(self.dataset)]
+            if result is not None:
+                return result
+        return None
 
 
 class MasifLigandDataModule(pl.LightningDataModule):
@@ -157,6 +172,11 @@ class MasifLigandDataModule(pl.LightningDataModule):
                 "use_whole_surfaces",
                 "precomputed_patches_dir",
                 "nanoshaper_grid_scale",
+                "edtsurf_grid_scale",
+                "patch_probe_radius",
+                "patch_graph_min_patches",
+                "patch_graph_dir",
+                "k_eig",
             ]:
                 if hasattr(on_fly_cfg, key):
                     setattr(merged, key, getattr(on_fly_cfg, key))
@@ -199,7 +219,14 @@ class MasifLigandDataModule(pl.LightningDataModule):
             args["persistent_workers"] = getattr(
                 loader_cfg, "persistent_workers", False
             )
-            args["multiprocessing_context"] = "forkserver"
+            on_fly_cfg = getattr(cfg, "on_fly", None)
+            surface_method = getattr(on_fly_cfg, "surface_method", "")
+            if os.environ.get("TIMING", "0") == "1":
+                args["multiprocessing_context"] = "spawn"
+            else:
+                args["multiprocessing_context"] = (
+                    "spawn" if surface_method == "alpha_complex" else "fork"
+                )
 
         return args
 
@@ -215,6 +242,8 @@ class MasifLigandDataModule(pl.LightningDataModule):
             self.pocket_data["train"],
             self.protein_loader_train,
         )
+        if os.environ.get("TIMING", "0") == "1":
+            dataset = _RetryDataset(dataset)
         shuffle = getattr(self.cfg.loader, "shuffle", True)
         return DataLoader(dataset, shuffle=shuffle, **self.loader_args)
 

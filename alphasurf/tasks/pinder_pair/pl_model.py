@@ -530,7 +530,9 @@ class PinderPairModule(AtomPLModule):
             os.makedirs(dump_dir, exist_ok=True)
             test_setting = getattr(self.hparams.cfg, "test_setting", "unknown")
             run_name = getattr(self.hparams.cfg, "run_name", "default")
-            csv_path = os.path.join(dump_dir, f"{run_name}_{test_setting}.csv")
+            ckpt_label = getattr(self.hparams.cfg, "eval_ckpt_label", None)
+            suffix = f"_{ckpt_label}" if ckpt_label else ""
+            csv_path = os.path.join(dump_dir, f"{run_name}{suffix}_{test_setting}.csv")
             pd.DataFrame(per_system_rows).to_csv(csv_path, index=False)
             print(
                 f"  Dumped per-system results: {csv_path} ({len(per_system_rows)} systems)"

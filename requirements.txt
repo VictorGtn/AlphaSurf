@@ -3,6 +3,7 @@ biopython>=1.81
 biotite
 deltaconv==1.0.2
 fair-esm
+gemmi>=0.7.5
 hydra-core==1.3.2
 hydra-colorlog
 libigl>=2.6.0

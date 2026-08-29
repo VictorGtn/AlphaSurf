@@ -108,6 +108,7 @@ def main(cfg=None):
     trainer = pl.Trainer(
         callbacks=callbacks,
         logger=loggers,
+        default_root_dir=tb_logger.log_dir,
         max_epochs=cfg.epochs,
         accumulate_grad_batches=cfg.train.accumulate_grad_batches,
         check_val_every_n_epoch=cfg.train.check_val_every_n_epoch,
@@ -132,24 +133,16 @@ def main(cfg=None):
         ckpt_dir = Path(tb_logger.log_dir) / "checkpoints"
 
         found_local = False
-        if ckpt_dir.exists():
-            # Prioritize 'last.ckpt'
-            last_ckpt = ckpt_dir / "last.ckpt"
-            if last_ckpt.exists():
-                ckpt_path = str(last_ckpt)
-                print(
-                    f"Auto-resume: Found local progress, ignoring user ckpt. Resuming from {ckpt_path}"
-                )
-                found_local = True
-            else:
-                # Fallback to most recent in current dir
-                ckpts = list(ckpt_dir.glob("*.ckpt"))
-                if ckpts:
-                    ckpt_path = str(max(ckpts, key=os.path.getctime))
-                    print(
-                        f"Auto-resume: Found local progress, ignoring user ckpt. Resuming from {ckpt_path}"
-                    )
-                    found_local = True
+        # Lightning writes signal-triggered HPC checkpoints in default_root_dir,
+        # while ModelCheckpoint writes epoch/last checkpoints in ckpt_dir.
+        ckpts = list(ckpt_dir.glob("*.ckpt"))
+        ckpts.extend(Path(tb_logger.log_dir).glob("hpc_ckpt_*.ckpt"))
+        if ckpts:
+            ckpt_path = str(max(ckpts, key=lambda path: path.stat().st_mtime))
+            print(
+                f"Auto-resume: Found local progress, ignoring user ckpt. Resuming from {ckpt_path}"
+            )
+            found_local = True
 
         if not found_local:
             if ckpt_path is not None:
@@ -158,7 +151,7 @@ def main(cfg=None):
                 )
             else:
                 print(
-                    f"No checkpoins found in {ckpt_dir} and no user ckpt provided. Starting from scratch."
+                    f"No checkpoints found in {tb_logger.log_dir} and no user ckpt provided. Starting from scratch."
                 )
 
     trainer.fit(model, datamodule=datamodule, ckpt_path=ckpt_path)
@@ -174,6 +167,12 @@ def main(cfg=None):
 
     for ckpt_label in ["best", "last"]:
         print(f"\n{'=' * 50}\nCheckpoint: {ckpt_label}\n{'=' * 50}")
+
+        # Keep the two per-system dumps distinct.  Without this label the
+        # later "last" evaluation overwrites the earlier "best" CSV.
+        OmegaConf.set_struct(cfg, False)
+        cfg.eval_ckpt_label = ckpt_label
+        OmegaConf.set_struct(cfg, True)
 
         ckpt_results = {}
         for setting in ["holo", "apo", "af2"]:

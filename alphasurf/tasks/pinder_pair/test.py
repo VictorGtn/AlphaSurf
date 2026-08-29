@@ -57,6 +57,26 @@ def setup_test_loader(cfg, test_setting):
     target_systems = load_pinder_split(
         data_dir, split="test", test_setting=test_setting
     )
+
+    common_only = getattr(cfg, "common_only", False)
+    if common_only:
+        common_csv = os.path.join(data_dir, f"common_systems_{test_setting}.csv")
+        if os.path.exists(common_csv):
+            import pandas as pd
+
+            common_ids = set(pd.read_csv(common_csv)["id"])
+            n_before = len(target_systems)
+            target_systems = [s for s in target_systems if s["id"] in common_ids]
+            print(
+                f"  Common-only filter: {len(target_systems)}/{n_before} systems "
+                f"({test_setting})"
+            )
+        else:
+            print(
+                f"  WARNING: common_only=True but {common_csv} not found. "
+                f"Using full test set."
+            )
+
     print(f"  {test_setting}: {len(target_systems)} systems")
 
     DatasetClass = PinderPairDataset
@@ -74,7 +94,20 @@ def setup_test_loader(cfg, test_setting):
     from alphasurf.utils.config_utils import merge_surface_config
 
     on_fly_cfg = getattr(cfg, "on_fly", None)
-    mode = "on_fly"
+    mode = "on_fly" if on_fly_cfg is not None else "disk"
+    surface_dir = None
+    graph_dir = None
+    if mode == "disk":
+        surface_data_name = getattr(cfg, "surface_data_name", None)
+        graph_data_name = getattr(cfg, "graph_data_name", None)
+        surface_dir = os.path.join(
+            cfg.cfg_surface.data_dir,
+            surface_data_name or cfg.cfg_surface.data_name,
+        )
+        graph_dir = os.path.join(
+            cfg.cfg_graph.data_dir,
+            graph_data_name or cfg.cfg_graph.data_name,
+        )
     esm_dir = getattr(cfg.cfg_graph, "esm_dir", None)
 
     surface_config = merge_surface_config(cfg.cfg_surface, on_fly_cfg)
@@ -84,8 +117,8 @@ def setup_test_loader(cfg, test_setting):
     protein_loader = ProteinLoader(
         mode=mode,
         pdb_dir=pdb_dir,
-        surface_dir=None,
-        graph_dir=None,
+        surface_dir=surface_dir,
+        graph_dir=graph_dir,
         esm_dir=esm_dir,
         surface_config=surface_config,
         graph_config=graph_config,
@@ -113,7 +146,9 @@ def setup_test_loader(cfg, test_setting):
     )
 
 
-def evaluate_setting(model, test_loader, device, cfg, test_setting):
+def evaluate_setting(
+    model, test_loader, device, cfg, test_setting, ckpt_label="provided"
+):
     """Run per-system AUROC + balanced accuracy evaluation for one setting.
 
     Returns dict with keys: auroc_mean, auroc_median, bacc_mean, bacc_median,
@@ -122,7 +157,7 @@ def evaluate_setting(model, test_loader, device, cfg, test_setting):
     """
     n_batches = 0
     n_skipped = 0
-    system_results = []  # (auroc, bacc, is_homodimer)
+    system_results = []  # (auroc, bacc, is_homodimer, system_id)
 
     with torch.no_grad():
         for batch_idx, batch in enumerate(test_loader):
@@ -170,7 +205,7 @@ def evaluate_setting(model, test_loader, device, cfg, test_setting):
                         sys_preds = (sys_logits > 0).astype(int)
                         sys_bacc = balanced_accuracy_score(sys_lab, sys_preds)
                         is_homo = _is_homodimer(sid) if sid else False
-                        system_results.append((sys_auroc, sys_bacc, is_homo))
+                        system_results.append((sys_auroc, sys_bacc, is_homo, sid))
                     offset += n_pairs
 
             n_batches += 1
@@ -181,6 +216,7 @@ def evaluate_setting(model, test_loader, device, cfg, test_setting):
 
     if not system_results:
         print(f"  {test_setting}: No valid systems evaluated!")
+        _dump_results(cfg, ckpt_label, test_setting, None, [])
         return None
 
     aurocs = np.array([r[0] for r in system_results])
@@ -207,6 +243,16 @@ def evaluate_setting(model, test_loader, device, cfg, test_setting):
         result["auroc_hetero_mean"] = float(aurocs[hetero_mask].mean())
         result["bacc_hetero_mean"] = float(baccs[hetero_mask].mean())
 
+    per_system_rows = [
+        {
+            "system_id": r[3],
+            "auroc": r[0],
+            "bacc": r[1],
+            "is_homodimer": r[2],
+        }
+        for r in system_results
+    ]
+
     print(
         f"  >>> {test_setting} AUROC: Mean={result['auroc_mean']:.4f}, Median={result['auroc_median']:.4f} <<<"
     )
@@ -223,7 +269,43 @@ def evaluate_setting(model, test_loader, device, cfg, test_setting):
             f"  >>> {test_setting} AUROC Hetero: {result['auroc_hetero_mean']:.4f} <<<"
         )
 
+    _dump_results(cfg, ckpt_label, test_setting, result, per_system_rows)
+
     return result
+
+
+def _dump_results(cfg, ckpt_label, test_setting, summary, per_system_rows):
+    """Write per-system CSV and append summary row when cfg.dump_per_system is set."""
+    dump_dir = getattr(cfg, "dump_per_system", None)
+    if not dump_dir:
+        return
+
+    import pandas as pd
+
+    os.makedirs(dump_dir, exist_ok=True)
+    run_name = getattr(cfg, "run_name", "default")
+
+    if per_system_rows:
+        csv_path = os.path.join(dump_dir, f"{run_name}_{ckpt_label}_{test_setting}.csv")
+        pd.DataFrame(per_system_rows).to_csv(csv_path, index=False)
+        print(
+            f"  Dumped per-system results: {csv_path} ({len(per_system_rows)} systems)"
+        )
+
+    if summary is not None:
+        summary_path = os.path.join(dump_dir, f"{run_name}_summary.csv")
+        row = {
+            "run_name": run_name,
+            "ckpt_label": ckpt_label,
+            "test_setting": test_setting,
+            **{k: v for k, v in summary.items()},
+        }
+        df = pd.DataFrame([row])
+        if os.path.exists(summary_path):
+            df.to_csv(summary_path, mode="a", header=False, index=False)
+        else:
+            df.to_csv(summary_path, mode="w", header=True, index=False)
+        print(f"  Appended summary row: {summary_path}")
 
 
 def load_model_from_checkpoint(ckpt_path, cfg):
@@ -232,7 +314,18 @@ def load_model_from_checkpoint(ckpt_path, cfg):
     train_cfg = ckpt_data.get("hyper_parameters", {}).get("cfg")
     if train_cfg:
         OmegaConf.set_struct(train_cfg, False)
-        for key in ["test_setting", "ckpt_path", "device", "min_batch_size", "on_fly"]:
+        for key in [
+            "test_setting",
+            "ckpt_path",
+            "device",
+            "min_batch_size",
+            "on_fly",
+            "run_name",
+            "dump_per_system",
+            "common_only",
+            "surface_data_name",
+            "graph_data_name",
+        ]:
             if key in cfg:
                 train_cfg[key] = cfg[key]
 
@@ -286,6 +379,8 @@ def run_all_tests(cfg, model=None):
 
     ckpts_to_eval = {"provided": ckpt_path}
     last_ckpt = Path(ckpt_path).parent / "last.ckpt"
+    if not last_ckpt.exists() and Path(ckpt_path).parent.name.startswith("epoch="):
+        last_ckpt = Path(ckpt_path).parent.parent / "last.ckpt"
     if last_ckpt.exists() and str(last_ckpt) != ckpt_path:
         ckpts_to_eval["last"] = str(last_ckpt)
 
@@ -304,7 +399,12 @@ def run_all_tests(cfg, model=None):
             try:
                 test_loader = setup_test_loader(eval_cfg, setting)
                 result = evaluate_setting(
-                    loaded_model, test_loader, device, eval_cfg, setting
+                    loaded_model,
+                    test_loader,
+                    device,
+                    eval_cfg,
+                    setting,
+                    ckpt_label=ckpt_label,
                 )
                 all_results[setting] = result
             except Exception as e:
@@ -341,8 +441,16 @@ def main(cfg=None):
         model = model.to(device)
         model.eval()
 
+        ckpt_label = Path(ckpt_path).stem if ckpt_path else "model"
         test_loader = setup_test_loader(eval_cfg, test_setting)
-        evaluate_setting(model, test_loader, device, eval_cfg, test_setting)
+        evaluate_setting(
+            model,
+            test_loader,
+            device,
+            eval_cfg,
+            test_setting,
+            ckpt_label=ckpt_label,
+        )
 
 
 if __name__ == "__main__":
