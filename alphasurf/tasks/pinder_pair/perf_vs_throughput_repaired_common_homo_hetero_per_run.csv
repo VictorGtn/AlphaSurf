@@ -1,0 +1,127 @@
+method,setting,complex_type,seed,auroc,n_systems,file
+Alpha Complex,holo,Homo,2024,0.9257756030896468,1558,alpha_complex_s2024_provided_holo.csv
+Alpha Complex,holo,Hetero,2024,0.8945498724370682,277,alpha_complex_s2024_provided_holo.csv
+Alpha Complex,holo,Homo,2025,0.9249520279251325,1558,alpha_complex_s2025_provided_holo.csv
+Alpha Complex,holo,Hetero,2025,0.8928028037128516,277,alpha_complex_s2025_provided_holo.csv
+Alpha Complex,holo,Homo,2026,0.9242930549282615,1558,alpha_complex_s2026_provided_holo.csv
+Alpha Complex,holo,Hetero,2026,0.8912648571540243,277,alpha_complex_s2026_provided_holo.csv
+EDTsurf gs=0.3,holo,Homo,2024,0.9225716782418016,1558,edtsurf_gs0.3_s2024_provided_holo.csv
+EDTsurf gs=0.3,holo,Hetero,2024,0.8796833249495876,277,edtsurf_gs0.3_s2024_provided_holo.csv
+EDTsurf gs=0.3,holo,Homo,2025,0.924925677632005,1558,edtsurf_gs0.3_s2025_provided_holo.csv
+EDTsurf gs=0.3,holo,Hetero,2025,0.8827623618885684,277,edtsurf_gs0.3_s2025_provided_holo.csv
+EDTsurf gs=0.3,holo,Homo,2026,0.9252560416530811,1558,edtsurf_gs0.3_s2026_provided_holo.csv
+EDTsurf gs=0.3,holo,Hetero,2026,0.8818967226409316,277,edtsurf_gs0.3_s2026_provided_holo.csv
+EDTsurf gs=0.4,holo,Homo,2024,0.9342483181033047,1558,edtsurf_gs0.4_s2024_provided_holo.csv
+EDTsurf gs=0.4,holo,Hetero,2024,0.8969150657124223,277,edtsurf_gs0.4_s2024_provided_holo.csv
+EDTsurf gs=0.4,holo,Homo,2025,0.9353086010849824,1558,edtsurf_gs0.4_s2025_provided_holo.csv
+EDTsurf gs=0.4,holo,Hetero,2025,0.895015285562006,277,edtsurf_gs0.4_s2025_provided_holo.csv
+EDTsurf gs=0.4,holo,Homo,2026,0.9337467556701193,1558,edtsurf_gs0.4_s2026_provided_holo.csv
+EDTsurf gs=0.4,holo,Hetero,2026,0.8959297155574979,277,edtsurf_gs0.4_s2026_provided_holo.csv
+EDTsurf gs=0.5,holo,Homo,2024,0.9361143894283692,1558,edtsurf_gs0.5_s2024_provided_holo.csv
+EDTsurf gs=0.5,holo,Hetero,2024,0.8991005370727305,277,edtsurf_gs0.5_s2024_provided_holo.csv
+EDTsurf gs=0.5,holo,Homo,2025,0.942100955792217,1558,edtsurf_gs0.5_s2025_provided_holo.csv
+EDTsurf gs=0.5,holo,Hetero,2025,0.9067963437512313,277,edtsurf_gs0.5_s2025_provided_holo.csv
+EDTsurf gs=0.5,holo,Homo,2026,0.9410876728656361,1558,edtsurf_gs0.5_s2026_provided_holo.csv
+EDTsurf gs=0.5,holo,Hetero,2026,0.9063627991356215,277,edtsurf_gs0.5_s2026_provided_holo.csv
+NanoShaper gs=0.4,holo,Homo,2024,0.9567608848164226,1558,nanoshaper_gs0.4_s2024_provided_holo.csv
+NanoShaper gs=0.4,holo,Hetero,2024,0.9308587247374727,277,nanoshaper_gs0.4_s2024_provided_holo.csv
+NanoShaper gs=0.4,holo,Homo,2025,0.9566639179373155,1558,nanoshaper_gs0.4_s2025_provided_holo.csv
+NanoShaper gs=0.4,holo,Hetero,2025,0.9314927603320572,277,nanoshaper_gs0.4_s2025_provided_holo.csv
+NanoShaper gs=0.4,holo,Homo,2026,0.954333346406183,1558,nanoshaper_gs0.4_s2026_provided_holo.csv
+NanoShaper gs=0.4,holo,Hetero,2026,0.9283026518674544,277,nanoshaper_gs0.4_s2026_provided_holo.csv
+NanoShaper gs=0.5,holo,Homo,2024,0.9548598799027184,1558,nanoshaper_gs0.5_s2024_provided_holo.csv
+NanoShaper gs=0.5,holo,Hetero,2024,0.9305390232767654,277,nanoshaper_gs0.5_s2024_provided_holo.csv
+NanoShaper gs=0.5,holo,Homo,2025,0.9570832130359539,1558,nanoshaper_gs0.5_s2025_provided_holo.csv
+NanoShaper gs=0.5,holo,Hetero,2025,0.932815300015798,277,nanoshaper_gs0.5_s2025_provided_holo.csv
+NanoShaper gs=0.5,holo,Homo,2026,0.9527583993297903,1558,nanoshaper_gs0.5_s2026_provided_holo.csv
+NanoShaper gs=0.5,holo,Hetero,2026,0.9281501618759957,277,nanoshaper_gs0.5_s2026_provided_holo.csv
+MSMS,holo,Homo,2024,0.9479247075254554,1558,msms_0.1_dist2.0_s2024_provided_holo.csv
+MSMS,holo,Hetero,2024,0.920843514760938,277,msms_0.1_dist2.0_s2024_provided_holo.csv
+MSMS,holo,Homo,2025,0.9497125199101574,1558,msms_0.1_dist2.0_s2025_provided_holo.csv
+MSMS,holo,Hetero,2025,0.9228522910529947,277,msms_0.1_dist2.0_s2025_provided_holo.csv
+MSMS,holo,Homo,2026,0.9476322567602402,1558,msms_0.1_dist2.0_s2026_provided_holo.csv
+MSMS,holo,Hetero,2026,0.9226997995470637,277,msms_0.1_dist2.0_s2026_provided_holo.csv
+Alpha Complex,apo,Homo,2024,0.8644991652689532,277,alpha_complex_s2024_provided_apo.csv
+Alpha Complex,apo,Hetero,2024,0.8522797128245839,32,alpha_complex_s2024_provided_apo.csv
+Alpha Complex,apo,Homo,2025,0.8655708567806186,277,alpha_complex_s2025_provided_apo.csv
+Alpha Complex,apo,Hetero,2025,0.8559789041467742,32,alpha_complex_s2025_provided_apo.csv
+Alpha Complex,apo,Homo,2026,0.8637985646060591,277,alpha_complex_s2026_provided_apo.csv
+Alpha Complex,apo,Hetero,2026,0.8393463701784001,32,alpha_complex_s2026_provided_apo.csv
+EDTsurf gs=0.3,apo,Homo,2024,0.8599147500718183,277,edtsurf_gs0.3_s2024_provided_apo.csv
+EDTsurf gs=0.3,apo,Hetero,2024,0.8240764475640234,32,edtsurf_gs0.3_s2024_provided_apo.csv
+EDTsurf gs=0.3,apo,Homo,2025,0.8629210037045788,277,edtsurf_gs0.3_s2025_provided_apo.csv
+EDTsurf gs=0.3,apo,Hetero,2025,0.8374400098496015,32,edtsurf_gs0.3_s2025_provided_apo.csv
+EDTsurf gs=0.3,apo,Homo,2026,0.8646868750939123,277,edtsurf_gs0.3_s2026_provided_apo.csv
+EDTsurf gs=0.3,apo,Hetero,2026,0.8349851124674703,32,edtsurf_gs0.3_s2026_provided_apo.csv
+EDTsurf gs=0.4,apo,Homo,2024,0.8720488364053572,277,edtsurf_gs0.4_s2024_provided_apo.csv
+EDTsurf gs=0.4,apo,Hetero,2024,0.840933401911344,32,edtsurf_gs0.4_s2024_provided_apo.csv
+EDTsurf gs=0.4,apo,Homo,2025,0.8703603149827153,277,edtsurf_gs0.4_s2025_provided_apo.csv
+EDTsurf gs=0.4,apo,Hetero,2025,0.8394328441579911,32,edtsurf_gs0.4_s2025_provided_apo.csv
+EDTsurf gs=0.4,apo,Homo,2026,0.8708581010795214,277,edtsurf_gs0.4_s2026_provided_apo.csv
+EDTsurf gs=0.4,apo,Hetero,2026,0.8483787224687491,32,edtsurf_gs0.4_s2026_provided_apo.csv
+EDTsurf gs=0.5,apo,Homo,2024,0.8715778651165417,277,edtsurf_gs0.5_s2024_provided_apo.csv
+EDTsurf gs=0.5,apo,Hetero,2024,0.8381172749397736,32,edtsurf_gs0.5_s2024_provided_apo.csv
+EDTsurf gs=0.5,apo,Homo,2025,0.871520614852338,277,edtsurf_gs0.5_s2025_provided_apo.csv
+EDTsurf gs=0.5,apo,Hetero,2025,0.8370856196275542,32,edtsurf_gs0.5_s2025_provided_apo.csv
+EDTsurf gs=0.5,apo,Homo,2026,0.871648936396404,277,edtsurf_gs0.5_s2026_provided_apo.csv
+EDTsurf gs=0.5,apo,Hetero,2026,0.8425171641464783,32,edtsurf_gs0.5_s2026_provided_apo.csv
+NanoShaper gs=0.4,apo,Homo,2024,0.7440958618063581,277,nanoshaper_gs0.4_s2024_provided_apo.csv
+NanoShaper gs=0.4,apo,Hetero,2024,0.8021860062661568,32,nanoshaper_gs0.4_s2024_provided_apo.csv
+NanoShaper gs=0.4,apo,Homo,2025,0.7431900299879005,277,nanoshaper_gs0.4_s2025_provided_apo.csv
+NanoShaper gs=0.4,apo,Hetero,2025,0.8008017147437667,32,nanoshaper_gs0.4_s2025_provided_apo.csv
+NanoShaper gs=0.4,apo,Homo,2026,0.7486041289937612,277,nanoshaper_gs0.4_s2026_provided_apo.csv
+NanoShaper gs=0.4,apo,Hetero,2026,0.8010806476914374,32,nanoshaper_gs0.4_s2026_provided_apo.csv
+NanoShaper gs=0.5,apo,Homo,2024,0.7524212940766105,277,nanoshaper_gs0.5_s2024_provided_apo.csv
+NanoShaper gs=0.5,apo,Hetero,2024,0.8056714429145349,32,nanoshaper_gs0.5_s2024_provided_apo.csv
+NanoShaper gs=0.5,apo,Homo,2025,0.7556598749298241,277,nanoshaper_gs0.5_s2025_provided_apo.csv
+NanoShaper gs=0.5,apo,Hetero,2025,0.8232639335270724,32,nanoshaper_gs0.5_s2025_provided_apo.csv
+NanoShaper gs=0.5,apo,Homo,2026,0.7410387490145767,277,nanoshaper_gs0.5_s2026_provided_apo.csv
+NanoShaper gs=0.5,apo,Hetero,2026,0.8094136973144079,32,nanoshaper_gs0.5_s2026_provided_apo.csv
+MSMS,apo,Homo,2024,0.7242321348611235,277,msms_0.1_dist2.0_s2024_provided_apo.csv
+MSMS,apo,Hetero,2024,0.8117165542678944,32,msms_0.1_dist2.0_s2024_provided_apo.csv
+MSMS,apo,Homo,2025,0.7322324446804348,277,msms_0.1_dist2.0_s2025_provided_apo.csv
+MSMS,apo,Hetero,2025,0.8084108228630902,32,msms_0.1_dist2.0_s2025_provided_apo.csv
+MSMS,apo,Homo,2026,0.7387498506936686,277,msms_0.1_dist2.0_s2026_provided_apo.csv
+MSMS,apo,Hetero,2026,0.8472485312784369,32,msms_0.1_dist2.0_s2026_provided_apo.csv
+Alpha Complex,af2,Homo,2024,0.8644472069888737,1366,alpha_complex_s2024_provided_af2.csv
+Alpha Complex,af2,Hetero,2024,0.8203320734221459,216,alpha_complex_s2024_provided_af2.csv
+Alpha Complex,af2,Homo,2025,0.8642331300996733,1366,alpha_complex_s2025_provided_af2.csv
+Alpha Complex,af2,Hetero,2025,0.8177789193006908,216,alpha_complex_s2025_provided_af2.csv
+Alpha Complex,af2,Homo,2026,0.857507887919913,1366,alpha_complex_s2026_provided_af2.csv
+Alpha Complex,af2,Hetero,2026,0.8023429940689778,216,alpha_complex_s2026_provided_af2.csv
+EDTsurf gs=0.3,af2,Homo,2024,0.8497675969380536,1366,edtsurf_gs0.3_s2024_provided_af2.csv
+EDTsurf gs=0.3,af2,Hetero,2024,0.7668080667139924,216,edtsurf_gs0.3_s2024_provided_af2.csv
+EDTsurf gs=0.3,af2,Homo,2025,0.8511433817546719,1366,edtsurf_gs0.3_s2025_provided_af2.csv
+EDTsurf gs=0.3,af2,Hetero,2025,0.7708525092853551,216,edtsurf_gs0.3_s2025_provided_af2.csv
+EDTsurf gs=0.3,af2,Homo,2026,0.8547411245425722,1366,edtsurf_gs0.3_s2026_provided_af2.csv
+EDTsurf gs=0.3,af2,Hetero,2026,0.772703322193265,216,edtsurf_gs0.3_s2026_provided_af2.csv
+EDTsurf gs=0.4,af2,Homo,2024,0.8610080808788018,1366,edtsurf_gs0.4_s2024_provided_af2.csv
+EDTsurf gs=0.4,af2,Hetero,2024,0.7793231703321145,216,edtsurf_gs0.4_s2024_provided_af2.csv
+EDTsurf gs=0.4,af2,Homo,2025,0.8621766357172088,1366,edtsurf_gs0.4_s2025_provided_af2.csv
+EDTsurf gs=0.4,af2,Hetero,2025,0.7803355712484082,216,edtsurf_gs0.4_s2025_provided_af2.csv
+EDTsurf gs=0.4,af2,Homo,2026,0.863483882272708,1366,edtsurf_gs0.4_s2026_provided_af2.csv
+EDTsurf gs=0.4,af2,Hetero,2026,0.7857652714994193,216,edtsurf_gs0.4_s2026_provided_af2.csv
+EDTsurf gs=0.5,af2,Homo,2024,0.8686228066907817,1366,edtsurf_gs0.5_s2024_provided_af2.csv
+EDTsurf gs=0.5,af2,Hetero,2024,0.7987475196085397,216,edtsurf_gs0.5_s2024_provided_af2.csv
+EDTsurf gs=0.5,af2,Homo,2025,0.8734226703796455,1366,edtsurf_gs0.5_s2025_provided_af2.csv
+EDTsurf gs=0.5,af2,Hetero,2025,0.8050320778114979,216,edtsurf_gs0.5_s2025_provided_af2.csv
+EDTsurf gs=0.5,af2,Homo,2026,0.8727809096270515,1366,edtsurf_gs0.5_s2026_provided_af2.csv
+EDTsurf gs=0.5,af2,Hetero,2026,0.8037680630592189,216,edtsurf_gs0.5_s2026_provided_af2.csv
+NanoShaper gs=0.4,af2,Homo,2024,0.7155833707349317,1366,nanoshaper_gs0.4_s2024_provided_af2.csv
+NanoShaper gs=0.4,af2,Hetero,2024,0.7334558779598184,216,nanoshaper_gs0.4_s2024_provided_af2.csv
+NanoShaper gs=0.4,af2,Homo,2025,0.720323918987251,1366,nanoshaper_gs0.4_s2025_provided_af2.csv
+NanoShaper gs=0.4,af2,Hetero,2025,0.7406230253172573,216,nanoshaper_gs0.4_s2025_provided_af2.csv
+NanoShaper gs=0.4,af2,Homo,2026,0.7108014299592494,1366,nanoshaper_gs0.4_s2026_provided_af2.csv
+NanoShaper gs=0.4,af2,Hetero,2026,0.7280750772394355,216,nanoshaper_gs0.4_s2026_provided_af2.csv
+NanoShaper gs=0.5,af2,Homo,2024,0.7189863570590557,1366,nanoshaper_gs0.5_s2024_provided_af2.csv
+NanoShaper gs=0.5,af2,Hetero,2024,0.7325137945529957,216,nanoshaper_gs0.5_s2024_provided_af2.csv
+NanoShaper gs=0.5,af2,Homo,2025,0.7251006001127742,1366,nanoshaper_gs0.5_s2025_provided_af2.csv
+NanoShaper gs=0.5,af2,Hetero,2025,0.7426134951298506,216,nanoshaper_gs0.5_s2025_provided_af2.csv
+NanoShaper gs=0.5,af2,Homo,2026,0.7133111498168465,1366,nanoshaper_gs0.5_s2026_provided_af2.csv
+NanoShaper gs=0.5,af2,Hetero,2026,0.7315180523830073,216,nanoshaper_gs0.5_s2026_provided_af2.csv
+MSMS,af2,Homo,2024,0.6813000897793625,1366,msms_0.1_dist2.0_s2024_provided_af2.csv
+MSMS,af2,Hetero,2024,0.7068244964848165,216,msms_0.1_dist2.0_s2024_provided_af2.csv
+MSMS,af2,Homo,2025,0.6884173240760804,1366,msms_0.1_dist2.0_s2025_provided_af2.csv
+MSMS,af2,Hetero,2025,0.7052697437915522,216,msms_0.1_dist2.0_s2025_provided_af2.csv
+MSMS,af2,Homo,2026,0.7717245050442475,1366,msms_0.1_dist2.0_s2026_provided_af2.csv
+MSMS,af2,Hetero,2026,0.7351287141599462,216,msms_0.1_dist2.0_s2026_provided_af2.csv

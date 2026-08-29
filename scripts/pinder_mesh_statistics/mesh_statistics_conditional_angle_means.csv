@@ -1,0 +1,81 @@
+method,metric,top_percentage,conditional_mean
+MSMS Simplified,Triangle angle (°),100,60.0
+MSMS Simplified,Triangle angle (°),10,106.89757822346
+MSMS Simplified,Triangle angle (°),5,116.58985391640942
+MSMS Simplified,Triangle angle (°),1,136.2387110515021
+MSMS Simplified,Triangle angle (°),0.5,143.7863192056214
+MSMS Simplified,Triangle angle (°),0.1,159.25892039304657
+MSMS Simplified,Triangle angle (°),0.05,163.7438420376526
+MSMS Simplified,Triangle angle (°),0.01,171.76252699089486
+MSMS Simplified,Triangle angle (°),0.005,172.8519670020408
+MSMS Simplified,Triangle angle (°),0.001,173.51680794767475
+MSMS Simplified,Dihedral angle (°),100,36.65366621001254
+MSMS Simplified,Dihedral angle (°),10,78.71118399735118
+MSMS Simplified,Dihedral angle (°),5,87.08023160744482
+MSMS Simplified,Dihedral angle (°),1,108.49784991632457
+MSMS Simplified,Dihedral angle (°),0.5,120.27816215711083
+MSMS Simplified,Dihedral angle (°),0.1,151.88332161924606
+MSMS Simplified,Dihedral angle (°),0.05,162.9559458984756
+MSMS Simplified,Dihedral angle (°),0.01,175.2672080758351
+MSMS Simplified,Dihedral angle (°),0.005,176.80839892638159
+MSMS Simplified,Dihedral angle (°),0.001,178.80079494481063
+Alpha Complex,Triangle angle (°),100,60.0
+Alpha Complex,Triangle angle (°),10,117.84896358474718
+Alpha Complex,Triangle angle (°),5,123.57879472384445
+Alpha Complex,Triangle angle (°),1,134.51153000436514
+Alpha Complex,Triangle angle (°),0.5,140.0189183055702
+Alpha Complex,Triangle angle (°),0.1,149.98346483082068
+Alpha Complex,Triangle angle (°),0.05,152.49339145686434
+Alpha Complex,Triangle angle (°),0.01,158.3898583639512
+Alpha Complex,Triangle angle (°),0.005,159.82370543565838
+Alpha Complex,Triangle angle (°),0.001,162.67791495280673
+Alpha Complex,Dihedral angle (°),100,45.86871089701703
+Alpha Complex,Dihedral angle (°),10,118.76370389266009
+Alpha Complex,Dihedral angle (°),5,135.10281171463663
+Alpha Complex,Dihedral angle (°),1,159.0845247299123
+Alpha Complex,Dihedral angle (°),0.5,167.61414789122875
+Alpha Complex,Dihedral angle (°),0.1,179.80194917222678
+Alpha Complex,Dihedral angle (°),0.05,179.94643548892833
+Alpha Complex,Dihedral angle (°),0.01,179.99138889093504
+Alpha Complex,Dihedral angle (°),0.005,179.99500946877228
+Alpha Complex,Dihedral angle (°),0.001,179.99993870642507
+NanoShaper gs = 0.5,Triangle angle (°),100,60.0
+NanoShaper gs = 0.5,Triangle angle (°),10,98.15782949129034
+NanoShaper gs = 0.5,Triangle angle (°),5,105.19989080878044
+NanoShaper gs = 0.5,Triangle angle (°),1,118.82602787246567
+NanoShaper gs = 0.5,Triangle angle (°),0.5,123.45357589867668
+NanoShaper gs = 0.5,Triangle angle (°),0.1,132.23332925708172
+NanoShaper gs = 0.5,Triangle angle (°),0.05,135.40118003647683
+NanoShaper gs = 0.5,Triangle angle (°),0.01,141.63978200449188
+NanoShaper gs = 0.5,Triangle angle (°),0.005,145.13315252044757
+NanoShaper gs = 0.5,Triangle angle (°),0.001,151.35744486659166
+NanoShaper gs = 0.5,Dihedral angle (°),100,21.71593224840399
+NanoShaper gs = 0.5,Dihedral angle (°),10,57.55254351479941
+NanoShaper gs = 0.5,Dihedral angle (°),5,65.54701648469121
+NanoShaper gs = 0.5,Dihedral angle (°),1,82.8705907114862
+NanoShaper gs = 0.5,Dihedral angle (°),0.5,90.04215746794283
+NanoShaper gs = 0.5,Dihedral angle (°),0.1,106.87026410623817
+NanoShaper gs = 0.5,Dihedral angle (°),0.05,114.00253691987304
+NanoShaper gs = 0.5,Dihedral angle (°),0.01,131.21099041965584
+NanoShaper gs = 0.5,Dihedral angle (°),0.005,138.30586884924273
+NanoShaper gs = 0.5,Dihedral angle (°),0.001,144.39449267355957
+EDTSurf gs = 0.5,Triangle angle (°),100,60.0
+EDTSurf gs = 0.5,Triangle angle (°),10,91.89267470520046
+EDTSurf gs = 0.5,Triangle angle (°),5,99.55696388171218
+EDTSurf gs = 0.5,Triangle angle (°),1,117.08353740781953
+EDTSurf gs = 0.5,Triangle angle (°),0.5,123.95699499380667
+EDTSurf gs = 0.5,Triangle angle (°),0.1,135.24867280440938
+EDTSurf gs = 0.5,Triangle angle (°),0.05,138.7238058904026
+EDTSurf gs = 0.5,Triangle angle (°),0.01,145.53354780355704
+EDTSurf gs = 0.5,Triangle angle (°),0.005,149.99685427305639
+EDTSurf gs = 0.5,Triangle angle (°),0.001,163.42371334091206
+EDTSurf gs = 0.5,Dihedral angle (°),100,15.594753633899762
+EDTSurf gs = 0.5,Dihedral angle (°),10,44.88387064398643
+EDTSurf gs = 0.5,Dihedral angle (°),5,54.73249141255524
+EDTSurf gs = 0.5,Dihedral angle (°),1,76.32591519511998
+EDTSurf gs = 0.5,Dihedral angle (°),0.5,82.49809209375225
+EDTSurf gs = 0.5,Dihedral angle (°),0.1,108.2425722759683
+EDTSurf gs = 0.5,Dihedral angle (°),0.05,124.26987218461426
+EDTSurf gs = 0.5,Dihedral angle (°),0.01,157.49963638803396
+EDTSurf gs = 0.5,Dihedral angle (°),0.005,168.71558476017248
+EDTSurf gs = 0.5,Dihedral angle (°),0.001,175.87500587496265
