@@ -12,7 +12,7 @@ using AlphaSurf as the residue encoder:
   conformation), with hydrogens removed as in Guo et al.'s processed input;
 - no adaptability, correlations, or other trajectory-derived summary features;
 - unweighted two-class cross-entropy;
-- pooled residue-level AUROC, AUPRC, F1, precision, recall, and accuracy.
+- Guo-style factorized batch-64 evaluation.
 
 The raw MISATO HDF5 file contains `trajectory_coordinates` directly, so the
 loader reads a single frame lazily and does not require the separate
@@ -35,3 +35,19 @@ sbatch alphasurf/tasks/misato_binding_site/train_jz.sh
 
 The split is always applied at complex level: all frames belonging to a complex
 remain in the same train, validation, or test partition.
+
+## First-frame evaluation
+
+[evaluate_guo_batch64.py](evaluate_guo_batch64.py) implements the factorized
+batch-64 aggregation used by Guo et al. It preserves test-split order, groups
+systems into chunks of 64, pools residue predictions within each chunk, and
+reports the residue-count-weighted mean across chunks. F1 uses a threshold
+selected on frame-0 validation predictions and frozen for frame-0 testing;
+AUROC and AUPRC do not use a fixed threshold.
+
+```bash
+sbatch alphasurf/tasks/misato_binding_site/evaluate_guo_batch64_jz.sh \
+  /path/to/seed1.ckpt \
+  /path/to/seed2.ckpt \
+  /path/to/seed3.ckpt
+```

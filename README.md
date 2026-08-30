@@ -255,4 +255,10 @@ python -m alphasurf.tasks.misato_binding_site.train \
   eval_frame_mode=first
 ```
 
+Publication evaluation uses Guo et al.'s factorized batch-64 aggregation:
+systems remain in test-split order, residue predictions are pooled within each
+64-system chunk, and chunk metrics are averaged with residue-count weights.
+The implementation is in
+[`evaluate_guo_batch64.py`](alphasurf/tasks/misato_binding_site/evaluate_guo_batch64.py).
+
 See the [MISATO task README](alphasurf/tasks/misato_binding_site/README.md) for the SLURM launchers and additional evaluation utilities.
