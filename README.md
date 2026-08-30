@@ -1,8 +1,6 @@
 # AlphaSurf
 
-Anonymous implementation accompanying the submission. AlphaSurf extends
-[AtomSurf](https://arxiv.org/abs/2309.16519) with on-the-fly alpha-complex
-surface generation.
+Implementation of AlphaSurf.
 
 ## Table of Contents
 
