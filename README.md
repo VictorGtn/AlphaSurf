@@ -146,16 +146,20 @@ Every task takes its data directory as `data_dir=`; there is no default.
 <summary><b>PINDER-Pair</b> — PDBs and split CSVs via the <code>pinder</code> package</summary>
 
 `pinder` is not in `requirements.txt`; it is only needed for this step, and it
-fetches the structures itself on first use.
+fetches the structures itself on first use. Use 0.6.0 or newer: earlier versions
+read from a Google Cloud bucket that no longer serves anonymous requests.
 
 ```bash
-pip install pinder==0.5.0
+pip install 'pinder>=0.6.0'
 
 python alphasurf/tasks/pinder_pair/preprocess.py \
   --output_dir data/pinder-pair \
   --test_setting all \
   --num_workers 30
 ```
+
+The structures are cached under `$PINDER_BASE_DIR`, defaulting to
+`~/.local/share/pinder`.
 
 </details>
 
