@@ -16,8 +16,6 @@ Reference implementation.
     - [MISATO binding-site prediction](#misato-binding-site-prediction)
     - [S3F pretraining on CATH](#s3f-pretraining-on-cath)
     - [ProteinGym](#proteingym)
-- [Inference](#inference)
-- [Reproducing the figures](#reproducing-the-figures)
 
 ## Description
 
@@ -341,55 +339,3 @@ python evaluate.py \
 (`num_scored`, `num_groups_geometry_failed`, `num_positions_low_plddt`); read
 those next to the Spearman correlation. See the
 [ProteinGym task README](alphasurf/tasks/proteingym/README.md).
-
-## Inference
-
-Per-residue graph and per-vertex surface embeddings for a single protein.
-
-**Location:** `alphasurf/tasks/inference/`
-
-```bash
-cd alphasurf/tasks/inference
-
-python embed.py --ckpt /path/to/model.ckpt --pdb protein.pdb
-```
-
-Takes a `PinderPairModule` checkpoint from the [PINDER-Pair](#pinder-pair) task;
-no weights ship with this repository. Writes a `.pt` holding `graph_embedding`
-(N_residues x D), `surface_embedding` (N_verts x D), `graph_node_pos` and
-`surface_verts`.
-
-## Reproducing the figures
-
-Figure scripts live in `plotting/`, grouped by subject, and write to
-`plotting/figures/<group>/`. Each resolves its inputs from the repo root, so it
-runs from any directory.
-
-```bash
-python plotting/pinder_pair/plot_perf_vs_throughput_seeds.py
-python plotting/masif_ligand/plot_perf_vs_throughput.py
-```
-
-The spectral figures need a computation step first:
-
-```bash
-python scripts/spectral_comparison.py \
-  --pdb-dir /path/to/pinder/pdb \
-  --output-dir scripts/outputs/spectral_heat \
-  --workers 30
-
-python plotting/spectral/plot_spectral_distributions.py --input-dir scripts/outputs/spectral_heat
-python plotting/spectral/plot_kernel_profile.py         --input-dir scripts/outputs/spectral_heat
-python plotting/spectral/plot_dirac_diffusion.py        --pdb /path/to/protein.pdb
-```
-
-`plot_dirac_diffusion.py` uses PyMOL by default; `--render mesh` or
-`--render vector` draw with matplotlib instead. Its `sas` kinds need
-`cgal_sbl_sampling`, hence `SBL_ROOT` at build time; every other kind works
-without it.
-
-Every PINDER AUROC figure is computed on the frozen system set in
-`plotting/pinder_pair/common_systems.py` (1835 holo, 309 apo, 1582 af2), and a
-run not covering it is rejected. Scripts stand alone except
-`masif_ligand/plot_perf_vs_throughput_combined.py`; see
-[`plotting/README.md`](plotting/README.md).
