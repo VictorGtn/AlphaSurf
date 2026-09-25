@@ -16,8 +16,12 @@ directory, and writes figures (plus the CSV summaries it derives) under
   which rejects any run that does not cover the set.
 - `masif_ligand/` — MaSIF-Ligand figures: performance vs throughput (alone and
   combined with PINDER), standalone legends, surface-generation benchmark bars.
-  The combined panels read the PINDER summary CSVs from
-  `figures/pinder_pair/`, so regenerate those first.
+  The combined panels read `figures/pinder_pair/perf_vs_throughput_repaired_common_all_summary.csv`
+  and `..._repaired_common_homo_hetero_summary.csv` by name. Those names are not
+  the default, so produce them first by running
+  `pinder_pair/plot_perf_vs_throughput_seeds.py` twice, once plain and once with
+  `--homo-hetero`, passing the matching `--output` stem each time (see the
+  repository README).
 - `benchmarks/` — surface-generation timing, discard rate and operator-time
   benchmarks. The `plot_*_discard_rate.py` / `plot_*operator*.py` scripts run
   the benchmark themselves (slurm launchers next to them) and read PDBs from

@@ -411,8 +411,19 @@ python plotting/spectral/plot_dirac_diffusion.py        --pdb /path/to/protein.p
 `sas` and `sas_dec` mesh kinds need the `cgal_sbl_sampling` module, which
 requires `SBL_ROOT` at build time; every other kind works without it.
 
-The MaSIF-Ligand combined panels read the PINDER summary CSVs from
-`plotting/figures/pinder_pair/`, so run the PINDER scripts first. Every PINDER
+The MaSIF-Ligand combined panels read two PINDER summary CSVs by name, so
+produce them first with these exact output stems:
+
+```bash
+python plotting/pinder_pair/plot_perf_vs_throughput_seeds.py \
+  --output plotting/figures/pinder_pair/perf_vs_throughput_repaired_common_all
+python plotting/pinder_pair/plot_perf_vs_throughput_seeds.py --homo-hetero \
+  --output plotting/figures/pinder_pair/perf_vs_throughput_repaired_common_homo_hetero
+
+python plotting/masif_ligand/plot_perf_vs_throughput_combined.py
+```
+
+Every PINDER
 AUROC figure is computed on the frozen common system set defined in
 `plotting/pinder_pair/common_systems.py` (1835 holo, 309 apo, 1582 af2); a run
 that does not cover that set is rejected. See
