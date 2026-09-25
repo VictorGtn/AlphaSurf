@@ -63,7 +63,7 @@ Cached data lives under `data/`: `data/pinder-pair{,-all,-inf}/`, `data/masif_li
 ## Native extensions
 
 - `cgal_alpha_bindings/` — CMake + pybind11, one module per `.cpp`: `cgal_alpha`, `cgal_alpha_algo2` (primary), `cgal_alpha_raw`, `cgal_alpha_tagged`, `cgal_pmp_repair`, `cgal_alpha_edge_analysis`, `cgal_patch_graph` (spherical patch graphs via SBL's exact spherical kernel, feeds `patch_operators`). Build: `mkdir build && cd build && cmake .. && make cgal_alpha_algo2 -jN`. Needs CGAL 5.x+, GMP, MPFR, pybind11, CMake 3.16+, Python 3.10+. Only `cgal_alpha_algo2` is in the default target; the rest are `EXCLUDE_FROM_ALL` and are built by name. `cgal_alpha` and `cgal_patch_graph` are declared only when `SBL_ROOT` points at an SBL checkout. The `.so` lands in `cgal_alpha_bindings/build/` and is auto-discovered relative to the source tree, but slurm workers using `spawn`/`forkserver` need `CGAL_BINDINGS_DIR` and `PYTHONPATH` set explicitly. `build_py310/` is a Python-version-specific build tree.
-- `cpp_curvature/` — single-file pybind11 extension built with `python build.py` (raw `g++ -O3 -shared -std=c++17 -fPIC`, Eigen3 include auto-discovered from the conda prefix, `/usr/include/eigen3`, or the venv). Equivalent to `igl.per_vertex_normals` but takes custom vertex normals. Prebuilt `.so` for cpython 3.10 and 3.12 are checked in.
+- `cpp_curvature/` — single-file pybind11 extension built with `python build.py` (raw `g++ -O3 -shared -std=c++17 -fPIC`, Eigen3 include auto-discovered from the conda prefix, `/usr/include/eigen3`, or the venv). Equivalent to `igl.per_vertex_normals` but takes custom vertex normals. The `.so` is a build artifact and is not tracked; build it before running the tests.
 
 ## Tasks
 
