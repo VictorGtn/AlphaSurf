@@ -6,6 +6,7 @@ from torch_geometric.data import Data
 
 from alphasurf.tasks.s3f_pretrain.model import (
     ESM_EMBED_DIM,
+    S3FFullSurfaceESMInjector,
     S3FPretrainNet,
     SurfaceESMInjector,
 )
@@ -55,6 +56,35 @@ class SurfaceESMInjectorTest(TestCase):
         self.assertTrue(torch.allclose(output.x[:, 0], torch.tensor([7.0, 8.0])))
         self.assertTrue(torch.allclose(output.x[:, 1], torch.tensor([2.0, 20.0])))
 
+    def test_s3f_full_projection_shape_and_parameter_count(self):
+        injector = S3FFullSurfaceESMInjector(surface_dim=22, k=3, dropout=0.1)
+        parameter_count = sum(p.numel() for p in injector.parameters())
+        expected = (
+            (ESM_EMBED_DIM + 1) * ESM_EMBED_DIM
+            + (ESM_EMBED_DIM + 22) * (ESM_EMBED_DIM * 2)
+            + ESM_EMBED_DIM * 2
+            + 2 * ESM_EMBED_DIM * 2
+            + (ESM_EMBED_DIM * 2) * ESM_EMBED_DIM
+            + ESM_EMBED_DIM
+        )
+        self.assertEqual(parameter_count, expected)
+
+        graph = Data(
+            node_pos=torch.tensor(
+                [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [1.0, 0.0, 0.0]]
+            ),
+            batch=torch.zeros(3, dtype=torch.long),
+        )
+        surface = Data(
+            x=torch.zeros((3, 22)),
+            verts=torch.tensor(
+                [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0], [1.0, 0.0, 0.0]]
+            ),
+            batch=torch.zeros(3, dtype=torch.long),
+        )
+        output = injector(surface, graph, torch.zeros((3, ESM_EMBED_DIM)))
+        self.assertEqual(tuple(output.x.shape), (3, ESM_EMBED_DIM))
+
     def test_exact_encoder_ignores_alpha_surface_injection(self):
         encoder_cfg = SimpleNamespace(name="s3f_exact", blocks=[])
         head_cfg = SimpleNamespace(encoded_dims=128, dropout=0.5)
@@ -81,3 +111,22 @@ class SurfaceESMInjectorTest(TestCase):
 
         self.assertIsInstance(model.surface_esm_injector, SurfaceESMInjector)
         self.assertEqual(model.surface_esm_injector.k, 3)
+
+    def test_alpha_encoder_enables_s3f_full_injection(self):
+        encoder_cfg = SimpleNamespace(name="pronet_gvpencoder", blocks=[])
+        head_cfg = SimpleNamespace(encoded_dims=128, dropout=0.5)
+        surface_esm_cfg = SimpleNamespace(
+            enabled=True,
+            mode="s3f_full",
+            input_dim=22,
+            k=3,
+            dropout=0.1,
+        )
+
+        model = S3FPretrainNet(
+            encoder_cfg,
+            head_cfg,
+            cfg_surface_esm=surface_esm_cfg,
+        )
+
+        self.assertIsInstance(model.surface_esm_injector, S3FFullSurfaceESMInjector)

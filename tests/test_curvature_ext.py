@@ -7,10 +7,55 @@ import time
 
 import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from scripts.test_principal_curvature import make_icosphere
+CURVATURE_EXT_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "cpp_curvature"
+)
+sys.path.insert(0, os.path.abspath(CURVATURE_EXT_DIR))
 
 # ---- Mesh generators ----
+
+
+def make_icosphere(subdivisions=2):
+    """Unit sphere built by recursively subdividing an icosahedron."""
+    t = (1.0 + np.sqrt(5.0)) / 2.0
+    V = np.array(
+        [
+            [-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0],
+            [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t],
+            [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1],
+        ],
+        dtype=np.float64,
+    )
+    F = np.array(
+        [
+            [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
+            [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+            [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
+            [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
+        ],
+        dtype=np.int64,
+    )
+
+    for _ in range(subdivisions):
+        midpoints = {}
+        faces = []
+
+        def midpoint(i, j):
+            key = (min(i, j), max(i, j))
+            if key not in midpoints:
+                midpoints[key] = len(V_list)
+                V_list.append((V_list[i] + V_list[j]) / 2.0)
+            return midpoints[key]
+
+        V_list = list(V)
+        for a, b, c in F:
+            ab, bc, ca = midpoint(a, b), midpoint(b, c), midpoint(c, a)
+            faces += [[a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]]
+        V = np.array(V_list, dtype=np.float64)
+        F = np.array(faces, dtype=np.int64)
+
+    V /= np.linalg.norm(V, axis=1, keepdims=True)
+    return V, F
 
 
 def make_torus(R=1.0, r=0.4, n_major=40, n_minor=20):
@@ -145,11 +190,12 @@ def make_gaussian_bump(n=30, extent=2.0, sigma=0.5):
 
 
 def safe_normals(V, F):
+    # Area-weighted, matching the extension's internal igl::per_vertex_normals
+    # default: the unnormalized cross product is already the unit face normal
+    # scaled by twice the triangle area. Degenerate faces contribute nothing.
     e1 = V[F[:, 1]] - V[F[:, 0]]
     e2 = V[F[:, 2]] - V[F[:, 0]]
     fn = np.cross(e1, e2)
-    norms = np.linalg.norm(fn, axis=1, keepdims=True)
-    fn = np.where(norms > 1e-12, fn / norms, 0.0)
     vn = np.zeros_like(V)
     np.add.at(vn, F[:, 0], fn)
     np.add.at(vn, F[:, 1], fn)
@@ -164,7 +210,8 @@ def compare_vs_igl(V, F, label):
     import igl
 
     PD1, PD2, PV1, PV2 = curvature_ext.principal_curvature(V, F)
-    PD1_i, PD2_i, PV1_i, PV2_i = igl.principal_curvature(V, F)
+    # libigl also returns the list of vertices it could not fit a quadric to.
+    PD1_i, PD2_i, PV1_i, PV2_i = igl.principal_curvature(V, F)[:4]
 
     mask = (np.abs(PV1_i) > 1e-10) | (np.abs(PV2_i) > 1e-10)
     n_valid = np.sum(mask)
@@ -378,7 +425,7 @@ def test_protein_surfaces():
         vn = data.vnormals.numpy().astype(np.float64)
 
         PD1, PD2, PV1, PV2 = curvature_ext.principal_curvature(V, F, normals=vn)
-        _, _, PV1_i, PV2_i = igl.principal_curvature(V, F)
+        _, _, PV1_i, PV2_i = igl.principal_curvature(V, F)[:4]
 
         mask = (np.abs(PV1_i) > 1e-10) | (np.abs(PV2_i) > 1e-10)
         if mask.sum() < 10:
@@ -427,8 +474,6 @@ def test_speed():
 
 
 def main():
-    sys.path.insert(0, os.path.dirname(__file__))
-
     print("=" * 60)
     print("  curvature_ext - comprehensive test suite")
     print("=" * 60 + "\n")

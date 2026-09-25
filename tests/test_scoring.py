@@ -15,12 +15,15 @@ from alphasurf.tasks.proteingym.dataset import (
     load_dms_assay,
     load_reference_metadata,
 )
-from alphasurf.tasks.proteingym.evaluate import resolve_position_offset
+from alphasurf.tasks.proteingym.evaluate import (
+    proteingym_aggregate,
+    resolve_position_offset,
+)
 from alphasurf.tasks.proteingym.scoring import (
     MaskedGeometryDataset,
     _scoring_window,
     get_optimal_window,
-    score_assay_option_f,
+    score_assay_alphasurf,
 )
 
 
@@ -40,6 +43,44 @@ class FakeESMModel:
         return (
             torch.zeros(total_residues, 1280, device=device, dtype=dtype),
             torch.zeros(total_residues, 20, device=device),
+        )
+
+
+def summary_row(dms_id, uniprot_id, category, spearman):
+    return {
+        "DMS_id": dms_id,
+        "UniProt_ID": uniprot_id,
+        "coarse_selection_type": category,
+        "spearmanr": spearman,
+    }
+
+
+class ProteinGymAggregateTest(TestCase):
+    def test_assays_are_averaged_within_uniprot_before_category(self):
+        rows = [
+            summary_row("a", "U", "Binding", 0.0),
+            summary_row("b", "U", "Binding", 1.0),
+            summary_row("c", "V", "Stability", 0.2),
+        ]
+        result = proteingym_aggregate(rows)
+        # U collapses to 0.5, so the two categories average to 0.35 despite
+        # Binding holding twice as many assays.
+        self.assertAlmostEqual(result["proteingym_spearman"], 0.35)
+        self.assertEqual(result["n_proteins"], 2)
+        self.assertAlmostEqual(result["per_category"]["Binding"], 0.5)
+
+    def test_categories_are_weighted_equally(self):
+        rows = [summary_row(f"a{i}", f"U{i}", "Stability", 1.0) for i in range(10)]
+        rows.append(summary_row("b", "V", "Binding", 0.0))
+        self.assertAlmostEqual(proteingym_aggregate(rows)["proteingym_spearman"], 0.5)
+
+    def test_rows_without_category_or_score_are_skipped(self):
+        self.assertEqual(proteingym_aggregate([]), {})
+        self.assertEqual(
+            proteingym_aggregate([summary_row("a", "U", None, 0.5)]), {}
+        )
+        self.assertEqual(
+            proteingym_aggregate([summary_row("a", "U", "Binding", float("nan"))]), {}
         )
 
 
@@ -198,7 +239,7 @@ class S3FWindowTest(TestCase):
 
         loader = RecordingLoader()
         module = SimpleNamespace(model=FakeESMModel())
-        scores = score_assay_option_f(
+        scores, _ = score_assay_alphasurf(
             module,
             loader,
             "test.pdb",
@@ -245,7 +286,7 @@ class S3FWindowTest(TestCase):
                 cfg=SimpleNamespace(structure_mask=SimpleNamespace(mode="alanine"))
             ),
         )
-        scores = score_assay_option_f(
+        scores, _ = score_assay_alphasurf(
             module,
             loader,
             "test.pdb",
@@ -276,7 +317,7 @@ class S3FWindowTest(TestCase):
             mutants=[mutant],
         )
         module = SimpleNamespace(model=FakeESMModel())
-        scores = score_assay_option_f(
+        scores, _ = score_assay_alphasurf(
             module,
             NullProteinLoader(),
             "test.pdb",
