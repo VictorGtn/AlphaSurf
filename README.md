@@ -1,6 +1,6 @@
-# AlphaSurf
+# AlphaSurf: On-the-Fly Surface Computations for Protein Representation Learning
 
-Implementation of AlphaSurf.
+Reference implementation.
 
 ## Table of Contents
 

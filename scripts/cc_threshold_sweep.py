@@ -1626,6 +1626,12 @@ def run_plots(
         y_scale_power=sweep_y_scale_power,
         x_max=sweep_x_max,
     )
+    # The sweep figure needs only the summary; the diagnostics below read the
+    # per-protein dump, which a sweep-free rerun does not have.
+    if not os.path.exists(paths.per_protein_csv):
+        print(f"  skipping diagnostics: {paths.per_protein_csv} not found")
+        return
+
     plot_status_breakdown(paths)
     plot_per_method_errors(paths)
     plot_failure_overlap(paths)
