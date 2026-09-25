@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Export standalone legends for the performance figures."""
 
-from pathlib import Path
-
 import matplotlib.pyplot as plt
 
-from plot_perf_vs_throughput_combined import COLORS
+from plot_perf_vs_throughput_combined import COLORS, FIG_DIR
 
 plt.rcParams.update({"font.size": 14})
 
@@ -93,7 +91,7 @@ def detailed_legend(output):
 
 
 def main():
-    output_dir = Path(__file__).with_name("perf_vs_throughput_independent_panels")
+    output_dir = FIG_DIR / "perf_vs_throughput_independent_panels"
     output_dir.mkdir(parents=True, exist_ok=True)
     horizontal_legend(output_dir / "legend_horizontal")
     detailed_legend(output_dir / "legend_detailed_vertical")

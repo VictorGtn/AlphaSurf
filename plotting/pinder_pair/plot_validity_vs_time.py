@@ -1,5 +1,9 @@
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+
+FIG_DIR = Path(__file__).resolve().parents[1] / "figures" / "pinder_pair"
 
 data = {
     "Alpha Complex": {
@@ -162,6 +166,7 @@ handles.append(
 ax.legend(handles=handles, loc="upper left", fontsize=9, framealpha=0.9)
 
 plt.tight_layout()
-plt.savefig("validity_vs_time.png", dpi=200, bbox_inches="tight")
-plt.savefig("validity_vs_time.pdf", bbox_inches="tight")
+FIG_DIR.mkdir(parents=True, exist_ok=True)
+plt.savefig(FIG_DIR / "validity_vs_time.png", dpi=200, bbox_inches="tight")
+plt.savefig(FIG_DIR / "validity_vs_time.pdf", bbox_inches="tight")
 print("Saved validity_vs_time.png / .pdf")

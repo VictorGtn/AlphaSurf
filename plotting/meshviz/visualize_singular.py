@@ -19,16 +19,18 @@ try:
 except ImportError:
     pass
 
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+project_root = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
+
+FIG_DIR = os.path.join(project_root, "plotting", "figures", "meshviz")
 
 try:
     import cgal_alpha  # noqa: E402
 except ImportError:
-    build_dir = (
-        "/cluster/CBIO/data2/vgertner/alphasurf/alphasurf/cgal_alpha_bindings/build"
-    )
+    build_dir = os.path.join(project_root, "cgal_alpha_bindings", "build")
     sys.path.append(build_dir)
     import cgal_alpha  # noqa: E402
 
@@ -439,12 +441,16 @@ def render_comparison(
 def main():
     parser = argparse.ArgumentParser(description="Visualize alpha complex")
     parser.add_argument("pdb_file", help="Path to PDB")
-    parser.add_argument("--out", default="compare.png", help="Output path")
+    parser.add_argument(
+        "--out", default=os.path.join(FIG_DIR, "compare.png"), help="Output path"
+    )
     parser.add_argument("--alpha", type=float, default=0.0)
     parser.add_argument("--no-render", action="store_true")
     parser.add_argument("--mode", choices=["raw", "repaired", "both"], default="both")
     parser.add_argument("--bowtie-only", action="store_true")
     args = parser.parse_args()
+
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
 
     if not os.path.exists(args.pdb_file):
         print(f"PDB not found: {args.pdb_file}")

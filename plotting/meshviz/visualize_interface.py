@@ -16,8 +16,9 @@ import numpy as np
 import torch
 import plotly.graph_objects as go
 
-# Add alphasurf to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../"))
+sys.path.insert(
+    0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
 
 from alphasurf.protein.protein_loader import ProteinLoader
 from omegaconf import OmegaConf
@@ -107,7 +108,6 @@ def visualize_graph(
         if res_idx < len(colors_2):
             colors_2[res_idx] = "orange"
 
-    # Create plot
     fig = go.Figure()
 
     # Protein 1 (blue/red)

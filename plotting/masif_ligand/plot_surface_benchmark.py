@@ -8,6 +8,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+FIG_DIR = Path(__file__).resolve().parents[1] / "figures" / "masif_ligand"
+
 
 ORDER = (
     ("alpha_complex", "Alpha-complex"),
@@ -42,6 +44,7 @@ def make_plot(labels, means, errors, ylabel, title, output):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("summary", type=Path)
+    parser.add_argument("--output-dir", type=Path, default=FIG_DIR)
     args = parser.parse_args()
     rows = load_rows(args.summary)
     selected = []
@@ -65,7 +68,8 @@ def main():
     timing_std = [float(item[1]["std_surface_ms"]) for item in selected]
     vertices = [float(item[1]["mean_vertices"]) for item in selected]
     vertices_std = [float(item[1]["std_vertices"]) for item in selected]
-    output_dir = args.summary.parent
+    output_dir = args.output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
     make_plot(
         labels,
         timing,

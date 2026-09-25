@@ -52,7 +52,8 @@ PINDER_TIME = {
 }
 PINDER_THRESHOLD = 0.0342
 
-PINDER_DIR = Path(__file__).resolve().parents[1] / "pinder_pair"
+FIG_DIR = Path(__file__).resolve().parents[1] / "figures" / "masif_ligand"
+PINDER_DIR = Path(__file__).resolve().parents[1] / "figures" / "pinder_pair"
 PINDER_SUMMARY = PINDER_DIR / "perf_vs_throughput_repaired_common_all_summary.csv"
 PINDER_COMPLEX_TYPE_SUMMARY = (
     PINDER_DIR / "perf_vs_throughput_repaired_common_homo_hetero_summary.csv"
@@ -273,7 +274,7 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path(__file__).with_name("perf_vs_throughput_independent_panels"),
+        default=FIG_DIR / "perf_vs_throughput_independent_panels",
     )
     args = parser.parse_args()
     export_independent(args.output_dir)

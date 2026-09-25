@@ -5,8 +5,9 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.lines import Line2D
 
+from common_systems import FIG_DIR, SETTINGS, TASK_DIR, common_ids, read_results
 
-SETTINGS = ("holo", "apo", "af2")
+REPAIRED_DIR = TASK_DIR / "per_system_results_perf_rebuilt_explicit"
 METHODS = {
     "Alpha Complex": {
         "seconds": 1 / 38.01,
@@ -14,9 +15,9 @@ METHODS = {
         "marker": "o",
         "grid_scale": "",
         "runs": {
-            2024: "methods/exp_h100_463477_{setting}.csv",
-            2025: "noise/none_g0_m0_s2025_{setting}.csv",
-            2026: "noise/none_g0_m0_s2026_{setting}.csv",
+            2024: "alpha_complex_s2024_provided_{setting}.csv",
+            2025: "alpha_complex_s2025_provided_{setting}.csv",
+            2026: "alpha_complex_s2026_provided_{setting}.csv",
         },
     },
     "EDTsurf gs=0.3": {
@@ -25,9 +26,9 @@ METHODS = {
         "marker": "o",
         "grid_scale": "0.3",
         "runs": {
-            2024: "methods/disk_edtsurf_1.0_gs0.3_49748_{setting}.csv",
-            2025: "new/edtsurf_gs0.3_s2025_provided_{setting}.csv",
-            2026: "new/edtsurf_gs0.3_s2026_provided_{setting}.csv",
+            2024: "edtsurf_gs0.3_s2024_provided_{setting}.csv",
+            2025: "edtsurf_gs0.3_s2025_provided_{setting}.csv",
+            2026: "edtsurf_gs0.3_s2026_provided_{setting}.csv",
         },
     },
     "EDTsurf gs=0.4": {
@@ -36,9 +37,9 @@ METHODS = {
         "marker": "o",
         "grid_scale": "0.4",
         "runs": {
-            2024: "methods/disk_edtsurf_1.0_gs0.4_49749_{setting}.csv",
-            2025: "new/edtsurf_gs0.4_s2025_provided_{setting}.csv",
-            2026: "new/edtsurf_gs0.4_s2026_provided_{setting}.csv",
+            2024: "edtsurf_gs0.4_s2024_provided_{setting}.csv",
+            2025: "edtsurf_gs0.4_s2025_provided_{setting}.csv",
+            2026: "edtsurf_gs0.4_s2026_provided_{setting}.csv",
         },
     },
     "EDTsurf gs=0.5": {
@@ -47,9 +48,9 @@ METHODS = {
         "marker": "o",
         "grid_scale": "0.5",
         "runs": {
-            2024: "methods/disk_edtsurf_1.0_gs0.5_49751_{setting}.csv",
-            2025: "new/edtsurf_gs0.5_s2025_provided_{setting}.csv",
-            2026: "new/edtsurf_gs0.5_s2026_provided_{setting}.csv",
+            2024: "edtsurf_gs0.5_s2024_provided_{setting}.csv",
+            2025: "edtsurf_gs0.5_s2025_provided_{setting}.csv",
+            2026: "edtsurf_gs0.5_s2026_provided_{setting}.csv",
         },
     },
     "NanoShaper gs=0.4": {
@@ -58,9 +59,9 @@ METHODS = {
         "marker": "o",
         "grid_scale": "0.4",
         "runs": {
-            2024: "methods/disk_nanoshaper_1.0_gs0.4_66345_{setting}.csv",
-            2025: "new/nanoshaper_gs0.4_s2025_provided_{setting}.csv",
-            2026: "new/nanoshaper_gs0.4_s2026_provided_{setting}.csv",
+            2024: "nanoshaper_gs0.4_s2024_provided_{setting}.csv",
+            2025: "nanoshaper_gs0.4_s2025_provided_{setting}.csv",
+            2026: "nanoshaper_gs0.4_s2026_provided_{setting}.csv",
         },
     },
     "NanoShaper gs=0.5": {
@@ -69,9 +70,9 @@ METHODS = {
         "marker": "o",
         "grid_scale": "0.5",
         "runs": {
-            2024: "methods/disk_nanoshaper_1.0_gs0.5_66341_{setting}.csv",
-            2025: "new/nanoshaper_gs0.5_s2025_provided_{setting}.csv",
-            2026: "new/nanoshaper_gs0.5_s2026_provided_{setting}.csv",
+            2024: "nanoshaper_gs0.5_s2024_provided_{setting}.csv",
+            2025: "nanoshaper_gs0.5_s2025_provided_{setting}.csv",
+            2026: "nanoshaper_gs0.5_s2026_provided_{setting}.csv",
         },
     },
     "MSMS": {
@@ -80,201 +81,55 @@ METHODS = {
         "marker": "o",
         "grid_scale": "",
         "runs": {
-            2024: "methods/disk_msms_0.1_66185_{setting}.csv",
-            2025: "new/msms_0.1_s2025_provided_{setting}.csv",
-            2026: "new/msms_0.1_s2026_provided_{setting}.csv",
+            2024: "msms_0.1_dist2.0_s2024_provided_{setting}.csv",
+            2025: "msms_0.1_dist2.0_s2025_provided_{setting}.csv",
+            2026: "msms_0.1_dist2.0_s2026_provided_{setting}.csv",
         },
     },
 }
 
-REPAIRED_RUNS = {
-    "Alpha Complex": {
-        2024: "alpha_complex_s2024_provided_{setting}.csv",
-        2025: "alpha_complex_s2025_provided_{setting}.csv",
-        2026: "alpha_complex_s2026_provided_{setting}.csv",
-    },
-    "EDTsurf gs=0.3": {
-        2024: "edtsurf_gs0.3_s2024_provided_{setting}.csv",
-        2025: "edtsurf_gs0.3_s2025_provided_{setting}.csv",
-        2026: "edtsurf_gs0.3_s2026_provided_{setting}.csv",
-    },
-    "EDTsurf gs=0.4": {
-        2024: "edtsurf_gs0.4_s2024_provided_{setting}.csv",
-        2025: "edtsurf_gs0.4_s2025_provided_{setting}.csv",
-        2026: "edtsurf_gs0.4_s2026_provided_{setting}.csv",
-    },
-    "EDTsurf gs=0.5": {
-        2024: "edtsurf_gs0.5_s2024_provided_{setting}.csv",
-        2025: "edtsurf_gs0.5_s2025_provided_{setting}.csv",
-        2026: "edtsurf_gs0.5_s2026_provided_{setting}.csv",
-    },
-    "NanoShaper gs=0.4": {
-        2024: "nanoshaper_gs0.4_s2024_provided_{setting}.csv",
-        2025: "nanoshaper_gs0.4_s2025_provided_{setting}.csv",
-        2026: "nanoshaper_gs0.4_s2026_provided_{setting}.csv",
-    },
-    "NanoShaper gs=0.5": {
-        2024: "nanoshaper_gs0.5_s2024_provided_{setting}.csv",
-        2025: "nanoshaper_gs0.5_s2025_provided_{setting}.csv",
-        2026: "nanoshaper_gs0.5_s2026_provided_{setting}.csv",
-    },
-    "MSMS": {
-        2024: "msms_0.1_dist2.0_s2024_provided_{setting}.csv",
-        2025: "msms_0.1_dist2.0_s2025_provided_{setting}.csv",
-        2026: "msms_0.1_dist2.0_s2026_provided_{setting}.csv",
-    },
-}
 
-
-def single_component_ids(atom_csv, system_ids, setting):
-    atoms = pd.read_csv(atom_csv, usecols=["pdb_name", "n_components", "error"])
-    atoms = atoms[atoms["error"].isna()]
-    component_map = dict(zip(atoms["pdb_name"], atoms["n_components"]))
-
-    def count(system_id, side):
-        for name in (
-            f"{system_id}_{side}_{setting}.pdb",
-            f"{system_id}_{side}.pdb",
-        ):
-            if name in component_map:
-                return component_map[name]
-        return None
-
-    return {
-        system_id
-        for system_id in system_ids
-        if count(system_id, "L") == 1 and count(system_id, "R") == 1
-    }
-
-
-def benchmark_ids(method_dir, atom_csv, setting):
-    files = sorted(method_dir.glob(f"*_{setting}.csv"))
-    if len(files) < 2:
-        raise ValueError(f"No method benchmark CSVs for {setting} in {method_dir}")
-    common = set(pd.read_csv(files[0], usecols=["system_id"])["system_id"])
-    for path in files[1:]:
-        common.intersection_update(
-            pd.read_csv(path, usecols=["system_id"])["system_id"]
-        )
-    return single_component_ids(atom_csv, common, setting)
-
-
-def result_path(template, setting, method_dir, noise_dir, new_dir):
-    prefix, relative = template.split("/", 1)
-    roots = {"methods": method_dir, "noise": noise_dir, "new": new_dir}
-    return roots[prefix] / relative.format(setting=setting)
-
-
-def summarize(method_dir, noise_dir, new_dir, atom_csv):
+def summarize():
     per_run = []
     for setting in SETTINGS:
-        original_ids = benchmark_ids(method_dir, atom_csv, setting)
-        loaded = {}
-        ids = set(original_ids)
+        print(f"{setting}: {len(common_ids(setting))} common systems")
         for method, config in METHODS.items():
             for seed, template in config["runs"].items():
-                path = result_path(template, setting, method_dir, noise_dir, new_dir)
-                results = pd.read_csv(path, usecols=["system_id", "auroc"])
-                loaded[method, seed] = (path, results)
-                ids.intersection_update(results["system_id"])
-        print(
-            f"{setting}: {len(original_ids)} original benchmark systems, "
-            f"{len(ids)} common across all seeds"
-        )
+                path = REPAIRED_DIR / template.format(setting=setting)
+                values = read_results(path, setting, ("system_id", "auroc"))["auroc"]
+                per_run.append(
+                    {
+                        "method": method,
+                        "setting": setting,
+                        "seed": seed,
+                        "auroc": values.mean(),
+                        "n_systems": len(values),
+                        "file": path.name,
+                    }
+                )
 
+    per_run = pd.DataFrame(per_run)
+    aggregate = per_run.groupby(["method", "setting"], as_index=False, sort=False).agg(
+        auroc_mean=("auroc", "mean"),
+        auroc_std=("auroc", "std"),
+        n_seeds=("seed", "nunique"),
+        n_systems=("n_systems", "min"),
+    )
+    return per_run, aggregate
+
+
+def summarize_by_complex_type():
+    per_run = []
+    for setting in SETTINGS:
+        loaded = {}
         for method, config in METHODS.items():
-            for seed in config["runs"]:
-                path, results = loaded[method, seed]
-                values = results.loc[results["system_id"].isin(ids), "auroc"]
-                per_run.append(
-                    {
-                        "method": method,
-                        "setting": setting,
-                        "seed": seed,
-                        "auroc": values.mean(),
-                        "n_systems": len(values),
-                        "file": path.name,
-                    }
-                )
+            for seed, template in config["runs"].items():
+                path = REPAIRED_DIR / template.format(setting=setting)
+                loaded[method, seed] = (path, read_results(path, setting))
 
-    per_run = pd.DataFrame(per_run)
-    aggregate = per_run.groupby(["method", "setting"], as_index=False, sort=False).agg(
-        auroc_mean=("auroc", "mean"),
-        auroc_std=("auroc", "std"),
-        n_seeds=("seed", "nunique"),
-        n_systems=("n_systems", "min"),
-    )
-    return per_run, aggregate
-
-
-def summarize_repaired(result_dir, atom_csv):
-    per_run = []
-    for setting in SETTINGS:
-        loaded = {}
-        common_ids = None
-        for method, runs in REPAIRED_RUNS.items():
-            for seed, template in runs.items():
-                path = result_dir / template.format(setting=setting)
-                results = pd.read_csv(path, usecols=["system_id", "auroc"])
-                loaded[method, seed] = (path, results)
-                ids = set(results["system_id"])
-                common_ids = ids if common_ids is None else common_ids & ids
-
-        raw_count = len(common_ids)
-        common_ids = single_component_ids(atom_csv, common_ids, setting)
-        print(
-            f"{setting}: {raw_count} common repaired systems, "
-            f"{len(common_ids)} after single-component filter"
-        )
-        for method, runs in REPAIRED_RUNS.items():
-            for seed in runs:
-                path, results = loaded[method, seed]
-                values = results.loc[results["system_id"].isin(common_ids), "auroc"]
-                per_run.append(
-                    {
-                        "method": method,
-                        "setting": setting,
-                        "seed": seed,
-                        "auroc": values.mean(),
-                        "n_systems": len(values),
-                        "file": path.name,
-                    }
-                )
-
-    per_run = pd.DataFrame(per_run)
-    aggregate = per_run.groupby(["method", "setting"], as_index=False, sort=False).agg(
-        auroc_mean=("auroc", "mean"),
-        auroc_std=("auroc", "std"),
-        n_seeds=("seed", "nunique"),
-        n_systems=("n_systems", "min"),
-    )
-    return per_run, aggregate
-
-
-def summarize_repaired_by_complex_type(result_dir, atom_csv):
-    per_run = []
-    for setting in SETTINGS:
-        loaded = {}
-        common_ids = None
-        for method, runs in REPAIRED_RUNS.items():
-            for seed, template in runs.items():
-                path = result_dir / template.format(setting=setting)
-                results = pd.read_csv(
-                    path, usecols=["system_id", "auroc", "is_homodimer"]
-                )
-                loaded[method, seed] = (path, results)
-                ids = set(results["system_id"])
-                common_ids = ids if common_ids is None else common_ids & ids
-
-        raw_count = len(common_ids)
-        common_ids = single_component_ids(atom_csv, common_ids, setting)
         reference = None
         for path, results in loaded.values():
-            labels = (
-                results[results["system_id"].isin(common_ids)]
-                .set_index("system_id")["is_homodimer"]
-                .sort_index()
-            )
+            labels = results.set_index("system_id")["is_homodimer"].sort_index()
             if reference is None:
                 reference = labels
             elif not labels.equals(reference):
@@ -282,17 +137,15 @@ def summarize_repaired_by_complex_type(result_dir, atom_csv):
 
         counts = reference.value_counts()
         print(
-            f"{setting}: {raw_count} common repaired systems, "
-            f"{len(common_ids)} after single-component filter "
+            f"{setting}: {len(reference)} common systems "
             f"({int(counts.get(True, 0))} homo, {int(counts.get(False, 0))} hetero)"
         )
-        for method, runs in REPAIRED_RUNS.items():
-            for seed in runs:
+        for method, config in METHODS.items():
+            for seed in config["runs"]:
                 path, results = loaded[method, seed]
-                selected = results[results["system_id"].isin(common_ids)]
                 for is_homodimer, complex_type in ((True, "Homo"), (False, "Hetero")):
-                    values = selected.loc[
-                        selected["is_homodimer"] == is_homodimer, "auroc"
+                    values = results.loc[
+                        results["is_homodimer"] == is_homodimer, "auroc"
                     ]
                     per_run.append(
                         {
@@ -526,42 +379,19 @@ def plot_by_complex_type(aggregate, output):
 
 
 def main():
-    task_dir = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--method-dir", type=Path, default=task_dir / "per_system_results_methods"
-    )
-    parser.add_argument(
-        "--noise-dir", type=Path, default=task_dir / "per_system_results_noise_all_last"
-    )
-    parser.add_argument(
-        "--new-dir", type=Path, default=task_dir / "per_system_results_surface_seeds"
-    )
-    parser.add_argument("--repaired-dir", type=Path)
     parser.add_argument("--homo-hetero", action="store_true")
     parser.add_argument("--separate-complex-types", action="store_true")
     parser.add_argument(
-        "--atom-csv",
-        type=Path,
-        default=task_dir.parents[2] / "data/pdb_atom_components.csv",
-    )
-    parser.add_argument(
-        "--output", type=Path, default=task_dir / "perf_vs_throughput_seed_mean_std"
+        "--output", type=Path, default=FIG_DIR / "perf_vs_throughput_seed_mean_std"
     )
     args = parser.parse_args()
+    args.output.parent.mkdir(parents=True, exist_ok=True)
 
     if args.homo_hetero or args.separate_complex_types:
-        if not args.repaired_dir:
-            parser.error("complex-type plots require --repaired-dir")
-        per_run, aggregate = summarize_repaired_by_complex_type(
-            args.repaired_dir, args.atom_csv
-        )
-    elif args.repaired_dir:
-        per_run, aggregate = summarize_repaired(args.repaired_dir, args.atom_csv)
+        per_run, aggregate = summarize_by_complex_type()
     else:
-        per_run, aggregate = summarize(
-            args.method_dir, args.noise_dir, args.new_dir, args.atom_csv
-        )
+        per_run, aggregate = summarize()
     per_run.to_csv(
         args.output.with_name(f"{args.output.name}_per_run.csv"), index=False
     )

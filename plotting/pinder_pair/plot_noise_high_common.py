@@ -1,53 +1,16 @@
-from pathlib import Path
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.ticker import MultipleLocator, PercentFormatter
 
+from common_systems import FIG_DIR, SEEDS, SETTINGS, TASK_DIR, common_ids, read_results
 
-HERE = Path(__file__).resolve().parent
-METHOD_DIR = HERE / "per_system_results_perf_rebuilt_explicit"
-NOISE_DIR = HERE / "per_system_results_noise_repaired"
-NOISE_01310_DIR = HERE / "per_system_results_noise_01310"
-TUFT_DIR = HERE / "per_system_results_alpha_tuft_repaired"
-ATOM_CSV = HERE.parents[2] / "data" / "pdb_atom_components.csv"
-SETTINGS = ("holo", "apo", "af2")
-SEEDS = (2024, 2025, 2026)
+NOISE_DIR = TASK_DIR / "per_system_results_noise_repaired"
+NOISE_01310_DIR = TASK_DIR / "per_system_results_noise_01310"
+TUFT_DIR = TASK_DIR / "per_system_results_alpha_tuft_repaired"
 Y_TICK_STEP = 0.005
 Y_SPAN = 0.020
 NOISE_LEVELS = (0.1, 0.3, 0.5, 0.75, 1.0)
-
-
-def single_component_ids(system_ids, setting):
-    atoms = pd.read_csv(ATOM_CSV, usecols=["pdb_name", "n_components", "error"])
-    atoms = atoms[atoms["error"].isna()]
-    component_map = dict(zip(atoms["pdb_name"], atoms["n_components"]))
-
-    def count(system_id, side):
-        for name in (
-            f"{system_id}_{side}_{setting}.pdb",
-            f"{system_id}_{side}.pdb",
-        ):
-            if name in component_map:
-                return component_map[name]
-        return None
-
-    return {
-        system_id
-        for system_id in system_ids
-        if count(system_id, "L") == 1 and count(system_id, "R") == 1
-    }
-
-
-def common_method_ids(setting):
-    paths = sorted(METHOD_DIR.glob(f"*_{setting}.csv"))
-    common = set(pd.read_csv(paths[0], usecols=["system_id"])["system_id"])
-    for path in paths[1:]:
-        common.intersection_update(
-            pd.read_csv(path, usecols=["system_id"])["system_id"]
-        )
-    return single_component_ids(common, setting)
 
 
 def result_path(condition, seed, setting):
@@ -61,19 +24,11 @@ def result_path(condition, seed, setting):
 def summarize():
     rows = []
     for setting in SETTINGS:
-        common = common_method_ids(setting)
-        print(f"{setting}: {len(common)} common systems")
+        print(f"{setting}: {len(common_ids(setting))} common systems")
         conditions = ("none", *(f"sigma_{level}" for level in NOISE_LEVELS))
         for condition in conditions:
             for seed in SEEDS:
-                path = result_path(condition, seed, setting)
-                values = pd.read_csv(
-                    path, usecols=["system_id", "auroc", "is_homodimer"]
-                )
-                values = values[values["system_id"].isin(common)]
-                if len(values) != len(common):
-                    missing = len(common) - len(values)
-                    raise ValueError(f"{path.name} lacks {missing} common systems")
+                values = read_results(result_path(condition, seed, setting), setting)
                 for subset, selected in (
                     ("all", values),
                     ("homo", values[values["is_homodimer"]]),
@@ -174,7 +129,8 @@ def plot(summary, include_legend=True, output_name="noise_high_common_only_std")
         )
     fig.subplots_adjust(left=0.075, right=0.99, bottom=0.31, top=0.88, wspace=0.25)
 
-    output = HERE / output_name
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
+    output = FIG_DIR / output_name
     fig.savefig(output.with_suffix(".png"), dpi=200, bbox_inches="tight")
     fig.savefig(output.with_suffix(".pdf"), bbox_inches="tight")
     plt.close(fig)
@@ -182,8 +138,8 @@ def plot(summary, include_legend=True, output_name="noise_high_common_only_std")
 
 
 def plot_complex_type_panels(summary):
-    output_dir = HERE / "noise_high_common_homo_hetero_panels"
-    output_dir.mkdir(exist_ok=True)
+    output_dir = FIG_DIR / "noise_high_common_homo_hetero_panels"
+    output_dir.mkdir(parents=True, exist_ok=True)
     noised_color = "#E66101"
 
     for setting in SETTINGS:
@@ -265,10 +221,17 @@ def plot_complex_type_panels(summary):
 
 if __name__ == "__main__":
     per_run, summary = summarize()
-    per_run.to_csv(HERE / "noise_high_common_only_per_run.csv", index=False)
-    summary.to_csv(HERE / "noise_high_common_only_summary.csv", index=False)
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
+    per_run.to_csv(FIG_DIR / "noise_high_common_only_per_run.csv", index=False)
+    summary.to_csv(FIG_DIR / "noise_high_common_only_summary.csv", index=False)
     output = plot(summary)
+    output_nolegend = plot(
+        summary,
+        include_legend=False,
+        output_name="noise_high_common_only_std_nolegend",
+    )
     output_dir = plot_complex_type_panels(summary)
     print(summary.to_string(index=False))
     print(f"Saved {output}.png and {output}.pdf")
+    print(f"Saved {output_nolegend}.png and {output_nolegend}.pdf")
     print(f"Saved homo/hetero panels in {output_dir}")

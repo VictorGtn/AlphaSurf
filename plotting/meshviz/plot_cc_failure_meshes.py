@@ -12,9 +12,12 @@ import open3d as o3d
 from matplotlib.gridspec import GridSpec
 from matplotlib.patches import Rectangle
 
-PROJECT_ROOT = Path(__file__).parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SCRIPTS_DIR = PROJECT_ROOT / "scripts"
+FIG_DIR = Path(__file__).resolve().parents[1] / "figures" / "meshviz"
+for _path in (PROJECT_ROOT, SCRIPTS_DIR):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 from alphasurf.protein.graphs import parse_pdb_path  # noqa: E402
 from extract_interface_cc import count_components_all_atom  # noqa: E402
@@ -33,18 +36,16 @@ METHODS = (
     ("nanoshaper_0.6", "NanoShaper\ngs = 0.6", "#005A32"),
 )
 
-DEFAULT_CSV = Path(__file__).parent / "cc_sweep_output" / "cc_threshold_sweep.csv"
-DEFAULT_SURFACE_DIR = Path(__file__).parent / "cc_sweep_output" / "surfaces"
+DEFAULT_CSV = SCRIPTS_DIR / "cc_sweep_output" / "cc_threshold_sweep.csv"
+DEFAULT_SURFACE_DIR = SCRIPTS_DIR / "cc_sweep_output" / "surfaces"
 DEFAULT_EDTSURF_CSV = (
-    Path(__file__).parent / "cc_sweep_output_edtsurf_outer" / "cc_threshold_sweep.csv"
+    SCRIPTS_DIR / "cc_sweep_output_edtsurf_outer" / "cc_threshold_sweep.csv"
 )
-DEFAULT_EDTSURF_SURFACE_DIR = (
-    Path(__file__).parent / "cc_sweep_output_edtsurf_outer" / "surfaces"
-)
+DEFAULT_EDTSURF_SURFACE_DIR = SCRIPTS_DIR / "cc_sweep_output_edtsurf_outer" / "surfaces"
 DEFAULT_CLASSIFICATION_CSV = (
-    Path(__file__).parent / "cc_sweep_output" / "pinder_pair_ca_classification.csv"
+    SCRIPTS_DIR / "cc_sweep_output" / "pinder_pair_ca_classification.csv"
 )
-DEFAULT_PDB_DIR = Path(__file__).parents[1] / "data" / "pinder-pair" / "pdb"
+DEFAULT_PDB_DIR = PROJECT_ROOT / "data" / "pinder-pair" / "pdb"
 FRAGMENT_COLOR = "#BDBDBD"
 EDTSURF_METHODS = frozenset({"edtsurf_0.3", "edtsurf_0.4", "edtsurf_0.5"})
 MIN_EDTSURF_PLOT_FACES = 2000
@@ -418,7 +419,7 @@ def main():
         if method in EDTSURF_METHODS:
             add_fragment_inset(fig, ax, vertices, faces)
 
-    output = args.output or Path("cc_failure_meshes_independent.png")
+    output = args.output or FIG_DIR / "cc_failure_meshes_independent.png"
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=args.dpi, facecolor="white")
     print(f"Saved: {output}")

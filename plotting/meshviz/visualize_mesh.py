@@ -6,8 +6,10 @@ import os
 import argparse
 import matplotlib.pyplot as plt
 
-# Add alphasurf to path to load SurfaceObject
-sys.path.append("alphasurf")
+# Add the repo root to path to load SurfaceObject
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
 from alphasurf.protein.surfaces import SurfaceObject
 
 
@@ -481,12 +483,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Determine input file
     if args.input_file:
         input_file = args.input_file
     else:
-        # Default path
-        input_file = "/Users/gertnervictor/Documents/alphasurf_2/alphasurf/data/masif_ligand/surfaces_full_alpha_complex_1.0_False/1HBI_AB.pt"
+        parser.error("input_file is required")
 
     # Check if input is already a .ply file
     if input_file.lower().endswith(".ply"):

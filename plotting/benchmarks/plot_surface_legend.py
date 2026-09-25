@@ -11,6 +11,8 @@ from matplotlib.lines import Line2D
 
 from plot_surface_speed import COLORS
 
+FIG_DIR = Path(__file__).resolve().parents[1] / "figures" / "benchmarks"
+
 
 GROUPS = (
     (
@@ -52,10 +54,8 @@ def _handle(color):
 
 
 def main():
-    output = (
-        Path(__file__).with_name("pinder_surface_benchmark_serial")
-        / "surface_generation_legend"
-    )
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
+    output = FIG_DIR / "surface_generation_legend"
     all_entries = [entry for _, group in GROUPS for entry in group]
     fig = plt.figure(figsize=(8.0, 2.0))
     for index, (_, group_entries) in enumerate(GROUPS):

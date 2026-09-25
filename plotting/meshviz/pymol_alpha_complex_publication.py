@@ -3,7 +3,7 @@
 
 Run with the PyMOL executable, for example::
 
-    pymol -cq pymol_alpha_complex_publication.py -- \
+    pymol -cq plotting/meshviz/pymol_alpha_complex_publication.py -- \
         --pdb path/to/case.pdb --ply path/to/case.ply \
         --edges path/to/case.edges.pdb --png case.png --session case.pse
 

@@ -3,6 +3,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.ticker import PercentFormatter
 
+FIG_DIR = Path(__file__).resolve().parents[1] / "figures" / "masif_ligand"
+
 
 METHODS = [
     ("Alpha Complex", 0.8407, 0.0257, 51.9, 2220, "#E41A1C", r"$\alpha=0$"),
@@ -79,7 +81,8 @@ def main():
     ax.spines[["top", "right"]].set_visible(False)
 
     fig.tight_layout(pad=0.3)
-    output = Path(__file__).with_name("perf_vs_throughput_masif_ligand")
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
+    output = FIG_DIR / "perf_vs_throughput_masif_ligand"
     fig.savefig(output.with_suffix(".png"), dpi=250, bbox_inches="tight")
     fig.savefig(output.with_suffix(".pdf"), bbox_inches="tight")
     print(f"Saved {output}.png and {output}.pdf")

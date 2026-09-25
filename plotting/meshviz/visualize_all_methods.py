@@ -10,6 +10,9 @@ import numpy as np
 from matplotlib.gridspec import GridSpec
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
+SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
+FIG_DIR = Path(__file__).resolve().parents[1] / "figures" / "meshviz"
+
 
 METHODS = {
     "alpha": {"key": "algo2", "color": "#E41A1C", "label": "Alpha Complex"},
@@ -72,7 +75,11 @@ def mesh_limits(vertices):
     return center, half_width
 
 
-def mesh_collection(vertices, faces, color, alpha=1.0):
+MESH_EDGE_COLOR = (0.08, 0.08, 0.08, 0.24)
+MESH_EDGE_WIDTH = 0.16
+
+
+def shaded_face_colors(vertices, faces, color, alpha=1.0):
     triangles = vertices[faces]
     edge_a = triangles[:, 1] - triangles[:, 0]
     edge_b = triangles[:, 2] - triangles[:, 0]
@@ -86,15 +93,16 @@ def mesh_collection(vertices, faces, color, alpha=1.0):
     illumination = np.clip(normals @ light_direction, 0.0, 1.0)
     illumination = 0.42 + 0.58 * illumination
 
-    rgb = np.asarray(mcolors.to_rgb(color))
-    face_colors = np.column_stack(
-        (rgb[None, :] * illumination[:, None], np.full(len(faces), alpha))
-    )
+    rgb = mcolors.to_rgba_array(color)[:, :3]
+    return np.column_stack((rgb * illumination[:, None], np.full(len(faces), alpha)))
+
+
+def mesh_collection(vertices, faces, color, alpha=1.0):
     return Poly3DCollection(
-        triangles,
-        facecolors=face_colors,
-        edgecolors=(0.08, 0.08, 0.08, 0.24),
-        linewidths=0.16,
+        vertices[faces],
+        facecolors=shaded_face_colors(vertices, faces, color, alpha),
+        edgecolors=MESH_EDGE_COLOR,
+        linewidths=MESH_EDGE_WIDTH,
         antialiased=True,
     )
 
@@ -129,7 +137,7 @@ def main():
     parser.add_argument("pdb", help="PDB stem, or the corresponding NPZ stem")
     parser.add_argument(
         "--npz-dir",
-        default=Path(__file__).parent / "cc_sweep_output" / "surfaces",
+        default=SCRIPTS_DIR / "cc_sweep_output" / "surfaces",
         type=Path,
         help="Directory containing the surface-comparison NPZ files",
     )
@@ -165,7 +173,7 @@ def main():
             faces = np.asarray(data[f"{spec['key']}_faces"], dtype=np.int32)
             plot_mesh(ax, vertices, faces, spec["color"], spec["label"])
 
-    output = args.output or Path(f"surface_grid_{stem}_publication.png")
+    output = args.output or FIG_DIR / f"surface_grid_{stem}_publication.png"
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, dpi=args.dpi, facecolor="white")
     print(f"Saved: {output}")

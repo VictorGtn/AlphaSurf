@@ -11,6 +11,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
+SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
+FIG_DIR = Path(__file__).resolve().parents[1] / "figures" / "benchmarks"
+
 
 COLORS = {
     "alpha_complex": "#E41A1C",
@@ -379,11 +382,9 @@ def _parse_axis_break(value):
 
 def main():
     parser = argparse.ArgumentParser()
-    default_csv = (
-        Path(__file__).with_name("cc_sweep_output") / "surface_speed_vertices.csv"
-    )
+    default_csv = SCRIPTS_DIR / "cc_sweep_output" / "surface_speed_vertices.csv"
     parser.add_argument("--csv", type=Path, default=default_csv)
-    parser.add_argument("--output-dir", type=Path, default=default_csv.parent)
+    parser.add_argument("--output-dir", type=Path, default=FIG_DIR)
     parser.add_argument("--output-stem", default="")
     parser.add_argument("--y-scale", choices=("linear", "log"), default="linear")
     parser.add_argument(
@@ -404,6 +405,7 @@ def main():
     )
     args = parser.parse_args()
 
+    args.output_dir.mkdir(parents=True, exist_ok=True)
     rows = _load_rows(args.csv)
     speed_break = None if args.y_scale == "log" else _parse_axis_break(args.speed_break)
     if args.speed_max is not None:
