@@ -14,7 +14,6 @@ Implementation of AlphaSurf.
     - [MasifLigand](#masifligand)
     - [PINDER-Pair](#pinder-pair)
     - [MISATO binding-site prediction](#misato-binding-site-prediction)
-    - [MISATO affinity prediction](#misato-affinity-prediction)
     - [S3F pretraining on CATH](#s3f-pretraining-on-cath)
     - [ProteinGym](#proteingym)
 - [Inference](#inference)
@@ -293,19 +292,6 @@ The implementation is in
 [`evaluate_guo_batch64.py`](alphasurf/tasks/misato_binding_site/evaluate_guo_batch64.py).
 
 See the [MISATO task README](alphasurf/tasks/misato_binding_site/README.md) for additional evaluation utilities.
-
-### MISATO affinity prediction
-
-Binding-affinity regression on the same MISATO complexes.
-
-**Location:** `alphasurf/tasks/misato_affinity/`
-
-```bash
-python -m alphasurf.tasks.misato_affinity.build_affinity \
-  --csv /path/to/misato/affinity_data.csv --out /path/to/misato/affinity.h5
-python -m alphasurf.tasks.misato_affinity.preprocess --data-dir /path/to/misato
-python -m alphasurf.tasks.misato_affinity.train data_dir=/path/to/misato
-```
 
 ### S3F pretraining on CATH
 
