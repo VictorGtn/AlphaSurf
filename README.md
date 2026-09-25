@@ -123,12 +123,9 @@ The `eigen` headers are already available from the `cgal-cpp` conda install, and
 
 ## Datasets
 
-Every task reads its data from a directory passed as `data_dir=`; there is no
-default. The commands below fetch the public sources into `data/<name>/`, but any
-path works.
+Every task takes its data directory as `data_dir=`; there is no default.
 
-**PINDER-Pair.** `preprocess.py` pulls the systems through the `pinder` package
-and writes the PDBs and split CSVs:
+**PINDER-Pair** — PDBs and split CSVs via the `pinder` package:
 
 ```bash
 python alphasurf/tasks/pinder_pair/preprocess.py \
@@ -148,7 +145,7 @@ for split in train val test; do
 done
 ```
 
-**CATH** (used for S3F pretraining):
+**CATH** (S3F pretraining):
 
 ```bash
 mkdir -p data/cath && cd data/cath
@@ -156,7 +153,7 @@ curl -fL -o dompdb.tar https://huggingface.co/datasets/tyang816/cath/resolve/mai
 tar -xf dompdb.tar
 ```
 
-**ProteinGym** v1.3 substitutions and the matching AF2 structures:
+**ProteinGym** v1.3 substitutions plus AF2 structures:
 
 ```bash
 mkdir -p data/proteingym && cd data/proteingym
@@ -169,20 +166,21 @@ curl -fL -o substitutions/DMS_substitutions.csv \
   https://raw.githubusercontent.com/OATML-Markslab/ProteinGym/main/reference_files/DMS_substitutions.csv
 ```
 
-**MaSIF-Ligand.** Obtain the raw release from
-[MaSIF](https://github.com/LPDI-EPFL/masif) and arrange it as
-`<data_dir>/raw_data_MasifLigand/{pdb,ligand,splits}/`; preprocessed surfaces are
-written to `<data_dir>/dataset_MasifLigand/`.
+**MaSIF-Ligand** — take the raw release from
+[MaSIF](https://github.com/LPDI-EPFL/masif) and lay it out as
+`<data_dir>/raw_data_MasifLigand/{pdb,ligand,splits}/`. Preprocessed surfaces go
+to `<data_dir>/dataset_MasifLigand/`.
 
 ## Tasks
 
 ### MasifLigand
 
-Prediction of ligand binding sites on protein surfaces. Given a protein structure, the model classifies surface patches by ligand type (7 classes).
+Classifies surface patches by ligand type (7 classes).
 
 **Location:** `alphasurf/tasks/masif_ligand_new/`
 
-Supports both on-the-fly and disk-based training. On-the-fly mode generates surfaces and graphs during training, allowing experimentation with different surface methods without re-preprocessing.
+On-the-fly mode generates surfaces and graphs during training, so changing surface
+method needs no re-preprocessing.
 
 ```bash
 cd alphasurf/tasks/masif_ligand_new
@@ -197,11 +195,12 @@ python train.py \
 
 ### PINDER-Pair
 
-Protein-protein interaction prediction on the [PINDER](https://pinder.org/) dataset. Given a receptor and ligand protein, the model predicts per-residue interaction probabilities (which residue pairs form the interface) and per-residue binding site scores.
+Protein-protein interaction on [PINDER](https://pinder.org/): per-residue-pair
+interaction probabilities and per-residue binding-site scores.
 
 **Location:** `alphasurf/tasks/pinder_pair/`
 
-Supports both on-the-fly and disk-based training. On-the-fly mode generates surfaces and graphs during training. Three test settings are available: holo (bound structures), apo (unbound experimental), and af2 (AlphaFold2 predicted).
+Three test settings: holo (bound), apo (unbound experimental), af2 (predicted).
 
 ```bash
 cd alphasurf/tasks/pinder_pair
@@ -231,9 +230,9 @@ python train.py data_dir=/path/to/pinder on_fly=null
 
 #### Noise augmentation
 
-PINDER-Pair supports `joint_mesh` train-time augmentation when surfaces are generated on the fly. It first adds Gaussian noise to the atom coordinates used by both the residue graph and surface generator, then independently displaces the resulting surface vertices along their normals. Validation and testing always use clean structures. Set `noise_mode=none` to disable augmentation.
-
-Train with `joint_mesh` noise:
+`joint_mesh` adds Gaussian noise to the atom coordinates feeding both the graph
+and the surface, then displaces the resulting vertices along their normals.
+Validation and test always use clean structures; `noise_mode=none` disables it.
 
 ```bash
 cd alphasurf/tasks/pinder_pair
@@ -247,7 +246,7 @@ python train.py \
   on_fly.clip_sigma=3.0
 ```
 
-A trained checkpoint can be evaluated on all three clean structural settings with:
+Evaluate a checkpoint on all three clean settings:
 
 ```bash
 python test.py \
@@ -258,25 +257,23 @@ python test.py \
 
 ### MISATO binding-site prediction
 
-Residue-level ligand binding-site prediction on the [MISATO](https://zenodo.org/records/7711953) molecular-dynamics dataset. The ligand is used only to construct fixed binary labels: a residue is positive when its C-alpha atom is within 10 Å of a ligand heavy atom in trajectory frame 0. The model receives only the protein graph and alpha-complex surface.
-
-The official sequence-clustered train, validation, and test splits are applied at the complex level. Training samples a random trajectory frame, while validation and testing use frame 0.
+Residue-level binding-site prediction on [MISATO](https://zenodo.org/records/7711953).
+A residue is positive when its C-alpha lies within 10 Å of a ligand heavy atom at
+frame 0; the model itself never sees the ligand. Official sequence-clustered
+splits, applied per complex. Training samples a random frame, evaluation uses
+frame 0.
 
 **Location:** `alphasurf/tasks/misato_binding_site/`
 
-After downloading the trajectory file and official splits (see
-[Datasets](#datasets)), preprocessing reads frame 0 and writes
-`binding_site/<pdb_id>.pt` files containing the protein atom metadata, residue
-indices, and fixed binding-site labels required for training:
+Preprocessing writes `binding_site/<pdb_id>.pt` with atom metadata, residue
+indices and labels:
 
 ```bash
 python -m alphasurf.tasks.misato_binding_site.preprocess \
   --data-dir /path/to/misato
 ```
 
-The trajectory coordinates remain in `MD.hdf5`; training reads one frame per complex lazily instead of copying trajectories into the preprocessed cache.
-
-Train with random MD frames and evaluate on frame 0:
+Coordinates stay in `MD.hdf5`; training reads one frame per complex lazily.
 
 ```bash
 python -m alphasurf.tasks.misato_binding_site.train \
@@ -285,24 +282,21 @@ python -m alphasurf.tasks.misato_binding_site.train \
   eval_frame_mode=first
 ```
 
-Publication evaluation uses Guo et al.'s factorized batch-64 aggregation:
-systems remain in test-split order, residue predictions are pooled within each
-64-system chunk, and chunk metrics are averaged with residue-count weights.
-The implementation is in
+Published numbers use Guo et al.'s factorized batch-64 aggregation — systems in
+test-split order, residue predictions pooled per 64-system chunk, chunks averaged
+by residue count — in
 [`evaluate_guo_batch64.py`](alphasurf/tasks/misato_binding_site/evaluate_guo_batch64.py).
-
-See the [MISATO task README](alphasurf/tasks/misato_binding_site/README.md) for additional evaluation utilities.
+See the [task README](alphasurf/tasks/misato_binding_site/README.md).
 
 ### S3F pretraining on CATH
 
-Self-supervised structure-and-surface pretraining on CATH domains, following S3F.
-It produces the checkpoints scored by the ProteinGym task.
+Self-supervised pretraining on CATH domains, following S3F. Produces the
+checkpoints scored by ProteinGym.
 
 **Location:** `alphasurf/tasks/s3f_pretrain/`
 
-Surfaces follow the repo-wide `on_fly` convention: leave `on_fly` set to generate
-them at runtime, or set `on_fly=null` to read precomputed point clouds from
-`precompute_dir`.
+Leave `on_fly` set to build surfaces at runtime, or `on_fly=null` to read
+precomputed clouds from `precompute_dir`.
 
 ```bash
 cd alphasurf/tasks/s3f_pretrain
@@ -310,7 +304,7 @@ cd alphasurf/tasks/s3f_pretrain
 python train.py data_dir=/path/to/cath/dompdb
 ```
 
-For the precomputed path, build the clouds first and point `precompute_dir` at them:
+For the precomputed path, build the clouds first:
 
 ```bash
 python precompute_s3f_exact.py \
@@ -328,8 +322,8 @@ python train.py \
 
 ### ProteinGym
 
-Zero-shot fitness prediction on the 217 ProteinGym substitution assays, scoring
-masked mutant-versus-wild-type log-odds with an S3F-pretrained checkpoint.
+Zero-shot fitness on the 217 substitution assays: masked mutant-versus-wild-type
+log-odds from an S3F-pretrained checkpoint.
 
 **Location:** `alphasurf/tasks/proteingym/`
 
@@ -350,8 +344,7 @@ those next to the Spearman correlation. See the
 
 ## Inference
 
-Embed a trained model's encoder on a single protein to get per-residue graph
-embeddings and per-vertex surface embeddings.
+Per-residue graph and per-vertex surface embeddings for a single protein.
 
 **Location:** `alphasurf/tasks/inference/`
 
@@ -361,25 +354,23 @@ cd alphasurf/tasks/inference
 python embed.py --ckpt /path/to/model.ckpt --pdb protein.pdb
 ```
 
-The checkpoint is a `PinderPairModule` checkpoint, produced by the
-[PINDER-Pair](#pinder-pair) task. No weights are distributed with this repository.
-
-Output is a `.pt` file containing `graph_embedding` (N_residues x D),
-`surface_embedding` (N_verts x D), `graph_node_pos`, and `surface_verts`.
+Takes a `PinderPairModule` checkpoint from the [PINDER-Pair](#pinder-pair) task;
+no weights ship with this repository. Writes a `.pt` holding `graph_embedding`
+(N_residues x D), `surface_embedding` (N_verts x D), `graph_node_pos` and
+`surface_verts`.
 
 ## Reproducing the figures
 
 Figure scripts live in `plotting/`, grouped by subject, and write to
-`plotting/figures/<group>/`. Each script resolves its inputs from the repo root,
-so it can be run from any working directory.
+`plotting/figures/<group>/`. Each resolves its inputs from the repo root, so it
+runs from any directory.
 
 ```bash
 python plotting/pinder_pair/plot_perf_vs_throughput_seeds.py
 python plotting/masif_ligand/plot_perf_vs_throughput.py
 ```
 
-The spectral figures need a computation step first: `scripts/spectral_comparison.py`
-writes the per-protein metrics, and `plotting/spectral/` draws them.
+The spectral figures need a computation step first:
 
 ```bash
 python scripts/spectral_comparison.py \
@@ -392,18 +383,13 @@ python plotting/spectral/plot_kernel_profile.py         --input-dir scripts/outp
 python plotting/spectral/plot_dirac_diffusion.py        --pdb /path/to/protein.pdb
 ```
 
-`plot_dirac_diffusion.py` draws its panels with PyMOL by default; pass
-`--render mesh` or `--render vector` to draw them with matplotlib instead. Its
-`sas` and `sas_dec` mesh kinds need the `cgal_sbl_sampling` module, which
-requires `SBL_ROOT` at build time; every other kind works without it.
+`plot_dirac_diffusion.py` uses PyMOL by default; `--render mesh` or
+`--render vector` draw with matplotlib instead. Its `sas` kinds need
+`cgal_sbl_sampling`, hence `SBL_ROOT` at build time; every other kind works
+without it.
 
-Every script stands on its own, except
-`masif_ligand/plot_perf_vs_throughput_combined.py`, which overlays MaSIF-Ligand
-on PINDER and therefore needs PINDER summary CSVs under two specific names; see
-[`plotting/README.md`](plotting/README.md) if you want that overlay.
-
-Every PINDER
-AUROC figure is computed on the frozen common system set defined in
-`plotting/pinder_pair/common_systems.py` (1835 holo, 309 apo, 1582 af2); a run
-that does not cover that set is rejected. See
+Every PINDER AUROC figure is computed on the frozen system set in
+`plotting/pinder_pair/common_systems.py` (1835 holo, 309 apo, 1582 af2), and a
+run not covering it is rejected. Scripts stand alone except
+`masif_ligand/plot_perf_vs_throughput_combined.py`; see
 [`plotting/README.md`](plotting/README.md).
