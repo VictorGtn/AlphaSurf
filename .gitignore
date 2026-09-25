@@ -182,3 +182,21 @@ lightning_logs/
 *.ply
 *.html
 *.png
+
+# Benchmark dumps and figure outputs (tens of GB of meshes; regenerable).
+# Script results live in scripts/outputs/<experiment>/, already covered by **/outputs/.
+# The summary CSVs already tracked inside cc_sweep_output* stay tracked.
+scripts/cc_sweep_output*/
+scripts/failure_plots/
+scripts/heat/
+scripts/viz/
+plotting/figures/
+
+# Cluster launchers are machine-specific; kept locally, not published.
+*.sh
+
+# Model weights and derived figures are not published with the source.
+*.ckpt
+*.pdf
+*.rej
+*.orig
