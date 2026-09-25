@@ -8,11 +8,17 @@ Implementation of AlphaSurf.
 - [Installation](#installation)
     - [Environment setup](#environment-setup)
     - [CGAL alpha complex bindings](#cgal-alpha-complex-bindings)
-- [Inference](#inference)
+    - [Curvature extension](#curvature-extension)
+- [Datasets](#datasets)
 - [Tasks](#tasks)
     - [MasifLigand](#masifligand)
     - [PINDER-Pair](#pinder-pair)
     - [MISATO binding-site prediction](#misato-binding-site-prediction)
+    - [MISATO affinity prediction](#misato-affinity-prediction)
+    - [S3F pretraining on CATH](#s3f-pretraining-on-cath)
+    - [ProteinGym](#proteingym)
+- [Inference](#inference)
+- [Reproducing the figures](#reproducing-the-figures)
 
 ## Description
 
@@ -96,7 +102,7 @@ make cgal_alpha_algo2 -j8
 
 #### Making the bindings available
 
-After building, the compiled `.so` file lands in `cgal_alpha_bindings/build/`. When you import `cgal_alpha` in Python, it needs to find that `.so` on `sys.path`. The code does this automatically by looking for `cgal_alpha_bindings/build/` relative to the source tree.
+After building, the compiled `.so` file lands in `cgal_alpha_bindings/build/`. When you import `cgal_alpha_algo2` in Python, it needs to find that `.so` on `sys.path`. The code does this automatically by looking for `cgal_alpha_bindings/build/` relative to the source tree.
 
 This works out of the box when running from the repo. However, some environments override the working directory or `sys.path` — for example SLURM jobs with `multiprocessing` workers using the `spawn` or `forkserver` start method. In that case each worker process starts fresh and may not inherit the path setup. To handle this, set the environment variable before launching your job:
 
@@ -116,29 +122,58 @@ python build.py
 
 The `eigen` headers are already available from the `cgal-cpp` conda install, and `pybind11` was installed earlier.
 
-## Inference
+## Datasets
 
-Embed a trained model's encoder on a single protein to get per-residue graph embeddings and per-vertex surface embeddings.
+Every task reads its data from a directory passed as `data_dir=`; there is no
+default. The commands below fetch the public sources into `data/<name>/`, but any
+path works.
 
-**Location:** `alphasurf/tasks/inference/`
-
-A trained checkpoint is available at `alphasurf/tasks/pinder_pair/ckpt/last.ckpt`. This model was trained on the PINDER dataset for classifying residue pairs as interacting or not.
-
-The provided checkpoint references `atomsurf.*` import paths. A symlink `atomsurf -> alphasurf` is included in the repo. If it was not restored (e.g. on Windows), recreate it from the repo root:
-
-```bash
-ln -s alphasurf atomsurf
-```
-
-Then run:
+**PINDER-Pair.** `preprocess.py` pulls the systems through the `pinder` package
+and writes the PDBs and split CSVs:
 
 ```bash
-cd alphasurf/tasks/inference
-
-python embed.py --ckpt ../pinder_pair/ckpt/last.ckpt --pdb protein.pdb
+python alphasurf/tasks/pinder_pair/preprocess.py \
+  --output_dir data/pinder-pair \
+  --test_setting all \
+  --num_workers 30
 ```
 
-Output is a `.pt` file containing `graph_embedding` (N_residues x D), `surface_embedding` (N_verts x D), `graph_node_pos`, and `surface_verts`.
+**MISATO** (`MD.hdf5` is ~133 GB):
+
+```bash
+mkdir -p data/misato/splits
+wget -c -O data/misato/MD.hdf5 https://zenodo.org/records/7711953/files/MD.hdf5
+for split in train val test; do
+  wget -O data/misato/splits/${split}.txt \
+    https://zenodo.org/records/7711953/files/${split}_MD.txt
+done
+```
+
+**CATH** (used for S3F pretraining):
+
+```bash
+mkdir -p data/cath && cd data/cath
+curl -fL -o dompdb.tar https://huggingface.co/datasets/tyang816/cath/resolve/main/dompdb.tar
+tar -xf dompdb.tar
+```
+
+**ProteinGym** v1.3 substitutions and the matching AF2 structures:
+
+```bash
+mkdir -p data/proteingym && cd data/proteingym
+BASE=https://marks.hms.harvard.edu/proteingym/ProteinGym_v1.3
+curl -fL -o DMS_ProteinGym_substitutions.zip $BASE/DMS_ProteinGym_substitutions.zip
+curl -fL -o ProteinGym_AF2_structures.zip    $BASE/ProteinGym_AF2_structures.zip
+unzip -q DMS_ProteinGym_substitutions.zip -d substitutions
+unzip -q ProteinGym_AF2_structures.zip    -d af2_structures
+curl -fL -o substitutions/DMS_substitutions.csv \
+  https://raw.githubusercontent.com/OATML-Markslab/ProteinGym/main/reference_files/DMS_substitutions.csv
+```
+
+**MaSIF-Ligand.** Obtain the raw release from
+[MaSIF](https://github.com/LPDI-EPFL/masif) and arrange it as
+`<data_dir>/raw_data_MasifLigand/{pdb,ligand,splits}/`; preprocessed surfaces are
+written to `<data_dir>/dataset_MasifLigand/`.
 
 ## Tasks
 
@@ -159,9 +194,6 @@ python train.py \
   on_fly.surface_method=alpha_complex \
   on_fly.alpha_value=0 \
   on_fly.face_reduction_rate=1.0
-
-# Or via SLURM
-sbatch train.sh
 ```
 
 ### PINDER-Pair
@@ -233,16 +265,17 @@ The official sequence-clustered train, validation, and test splits are applied a
 
 **Location:** `alphasurf/tasks/misato_binding_site/`
 
-Download the MISATO trajectory file and official splits. The preprocessing command then reads frame 0 and writes `binding_site/<pdb_id>.pt` files containing the protein atom metadata, residue indices, and fixed binding-site labels required for training:
+After downloading the trajectory file and official splits (see
+[Datasets](#datasets)), preprocessing reads frame 0 and writes
+`binding_site/<pdb_id>.pt` files containing the protein atom metadata, residue
+indices, and fixed binding-site labels required for training:
 
 ```bash
-bash alphasurf/tasks/misato_binding_site/download_misato.sh /path/to/misato
-
 python -m alphasurf.tasks.misato_binding_site.preprocess \
   --data-dir /path/to/misato
 ```
 
-`MD.hdf5` is approximately 133 GB. The trajectory coordinates remain in that file; training reads one frame per complex lazily instead of copying trajectories into the preprocessed cache.
+The trajectory coordinates remain in `MD.hdf5`; training reads one frame per complex lazily instead of copying trajectories into the preprocessed cache.
 
 Train with random MD frames and evaluate on frame 0:
 
@@ -259,4 +292,129 @@ systems remain in test-split order, residue predictions are pooled within each
 The implementation is in
 [`evaluate_guo_batch64.py`](alphasurf/tasks/misato_binding_site/evaluate_guo_batch64.py).
 
-See the [MISATO task README](alphasurf/tasks/misato_binding_site/README.md) for the SLURM launchers and additional evaluation utilities.
+See the [MISATO task README](alphasurf/tasks/misato_binding_site/README.md) for additional evaluation utilities.
+
+### MISATO affinity prediction
+
+Binding-affinity regression on the same MISATO complexes.
+
+**Location:** `alphasurf/tasks/misato_affinity/`
+
+```bash
+python -m alphasurf.tasks.misato_affinity.build_affinity \
+  --csv /path/to/misato/affinity_data.csv --out /path/to/misato/affinity.h5
+python -m alphasurf.tasks.misato_affinity.preprocess --data-dir /path/to/misato
+python -m alphasurf.tasks.misato_affinity.train data_dir=/path/to/misato
+```
+
+### S3F pretraining on CATH
+
+Self-supervised structure-and-surface pretraining on CATH domains, following S3F.
+It produces the checkpoints scored by the ProteinGym task.
+
+**Location:** `alphasurf/tasks/s3f_pretrain/`
+
+Surfaces follow the repo-wide `on_fly` convention: leave `on_fly` set to generate
+them at runtime, or set `on_fly=null` to read precomputed point clouds from
+`precompute_dir`.
+
+```bash
+cd alphasurf/tasks/s3f_pretrain
+
+python train.py data_dir=/path/to/cath/dompdb
+```
+
+For the precomputed path, build the clouds first and point `precompute_dir` at them:
+
+```bash
+python precompute_s3f_exact.py \
+  --pdb_dir /path/to/cath/dompdb \
+  --output_dir /path/to/cath/s3f_exact_precomputed
+
+python train.py \
+  data_dir=/path/to/cath/dompdb \
+  precompute_dir=/path/to/cath/s3f_exact_precomputed \
+  on_fly=null
+```
+
+`precompute_alpha.py` is the alpha-complex equivalent; it writes
+`<parent of data_dir>/{surfaces,graphs}/<method>_<face_reduction_rate>_a<alpha>/`.
+
+### ProteinGym
+
+Zero-shot fitness prediction on the 217 ProteinGym substitution assays, scoring
+masked mutant-versus-wild-type log-odds with an S3F-pretrained checkpoint.
+
+**Location:** `alphasurf/tasks/proteingym/`
+
+```bash
+cd alphasurf/tasks/proteingym
+
+python evaluate.py \
+  --ckpt /path/to/s3f_pretrain.ckpt \
+  --substitutions-dir /path/to/proteingym/substitutions \
+  --af2-dir /path/to/proteingym/af2_structures \
+  --output-dir runs/alphasurf
+```
+
+`summary.csv` records, per assay, how much of it was scored structurally
+(`num_scored`, `num_groups_geometry_failed`, `num_positions_low_plddt`); read
+those next to the Spearman correlation. See the
+[ProteinGym task README](alphasurf/tasks/proteingym/README.md).
+
+## Inference
+
+Embed a trained model's encoder on a single protein to get per-residue graph
+embeddings and per-vertex surface embeddings.
+
+**Location:** `alphasurf/tasks/inference/`
+
+```bash
+cd alphasurf/tasks/inference
+
+python embed.py --ckpt /path/to/model.ckpt --pdb protein.pdb
+```
+
+The checkpoint is a `PinderPairModule` checkpoint, produced by the
+[PINDER-Pair](#pinder-pair) task. No weights are distributed with this repository.
+
+Output is a `.pt` file containing `graph_embedding` (N_residues x D),
+`surface_embedding` (N_verts x D), `graph_node_pos`, and `surface_verts`.
+
+## Reproducing the figures
+
+Figure scripts live in `plotting/`, grouped by subject, and write to
+`plotting/figures/<group>/`. Each script resolves its inputs from the repo root,
+so it can be run from any working directory.
+
+```bash
+python plotting/pinder_pair/plot_perf_vs_throughput_seeds.py
+python plotting/masif_ligand/plot_perf_vs_throughput_combined.py
+```
+
+The spectral figures come from `scripts/`, which computes before it draws. The
+first command is the expensive one; the other three read its output:
+
+```bash
+python scripts/spectral_comparison.py \
+  --pdb-dir /path/to/pinder/pdb \
+  --output-dir scripts/outputs/spectral_heat \
+  --workers 30
+
+python scripts/plot_spectral_distributions.py \
+  --input-dir scripts/outputs/spectral_heat --output-dir scripts/outputs/spectral_heat
+python scripts/plot_kernel_profile.py  --input-dir scripts/outputs/spectral_heat
+python scripts/plot_dirac_diffusion.py --pdb /path/to/protein.pdb
+```
+
+`plot_dirac_diffusion.py` draws its panels with PyMOL by default; pass
+`--render mesh` or `--render vector` to draw them with matplotlib instead. Its
+`sas` and `sas_dec` mesh kinds need the `cgal_sbl_sampling` module, which
+requires `SBL_ROOT` at build time; every other kind works without it.
+
+The MaSIF-Ligand combined panels read the PINDER summary CSVs from
+`plotting/figures/pinder_pair/`, so run the PINDER scripts first. Every PINDER
+AUROC figure is computed on the frozen common system set defined in
+`plotting/pinder_pair/common_systems.py` (1835 holo, 309 apo, 1582 af2); a run
+that does not cover that set is rejected. See
+[`plotting/README.md`](plotting/README.md).
