@@ -25,6 +25,11 @@ directory, and writes figures (plus the CSV summaries it derives) under
 - `meshviz/` — 3D mesh renders and interactive HTML viewers (per-method surface
   grids, failing/fragmented meshes, tufting and diffusion visualizations,
   non-manifold and duplicated-vertex highlighting).
+- `spectral/` — heat-diffusion agreement between alpha-complex and MSMS
+  surfaces: HKS and heat-kernel distributions, the kernel fall-off profile and
+  the Dirac-diffusion panels. These read a run of
+  `scripts/spectral_comparison.py`, which does the computation, so run that
+  first; pass its output directory with `--input-dir`.
 
 Slurm launchers in `benchmarks/` `cd` into their own directory and write logs to
 `benchmarks/log/<job-name>/`.

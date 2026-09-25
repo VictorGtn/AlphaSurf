@@ -392,8 +392,8 @@ python plotting/pinder_pair/plot_perf_vs_throughput_seeds.py
 python plotting/masif_ligand/plot_perf_vs_throughput_combined.py
 ```
 
-The spectral figures come from `scripts/`, which computes before it draws. The
-first command is the expensive one; the other three read its output:
+The spectral figures need a computation step first: `scripts/spectral_comparison.py`
+writes the per-protein metrics, and `plotting/spectral/` draws them.
 
 ```bash
 python scripts/spectral_comparison.py \
@@ -401,10 +401,9 @@ python scripts/spectral_comparison.py \
   --output-dir scripts/outputs/spectral_heat \
   --workers 30
 
-python scripts/plot_spectral_distributions.py \
-  --input-dir scripts/outputs/spectral_heat --output-dir scripts/outputs/spectral_heat
-python scripts/plot_kernel_profile.py  --input-dir scripts/outputs/spectral_heat
-python scripts/plot_dirac_diffusion.py --pdb /path/to/protein.pdb
+python plotting/spectral/plot_spectral_distributions.py --input-dir scripts/outputs/spectral_heat
+python plotting/spectral/plot_kernel_profile.py         --input-dir scripts/outputs/spectral_heat
+python plotting/spectral/plot_dirac_diffusion.py        --pdb /path/to/protein.pdb
 ```
 
 `plot_dirac_diffusion.py` draws its panels with PyMOL by default; pass

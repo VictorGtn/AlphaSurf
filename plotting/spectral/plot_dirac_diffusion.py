@@ -38,11 +38,11 @@ from matplotlib.colors import to_rgb
 from scipy.spatial import cKDTree
 
 script_dir = os.path.dirname(os.path.realpath(__file__))
-sys.path.insert(0, script_dir)
-# visualize_all_methods.py supplies the shared mesh rendering.
-sys.path.insert(
-    0, os.path.join(os.path.dirname(script_dir), "plotting", "meshviz")
-)
+REPO_ROOT = os.path.dirname(os.path.dirname(script_dir))
+FIG_DIR = os.path.join(REPO_ROOT, "plotting", "figures", "spectral")
+# spectral_comparison.py builds the meshes; visualize_all_methods.py renders them.
+sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
+sys.path.insert(0, os.path.join(os.path.dirname(script_dir), "meshviz"))
 
 from spectral_comparison import build_mesh_set, largest_component, spectra_for  # noqa: E402
 
@@ -372,7 +372,7 @@ def layout(draw, aspect, labels, times, out_path, ncols=None, dpi=300):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    pdb_dir = os.path.join(os.path.dirname(script_dir), "data", "pinder-pair", "pdb")
+    pdb_dir = os.path.join(REPO_ROOT, "data", "pinder-pair", "pdb")
     parser.add_argument("--pdb", default=os.path.join(pdb_dir, "1ycr__A1_Q00987--1ycr__B1_P04637_R.pdb"))
     parser.add_argument("--partner", default=os.path.join(pdb_dir, "1ycr__A1_Q00987--1ycr__B1_P04637_L.pdb"),
                         help="partner chain whose centroid picks the source atom")
@@ -407,8 +407,7 @@ def main():
                              "surfaces' extent from its top-left corner")
     parser.add_argument("--corner-radius", type=float, default=0.0,
                         help="radius of the rounded corners of every panel, as a fraction of its shorter side")
-    parser.add_argument("--output-dir",
-                        default=os.path.join(script_dir, "outputs", "dirac_diffusion"))
+    parser.add_argument("--output-dir", default=FIG_DIR)
     args = parser.parse_args()
     kinds = args.kinds.split(",")
     times = [float(t) for t in args.times.split(",")]

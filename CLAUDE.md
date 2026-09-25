@@ -120,10 +120,10 @@ New scripts default `--output-dir` to `<script dir>/outputs/<experiment>` rather
 
 `scripts/spectral_comparison.py` computes the heat-diffusion agreement between alpha-complex and MSMS surfaces: Laplacian eigenpairs, HKS, the atom heat coupling `H_t(i, j)` and geodesic distances, on the exact atom correspondence (MSMS reports the sphere each vertex sits on, read through `create_surface.parse_verts(keep_atom_idx=True)`; alpha-complex vertices are atom centres). It writes `spectral_comparison.csv` plus one `.npz` per protein and pair, by default under `scripts/outputs/spectral_heat/`. Run it through `spectral_comparison.sh` (`PDB_DIR` required), which also draws the distributions when `PAIRS` is left at its default.
 
-Three scripts read that run and draw the paper figures:
+`plotting/spectral/` reads that run and draws the paper figures into `plotting/figures/spectral/`. Each of the three adds `scripts/` to `sys.path` to import `spectral_comparison`:
 - `plot_spectral_distributions.py` — violins per metric and diffusion time, worst-tail curves, kernel correlation per geodesic distance window, and the per-sample HKS scatter.
 - `plot_kernel_profile.py` — the appendix kernel fall-off figure.
-- `plot_dirac_diffusion.py` — the Dirac-diffusion figure; it imports `mesh_collection`, `mesh_limits`, `MESH_EDGE_COLOR` and `shaded_face_colors` from `plotting/meshviz/visualize_all_methods.py`, which it adds to `sys.path`, so the panels match the surface-grid figure. `--render pymol` needs PyMOL; `--render mesh` and `vector` do not.
+- `plot_dirac_diffusion.py` — the Dirac-diffusion figure; it also imports `mesh_collection`, `mesh_limits`, `MESH_EDGE_COLOR` and `shaded_face_colors` from `plotting/meshviz/visualize_all_methods.py`, so the panels match the surface-grid figure. `--render pymol` needs PyMOL; `--render mesh` and `vector` do not.
 
 The `sas` and `sas_dec` mesh kinds come from `cgal_sbl_sampling`, which needs `SBL_ROOT` at build time. Every other kind works without SBL.
 

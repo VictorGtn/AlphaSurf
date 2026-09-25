@@ -30,7 +30,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 script_dir = os.path.dirname(os.path.realpath(__file__))
-OUTPUTS = os.path.join(script_dir, "outputs")
+REPO_ROOT = os.path.dirname(os.path.dirname(script_dir))
+OUTPUTS = os.path.join(REPO_ROOT, "scripts", "outputs")
+FIG_DIR = os.path.join(REPO_ROOT, "plotting", "figures", "spectral")
 DEFAULT_DIRS = (os.path.join(OUTPUTS, "spectral_heat"),)
 
 # Per reference surface: pair, legend label, colour, and the scatter's axis labels.
@@ -329,7 +331,7 @@ def main():
     args = parser.parse_args()
     use_baseline(args.baseline)
     input_dirs = args.input_dir or list(DEFAULT_DIRS)
-    output_dir = args.output_dir or input_dirs[0]
+    output_dir = args.output_dir or FIG_DIR
     os.makedirs(output_dir, exist_ok=True)
 
     keep = set(open(args.pdb_ids).read().split()) if args.pdb_ids else None

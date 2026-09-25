@@ -23,12 +23,14 @@ from types import SimpleNamespace
 import numpy as np
 
 script_dir = os.path.dirname(os.path.realpath(__file__))
-sys.path.insert(0, script_dir)
+REPO_ROOT = os.path.dirname(os.path.dirname(script_dir))
+# spectral_comparison.py does the computation these figures read.
+sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
 
 import spectral_comparison as sc  # noqa: E402
 
-OUTPUTS = os.path.join(script_dir, "outputs")
-REPO_ROOT = os.path.dirname(script_dir)
+OUTPUTS = os.path.join(REPO_ROOT, "scripts", "outputs")
+FIG_DIR = os.path.join(REPO_ROOT, "plotting", "figures", "spectral")
 EDGES = np.arange(0.0, 30.5, 0.5)
 LEVELS = (0.5, 0.25, 0.1, 0.05, 0.01)
 MSMS_COLOR = "#6A3D9A"
@@ -96,7 +98,7 @@ def main():
     parser.add_argument("--input-dir", default=os.path.join(OUTPUTS, "spectral_heat_sampled_0_10"),
                         help="spectral_comparison.py run whose proteins are sampled")
     parser.add_argument("--pdb-dir", default=os.path.join(REPO_ROOT, "data", "pinder-pair", "pdb"))
-    parser.add_argument("--output-dir", default=os.path.join(OUTPUTS, "kernel_profile"))
+    parser.add_argument("--output-dir", default=FIG_DIR)
     parser.add_argument("--n-proteins", type=int, default=None, help="random subset size; default every protein")
     parser.add_argument("--times", default="5,10,20", help="diffusion times")
     parser.add_argument("--k-eig", type=int, default=128)
