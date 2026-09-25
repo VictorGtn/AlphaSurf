@@ -60,22 +60,24 @@ def setup_test_loader(cfg, test_setting):
 
     common_only = getattr(cfg, "common_only", False)
     if common_only:
-        common_csv = os.path.join(data_dir, f"common_systems_{test_setting}.csv")
-        if os.path.exists(common_csv):
-            import pandas as pd
+        common_systems_dir = getattr(cfg, "common_systems_dir", data_dir)
+        common_csv = os.path.join(
+            common_systems_dir, f"common_systems_{test_setting}.csv"
+        )
+        if not os.path.exists(common_csv):
+            raise FileNotFoundError(
+                f"common_only=True but common-system file is missing: {common_csv}"
+            )
 
-            common_ids = set(pd.read_csv(common_csv)["id"])
-            n_before = len(target_systems)
-            target_systems = [s for s in target_systems if s["id"] in common_ids]
-            print(
-                f"  Common-only filter: {len(target_systems)}/{n_before} systems "
-                f"({test_setting})"
-            )
-        else:
-            print(
-                f"  WARNING: common_only=True but {common_csv} not found. "
-                f"Using full test set."
-            )
+        import pandas as pd
+
+        common_ids = set(pd.read_csv(common_csv)["id"])
+        n_before = len(target_systems)
+        target_systems = [s for s in target_systems if s["id"] in common_ids]
+        print(
+            f"  Common-only filter: {len(target_systems)}/{n_before} systems "
+            f"({test_setting})"
+        )
 
     print(f"  {test_setting}: {len(target_systems)} systems")
 
@@ -166,7 +168,7 @@ def evaluate_setting(
                 continue
 
             batch = batch.to(device)
-            if batch.num_graphs < getattr(cfg, "min_batch_size", 2):
+            if batch.num_graphs < 1:
                 n_skipped += 1
                 continue
 
@@ -323,6 +325,7 @@ def load_model_from_checkpoint(ckpt_path, cfg):
             "run_name",
             "dump_per_system",
             "common_only",
+            "common_systems_dir",
             "surface_data_name",
             "graph_data_name",
         ]:

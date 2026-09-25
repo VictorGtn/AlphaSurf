@@ -1,17 +1,16 @@
 """
 Modular transforms for protein data.
 
-These transforms are applied DURING surface/graph generation so that
-computed features (operators, edges, etc.) reflect the transformed geometry.
+These transforms are applied during surface/graph generation so that computed
+features (operators, edges, etc.) reflect the transformed geometry.
 
-Transform Order (critical):
-1. Parse PDB -> raw arrays
-2. NoiseAugmentor.noise_arrays() -> noised atom positions (for joint/independent modes)
-3. Generate mesh from (noised) atoms
-4. PatchExtractor.extract_patch() -> subset mesh to binding site
-5. add_normal_noise() -> displace vertices along normals (independent mode only)
-6. Compute operators (mass, L, evals, evecs) on final mesh
-7. Compute features on final geometry
+Transform order: parse the PDB into raw arrays, noise the atom positions with
+`NoiseAugmentor.noise_arrays()` (all modes but `alpha` and `none`), generate the
+mesh from those atoms, subset it to the binding site with
+`PatchExtractor.extract_patch()`, displace vertices along their normals with
+`add_normal_noise()` (under `independent`, `joint_mesh` and `alpha_joint_mesh`),
+then compute operators and features on the resulting mesh. Every geometric
+perturbation therefore precedes the spectral operators.
 """
 
 import os
@@ -25,15 +24,16 @@ class NoiseAugmentor:
     Handles noise augmentation for protein coordinates.
 
     Supports modes:
-    - 'independent': Noise graph coordinates (sigma_graph) and mesh vertices (sigma_mesh)
-                     independently. Graph noise applied to atom coords before graph build.
-                     Mesh noise applied to vertices after patch extraction.
-    - 'joint': Noise atom coordinates once, then use for BOTH mesh and graph generation.
-               This propagates coordinate noise naturally to both representations.
-    - 'joint_mesh': Like 'joint' (atom noise propagated to mesh), PLUS vertex-normal
-                     mesh noise on top. Both sigma_graph and sigma_mesh are used.
-    - 'alpha': Random alpha-complex radius override (no coordinate noise).
-    - 'none': No noise augmentation (default).
+    - 'independent': noise graph coordinates (sigma_graph) and mesh vertices
+                     (sigma_mesh) independently. The surface is built from clean
+                     atoms; its vertices are displaced after patch extraction.
+    - 'joint': noise atom coordinates once and use them for both mesh and graph,
+               so the perturbation propagates to both representations.
+    - 'joint_mesh': 'joint' plus vertex-normal mesh noise on top. Both
+                    sigma_graph and sigma_mesh are used.
+    - 'alpha': resample the alpha-complex parameter, no coordinate noise.
+    - 'alpha_joint_mesh': 'joint_mesh' with the alpha parameter also resampled.
+    - 'none': no noise augmentation (default).
 
     All operations create new arrays (no in-place modification).
     """
@@ -49,12 +49,14 @@ class NoiseAugmentor:
     ):
         """
         Args:
-            mode: 'none', 'independent', 'joint', 'joint_mesh', or 'alpha'
+            mode: 'none', 'independent', 'joint', 'joint_mesh', 'alpha' or
+                'alpha_joint_mesh'
             sigma_graph: Noise sigma for atom/graph coordinates
-            sigma_mesh: Noise sigma for mesh vertices ('independent' and 'joint_mesh' modes)
+            sigma_mesh: Noise sigma for mesh vertices ('independent',
+                'joint_mesh' and 'alpha_joint_mesh' modes)
             clip_sigma: Clip noise to ±clip_sigma*sigma (None to disable)
-            alpha_min: Minimum alpha value for alpha noise (default: 0.0)
-            alpha_max: Maximum alpha value for alpha noise (default: 20.0)
+            alpha_min: Lower bound of the resampled alpha value
+            alpha_max: Upper bound of the resampled alpha value
         """
         self.mode = mode.lower()
         self.sigma_graph = sigma_graph
@@ -63,9 +65,17 @@ class NoiseAugmentor:
         self.alpha_min = alpha_min
         self.alpha_max = alpha_max
 
-        if self.mode not in ("none", "independent", "joint", "joint_mesh", "alpha"):
+        if self.mode not in (
+            "none",
+            "independent",
+            "joint",
+            "joint_mesh",
+            "alpha",
+            "alpha_joint_mesh",
+        ):
             raise ValueError(
-                f"Unknown noise mode: {mode}. Must be 'none', 'independent', 'joint', 'joint_mesh', or 'alpha'."
+                f"Unknown noise mode: {mode}. Must be 'none', 'independent', 'joint', "
+                "'joint_mesh', 'alpha', or 'alpha_joint_mesh'."
             )
 
     @property
@@ -74,12 +84,10 @@ class NoiseAugmentor:
 
     def sample_alpha_value(self) -> float:
         """
-        Sample a random alpha value uniformly from [alpha_min, alpha_max].
-
-        Returns:
-            Random alpha value for alpha complex generation
+        Draw an alpha value from U(alpha_min, alpha_max), or None in the modes
+        that do not resample it.
         """
-        if self.mode != "alpha":
+        if self.mode not in ("alpha", "alpha_joint_mesh"):
             return None
         return np.random.uniform(self.alpha_min, self.alpha_max)
 
@@ -87,7 +95,8 @@ class NoiseAugmentor:
         """
         Apply Gaussian noise to atom positions in parsed PDB arrays.
 
-        Creates a NEW tuple with a NEW atom_pos array. Original is never modified.
+        Returns a new tuple holding a new atom_pos array; the input is never
+        modified, since callers reuse the clean arrays for the other branch.
 
         Args:
             parsed_arrays: Tuple from parse_pdb_path containing:
@@ -98,7 +107,7 @@ class NoiseAugmentor:
             New tuple with noised atom_pos at index 5
         """
         parsed_list = list(parsed_arrays)
-        atom_pos = parsed_list[5].copy()  # Explicit copy
+        atom_pos = parsed_list[5].copy()
 
         noise = np.random.randn(*atom_pos.shape) * self.sigma_graph
 
@@ -128,9 +137,13 @@ class NoiseAugmentor:
             Tuple of:
             - parsed_for_surface: Arrays to use for surface generation
             - parsed_for_graph: Arrays to use for graph generation
-            - alpha_override: Optional alpha value (for 'alpha' mode)
+            - alpha_override: Alpha value under 'alpha' and 'alpha_joint_mesh',
+              None otherwise
         """
-        if self.mode == "joint" or self.mode == "joint_mesh":
+        if self.mode == "alpha_joint_mesh":
+            noised = self.noise_arrays(parsed_arrays)
+            return noised, noised, self.sample_alpha_value()
+        elif self.mode == "joint" or self.mode == "joint_mesh":
             noised = self.noise_arrays(parsed_arrays)
             return noised, noised, None
         elif self.mode == "independent":
@@ -148,16 +161,18 @@ class NoiseAugmentor:
         normals: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
-        Apply normal-directed noise to mesh vertices. Fires in 'independent' and
-        'joint_mesh' modes; no-op otherwise.
+        Apply normal-directed noise to mesh vertices. Fires in 'independent',
+        'joint_mesh' and 'alpha_joint_mesh' modes; no-op otherwise.
 
         - 'independent': surface is generated from clean atoms, then verts are
           displaced along normals here.
         - 'joint_mesh': surface is generated from noised atoms (joint propagation)
           AND verts are additionally displaced along normals here.
+        - 'alpha_joint_mesh': as 'joint_mesh', with the alpha-complex parameter
+          also drawn per sample from U(alpha_min, alpha_max).
         - All other modes: verts returned unchanged.
         """
-        if self.mode not in ("independent", "joint_mesh"):
+        if self.mode not in ("independent", "joint_mesh", "alpha_joint_mesh"):
             return verts
         from alphasurf.protein.create_surface import add_normal_noise
 
@@ -178,9 +193,8 @@ class PatchExtractor:
     binding site regions, then subsets the generated mesh to only those
     vertices within a radius of the reference patch.
 
-    This is called BEFORE computing operators (mass, L, evals, evecs),
-    so operators are computed only on the smaller patch (~1500 verts)
-    instead of the full surface (~10000+ verts).
+    This runs before the operators (mass, L, evals, evecs) are computed, so they
+    cover only the patch (~1500 verts) rather than the full surface (~10000+).
     """
 
     def __init__(

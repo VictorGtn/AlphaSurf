@@ -22,7 +22,6 @@ import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset
 
-
 # Zero-indexed, half-open model-input crop windows from S3F's evaluate.py.
 # Mutation strings and mutated_sequence remain in full-sequence coordinates.
 ASSAY_RESIDUE_RANGES: Dict[str, Tuple[int, int]] = {

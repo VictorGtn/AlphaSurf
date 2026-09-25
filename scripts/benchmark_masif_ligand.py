@@ -716,12 +716,13 @@ def main():
         "--output-dir",
         type=str,
         default=None,
-        help="Directory for benchmark CSVs and plots (default: script directory)",
+        help="Directory for benchmark CSVs and plots (default: outputs/masif_benchmark)",
     )
     args = parser.parse_args()
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    csv_dir = os.path.abspath(args.output_dir or script_dir)
+    default_dir = os.path.join(script_dir, "outputs", "masif_benchmark")
+    csv_dir = os.path.abspath(args.output_dir or default_dir)
     os.makedirs(csv_dir, exist_ok=True)
     os.chdir(script_dir)
 

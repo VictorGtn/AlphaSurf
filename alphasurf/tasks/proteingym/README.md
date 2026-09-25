@@ -4,7 +4,7 @@ Zero-shot protein fitness prediction on the ProteinGym substitutions benchmark
 (217 DMS assays, single and multi-site mutants), following the reference
 implementation of S3F (NeurIPS 2024).
 
-The `option_f` evaluator loads an AlphaSurf S3F-pretraining checkpoint and
+The `alphasurf` evaluator loads an AlphaSurf S3F-pretraining checkpoint and
 follows S3F's released ProteinGym scoring protocol: one masked prediction per
 unique mutation-site set, 1,022-residue windows for long sequences, and
 mutant-versus-WT log-odds scoring. Mutation sites with AF2 pLDDT below 70 use

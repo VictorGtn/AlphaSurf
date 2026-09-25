@@ -493,7 +493,7 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path(__file__).parent / "pinder_mesh_statistics",
+        default=Path(__file__).parent / "outputs" / "pinder_mesh_statistics",
     )
     args = parser.parse_args()
 

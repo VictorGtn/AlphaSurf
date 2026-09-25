@@ -9,7 +9,7 @@ Forward pass:
   2. Run frozen ESM2-650M -> per-residue 1280-dim embeddings
   3. Concatenate ESM embeddings into graph.x (31 -> 1311 dims)
   4. Apply mask plan to graph.x (AA one-hot + hphob)
-  5. Optionally lift masked ESM + distance from 3 nearby residues to each
+  5. Optionally lift masked ESM + distance from the nearest residues to each
      AlphaSurf vertex and concatenate with its geometric features
   6. Run ProteinEncoder -> per-residue embeddings
   7. Residue head (Dropout + Linear) -> (N_res, 20) logits
@@ -99,6 +99,43 @@ class SurfaceESMInjector(nn.Module):
         return surface
 
 
+class S3FFullSurfaceESMInjector(nn.Module):
+    def __init__(self, surface_dim: int, k: int = 3, dropout: float = 0.1):
+        super().__init__()
+        if k < 1:
+            raise ValueError(f"surface_esm.k must be positive, got {k}")
+        self.k = k
+        self.neighbor_projection = nn.Linear(
+            ESM_EMBED_DIM + 1, ESM_EMBED_DIM, bias=False
+        )
+        self.fusion = nn.Sequential(
+            nn.Linear(ESM_EMBED_DIM + surface_dim, ESM_EMBED_DIM * 2),
+            nn.Dropout(dropout),
+            nn.LayerNorm(ESM_EMBED_DIM * 2),
+            nn.ReLU(),
+            nn.Linear(ESM_EMBED_DIM * 2, ESM_EMBED_DIM),
+        )
+
+    def forward(self, surface, graph, esm_emb):
+        if surface is None or not hasattr(surface, "x") or surface.x is None:
+            return surface
+
+        nn_idx, nn_dists = _surface_residue_knn(
+            graph.node_pos.float(),
+            surface.verts.float(),
+            self.k,
+            res_batch=getattr(graph, "batch", None),
+            surf_batch=getattr(surface, "batch", None),
+        )
+        mean_esm = esm_emb.float()[nn_idx].mean(dim=1)
+        mean_distance = nn_dists.mean(dim=1, keepdim=True)
+        lifted = self.neighbor_projection(torch.cat([mean_esm, mean_distance], dim=-1))
+        surface.x = self.fusion(
+            torch.cat([lifted, surface.x.float()], dim=-1)
+        ).to(dtype=surface.x.dtype)
+        return surface
+
+
 class S3FPretrainNet(nn.Module):
     def __init__(self, cfg_encoder, cfg_head, cfg_surface_esm=None):
         super().__init__()
@@ -114,14 +151,22 @@ class S3FPretrainNet(nn.Module):
             and getattr(cfg_surface_esm, "enabled", False)
             and not self.is_s3f_exact
         )
-        self.surface_esm_injector = (
-            SurfaceESMInjector(
-                output_dim=cfg_head.encoded_dims,
-                k=int(getattr(cfg_surface_esm, "k", 3)),
-            )
-            if surface_esm_enabled
-            else None
-        )
+        self.surface_esm_injector = None
+        if surface_esm_enabled:
+            surface_esm_mode = str(getattr(cfg_surface_esm, "mode", "light"))
+            if surface_esm_mode == "light":
+                self.surface_esm_injector = SurfaceESMInjector(
+                    output_dim=cfg_head.encoded_dims,
+                    k=int(getattr(cfg_surface_esm, "k", 3)),
+                )
+            elif surface_esm_mode == "s3f_full":
+                self.surface_esm_injector = S3FFullSurfaceESMInjector(
+                    surface_dim=int(cfg_surface_esm.input_dim),
+                    k=int(getattr(cfg_surface_esm, "k", 3)),
+                    dropout=float(getattr(cfg_surface_esm, "dropout", 0.1)),
+                )
+            else:
+                raise ValueError(f"Unknown surface_esm.mode: {surface_esm_mode}")
 
         self.residue_head = nn.Sequential(
             nn.Dropout(self.head_dropout),
@@ -184,7 +229,9 @@ class S3FPretrainNet(nn.Module):
 
         per_protein = self._collect_per_protein_mask_plan(batch, ptr, B, device)
 
-        esm_emb = self._run_esm_masked(sequences, per_protein, device, graph.x.dtype)
+        esm_emb, sequence_logits = self._run_esm_masked(
+            sequences, per_protein, device, graph.x.dtype
+        )
 
         if "s3f_exact" in self.encoder_name:
             graph.x = esm_emb
@@ -205,6 +252,7 @@ class S3FPretrainNet(nn.Module):
 
         return {
             "logits": logits,
+            "sequence_logits": sequence_logits,
             "global_masked": global_masked,
             "target_residues": target_residues,
         }
@@ -274,12 +322,21 @@ class S3FPretrainNet(nn.Module):
 
         results = self.esm_model(tokens, repr_layers=[ESM_REPR_LAYER])
         esm_emb = results["representations"][ESM_REPR_LAYER]
+        sequence_logits = results["logits"]
 
-        parts = []
+        embedding_parts = []
+        logits_parts = []
         for i, seq in enumerate(sequences):
             n = len(seq)
-            parts.append(esm_emb[i, 1 : 1 + n, :])
-        return torch.cat(parts, dim=0).to(dtype)
+            token_slice = slice(1, 1 + n)
+            embedding_parts.append(esm_emb[i, token_slice, :])
+            logits_parts.append(
+                sequence_logits[i, token_slice, :][:, self._res_type_to_esm_tok]
+            )
+        return (
+            torch.cat(embedding_parts, dim=0).to(dtype),
+            torch.cat(logits_parts, dim=0),
+        )
 
     def _apply_node_mask(self, x, per_protein, ptr, B):
         x = x.clone()

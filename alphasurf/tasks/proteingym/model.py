@@ -1,33 +1,32 @@
 """
-Encoder loading and per-protein forward pass for ProteinGym scoring.
+Checkpoint loading and the on-the-fly ProteinLoader used by ProteinGym scoring.
 
-Option D: load the PINDER checkpoint (PinderPairModule), run the encoder
-unchanged, score via embedding-delta on a cloned graph.
-Option F: load the S3F checkpoint (S3FPretrainModule), run the full model
-(encoder + ESM + residue head), score via log-odds.
+Both scoring methods run the S3F checkpoint (S3FPretrainModule): `alphasurf`
+uses the full model (encoder + ESM + residue head), `esm2` uses only its frozen
+ESM-2 branch. `s3f_exact` checkpoints read an S3FReference instead of the
+ProteinLoader output.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple
+from typing import Optional
 
 import torch
 
 from alphasurf.protein.protein_loader import ProteinLoader
 from alphasurf.utils.config_utils import merge_surface_config
-from alphasurf.utils.data_utils import AtomBatch
 
 
-def load_encoder_module(ckpt_path: str | Path) -> Tuple[PinderPairModule, str]:
-    """Load the PINDER checkpoint and put the encoder in eval mode."""
-    from alphasurf.tasks.pinder_pair.pl_model import PinderPairModule
+@dataclass
+class S3FReference:
+    """An AF2 structure in the form the s3f_exact encoder consumes."""
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    module = PinderPairModule.load_from_checkpoint(str(ckpt_path), map_location=device)
-    module.eval()
-    module.to(device)
-    return module, device
+    sequence: str
+    bb_pos: torch.Tensor  # (n_res, 3, 3) N/CA/C
+    surface: dict  # full-protein surf_pos, surf_normals, surf_feat, res2surf
+    b_factor: Optional[torch.Tensor]  # (n_res,) AF2 pLDDT
 
 
 def load_s3f_module(ckpt_path: str | Path):
@@ -56,33 +55,27 @@ def build_protein_loader(module) -> ProteinLoader:
     )
 
 
-def encode_graphs(
-    module: PinderPairModule,
-    graphs,
-    surfaces,
-    device: str,
-) -> torch.Tensor:
-    """Encode a batch of (graph, surface) pairs and return per-residue graph
-    embeddings concatenated along the node dimension with a `ptr` index.
+def load_s3f_reference(pdb_path, surface_dir) -> Optional[S3FReference]:
+    """Load the precomputed S3F surface of an AF2 structure.
 
-    `graphs` and `surfaces` are lists of length B. Returns `(x, ptr)` where
-    `x` has shape `(total_nodes, d)` and `ptr` has shape `(B + 1,)`.
+    `surface_dir` holds `<pdb file name>.pt` files in the precompute_s3f_exact
+    format, written by precompute_alpha_s3f.py or convert_s3f_official_surfaces.py
+    with the ProteinGym AF2 directory as input. The pLDDT is read from the PDB.
     """
-    data_list = [
-        {"name": str(i), "surface": surfaces[i], "graph": graphs[i]}
-        for i in range(len(graphs))
-    ]
-    atom_batch = AtomBatch.from_data_list(data_list)
-    atom_batch.surface = atom_batch.surface.to(device)
-    atom_batch.graph = atom_batch.graph.to(device)
-    with torch.no_grad():
-        _, graph_emb = module.model.encoder(
-            graph=atom_batch.graph, surface=atom_batch.surface
-        )
-    return graph_emb.x, graph_emb.ptr
+    surface_path = Path(surface_dir) / f"{Path(pdb_path).name}.pt"
+    if not surface_path.is_file():
+        return None
+    data = torch.load(surface_path, weights_only=False, map_location="cpu")
+    surface = {
+        key: data[key] for key in ("surf_pos", "surf_normals", "surf_feat", "res2surf")
+    }
 
-
-def encode_single_graph(module, graph, surface, device: str) -> torch.Tensor:
-    """Encode one protein and return its `(N_residues, d)` graph embedding."""
-    x, ptr = encode_graphs(module, [graph], [surface], device)
-    return x[ptr[0].item() : ptr[1].item()]
+    b_factor = ProteinLoader._read_residue_b_factors(str(pdb_path))
+    if b_factor is not None and len(b_factor) != len(data["sequence"]):
+        b_factor = None
+    return S3FReference(
+        sequence=data["sequence"],
+        bb_pos=data["bb_pos"].float(),
+        surface=surface,
+        b_factor=None if b_factor is None else torch.from_numpy(b_factor).float(),
+    )

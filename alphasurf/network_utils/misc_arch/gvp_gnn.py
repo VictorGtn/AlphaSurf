@@ -123,7 +123,6 @@ class GVP(nn.Module):
             self.ws = nn.Linear(self.si, self.so)
 
         self.scalar_act, self.vector_act = activations
-        self.dummy_param = nn.Parameter(torch.empty(0))
 
     def forward(self, x):
         """
@@ -152,7 +151,7 @@ class GVP(nn.Module):
         else:
             s = self.ws(x)
             if self.vo:
-                v = torch.zeros(s.shape[0], self.vo, 3, device=self.dummy_param.device)
+                v = torch.zeros(s.shape[0], self.vo, 3, device=s.device)
         if self.scalar_act:
             s = self.scalar_act(s)
 
@@ -168,13 +167,12 @@ class _VDropout(nn.Module):
     def __init__(self, drop_rate):
         super(_VDropout, self).__init__()
         self.drop_rate = drop_rate
-        self.dummy_param = nn.Parameter(torch.empty(0))
 
     def forward(self, x):
         """
         :param x: `torch.Tensor` corresponding to vector channels
         """
-        device = self.dummy_param.device
+        device = x.device
         if not self.training:
             return x
         mask = torch.bernoulli(

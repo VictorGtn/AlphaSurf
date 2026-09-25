@@ -21,7 +21,6 @@ class FocalLoss(nn.Module):
         """
         if targets.shape != logits.shape:
             targets = targets.view_as(logits)
-        # Ensure targets are float
         targets = targets.float()
 
         bce_loss = F.binary_cross_entropy_with_logits(logits, targets, reduction="none")
@@ -55,19 +54,14 @@ class PinderPairLoss(nn.Module):
         emb_right,
         pair_labels,
     ):
-        # 1. Binding Site Loss (L_site)
         l_site_left = self.focal(site_pred_left, site_labels_left)
         l_site_right = self.focal(site_pred_right, site_labels_right)
         l_site = self.lambda_site * (l_site_left + l_site_right)
 
-        # 2. Pairwise Complementarity Loss (L_comp)
         # Focal on dot product (treating dot prod as logit)
         dot_sim = (emb_left * emb_right).sum(dim=1, keepdim=True)
-        # Squeeze last dim for focal loss input if needed, but BCEWithLogits accepts (N, 1)
         l_comp = self.focal(dot_sim, pair_labels.reshape(-1, 1).float())
 
-        # 3. Unit Norm Regularization
-        # Penalize deviation from unit norm
         norm_l = torch.norm(emb_left, p=2, dim=1)
         norm_r = torch.norm(emb_right, p=2, dim=1)
         l_norm = ((norm_l - 1.0) ** 2).mean() + ((norm_r - 1.0) ** 2).mean()

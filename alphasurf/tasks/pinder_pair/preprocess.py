@@ -238,7 +238,6 @@ def create_index_parquet(output_dir: str):
     output_dir = Path(output_dir)
     dfs = []
 
-    # Load all split files
     for csv_file in output_dir.glob("systems_*.csv"):
         df = pd.read_csv(csv_file)
         dfs.append(df)
@@ -357,10 +356,8 @@ To train:
     python train.py data_dir={output_dir}
 
 To evaluate different test settings:
-    # Prepare apo test set
     python preprocess.py --output_dir {output_dir} --split test --test_setting apo
 
-    # Prepare AF2 test set
     python preprocess.py --output_dir {output_dir} --split test --test_setting af2
 """)
 

@@ -15,6 +15,21 @@ poisson_net:
   dropout: ${model_dropout}
   config: { cmlp_nlayers: 3 }
 
+poisson_net_paper_seg:
+  _target_: alphasurf.network_utils.misc_arch.poissonnet.PoissonNetBlock
+  C_width: ${model_hdim}
+  width: ${model_hdim}
+  dropout: ${model_dropout}
+  # PoissonNet paper's semantic-segmentation configuration.
+  # Keep this explicit so the surrounding hybrid model can retain model_dropout.
+  config:
+    cmlp_nlayers: 1
+    inner_prod_features: true
+    cmlp_modulate: true
+    dropout_p: 0.0
+    drop_path: 0.0
+    mlp_norm: false
+
 gcn_block:
   _target_: alphasurf.network_utils.GCNx2Block
   dim_in: ${model_hdim}
@@ -143,6 +158,12 @@ poisson|pronet|gvp:
   graph_encoder: ${pronet_block}
   message_passing: ${gvp_comm}
 
+poisson_paper_seg|pronet|gvp:
+  _target_: alphasurf.networks.ProteinEncoderBlock
+  surface_encoder: ${poisson_net_paper_seg}
+  graph_encoder: ${pronet_block}
+  message_passing: ${gvp_comm}
+
 poisson|pronet|HMRMP:
   _target_: alphasurf.networks.ProteinEncoderBlock
   surface_encoder: ${poisson_net}
@@ -252,3 +273,7 @@ s3f_fusion:
     _target_: alphasurf.network_utils.misc_arch.s3f_blocks.S3FFusion
     node_h_dim: [256, 16]
     num_surf_res_neighbor: 20
+    # local: per-residue 60-NN pool (paper Eq. 5).
+    # released: single batch-global surface mean, as the released S3F code
+    # actually computes it. Use for reproducing published S3F behaviour.
+    readout: local

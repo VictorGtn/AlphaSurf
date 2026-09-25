@@ -32,7 +32,6 @@ def _offset_and_concat(
             parts.append(indices[i] + cum_lengths[i - 1])
         return torch.cat(parts)
     else:
-        # Tensor format
         if split_labels is not None and isinstance(split_labels, list):
             parts = []
             start = 0
@@ -65,7 +64,6 @@ class PinderPairNet(nn.Module):
 
         encoded_dims = cfg_head.encoded_dims
 
-        # Binding Site Prediction Head
         self.binding_site_head = nn.Sequential(
             nn.Linear(encoded_dims, encoded_dims),
             nn.ReLU(),
@@ -73,7 +71,6 @@ class PinderPairNet(nn.Module):
             nn.Linear(encoded_dims, 1),
         )
 
-        # MLP Pair Heads (for focal mode)
         self.pair_head_graph = nn.Sequential(
             nn.Linear(encoded_dims * 2, encoded_dims),
             nn.ReLU(),
@@ -88,17 +85,12 @@ class PinderPairNet(nn.Module):
         )
 
     def forward(self, batch):
-        # Encode both proteins with shared encoder
         surface_1, graph_1 = self.encoder(graph=batch.graph_1, surface=batch.surface_1)
         surface_2, graph_2 = self.encoder(graph=batch.graph_2, surface=batch.surface_2)
 
-        # --- Graph / Residue Level ---
-
-        # 1. Binding Site Predictions (for all nodes)
         site_pred_1 = self.binding_site_head(graph_1.x)
         site_pred_2 = self.binding_site_head(graph_2.x)
 
-        # 2. Extract features at pair positions
         # Apply cumulative offsets to batched graph indices
         base_left = torch.cumsum(batch.g1_len, dim=0)
         base_right = torch.cumsum(batch.g2_len, dim=0)
@@ -109,14 +101,7 @@ class PinderPairNet(nn.Module):
         emb_left = graph_1.x[idx_left]
         emb_right = graph_2.x[idx_right]
 
-        # Pair logits via MLP head
         pair_logit_graph = self.pair_head_graph(torch.cat([emb_left, emb_right], dim=1))
-
-        # Use indexing to get site predictions for the pairs (if needed for debugging)
-        # site_pred_left = site_pred_1[idx_left]
-        # site_pred_right = site_pred_2[idx_right]
-
-        # --- Surface Level ---
 
         has_surface_pairs = (
             hasattr(batch, "surface_idx_left")
@@ -125,11 +110,9 @@ class PinderPairNet(nn.Module):
         )
 
         if has_surface_pairs:
-            # 1. Surface Site Predictions
             surf_site_pred_1 = self.binding_site_head(surface_1.x)
             surf_site_pred_2 = self.binding_site_head(surface_2.x)
 
-            # 2. Extract features at pair positions
             s1_lens = torch.tensor(
                 [s.x.shape[0] for s in batch.surface_1.to_data_list()],
                 device=batch.surface_1.x.device,
@@ -159,10 +142,8 @@ class PinderPairNet(nn.Module):
                     torch.cat([processed_left_surf, processed_right_surf], dim=1)
                 )
 
-        # Prepare output dictionary
         outputs = {}
 
-        # Graph outputs
         outputs["graph"] = {
             "emb_left": emb_left,
             "emb_right": emb_right,

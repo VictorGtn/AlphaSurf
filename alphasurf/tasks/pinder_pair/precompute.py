@@ -19,7 +19,6 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-# Add project root to path
 if __name__ == "__main__":
     sys.path.append(str(Path(__file__).absolute().parents[3]))
 
@@ -43,7 +42,6 @@ def _process_task(task):
 
 def get_loader(cfg):
     """Initialize ProteinLoader from config."""
-    # Force on_fly mode
     from omegaconf import OmegaConf, open_dict
 
     # Merge on_fly settings into surface config to ensure params like
@@ -141,7 +139,6 @@ def process_protein(
 def main(cfg):
     print(f"Precomputing PINDER data using config: {cfg.on_fly.surface_method}")
 
-    # Setup Output Dirs
     # We use a subfolder based on surface method to avoid collisions
     method_str = f"{cfg.on_fly.surface_method}_{cfg.on_fly.face_reduction_rate}"
     if cfg.on_fly.surface_method == "alpha_complex":
@@ -154,7 +151,7 @@ def main(cfg):
         if gs is not None:
             method_str += f"_gs{gs}"
         if cfg.on_fly.surface_method == "edtsurf":
-            surface_mode = cfg.on_fly.get("edtsurf_surface_mode", 1)
+            surface_mode = cfg.on_fly.get("edtsurf_surface_mode", 2)
             if surface_mode != 1:
                 method_str += f"_h{surface_mode}"
 
@@ -196,7 +193,7 @@ def main(cfg):
                     pdb_path = os.path.join(pdb_dir_path, f"{s[key]}.pdb")
                     all_tasks.append((f"{s[key]}_holo", pdb_path))
 
-    # 2. Test (All settings) — save with setting suffix
+    # Test systems are saved per setting, with the setting as filename suffix.
     csv_files = list(Path(cfg.data_dir).glob("systems_test_*.csv"))
     for csv_path in csv_files:
         setting = csv_path.stem.replace("systems_test_", "")
@@ -223,7 +220,6 @@ def main(cfg):
 
     print(f"Total unique proteins to process: {len(unique_tasks)}")
 
-    # Processing
     t_wall_start = time.time()
 
     debug_mode = False
@@ -300,7 +296,6 @@ def main(cfg):
 
     t_wall = time.time() - t_wall_start
 
-    # Summary
     success = [r for r, _, _, _, _, _ in results if r == "success"]
     skipped = [r for r, _, _, _, _, _ in results if r == "skipped"]
     errors = [

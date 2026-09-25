@@ -1,3 +1,8 @@
+"""
+Spectral operators for meshes: cotan Laplacian, mass matrix, eigenbasis,
+tangent frames and gradient matrices, plus the PoissonNet operator set.
+"""
+
 import os
 import os.path
 import sys
@@ -16,11 +21,6 @@ sys.path.append(os.path.join(script_dir, "..", ".."))
 
 import alphasurf.utils.torch_utils as diff_utils  # noqa: E402
 
-"""
-In this file, we define functions to make the following transformations :
-.ply -> DiffNets operators in .npz format
-"""
-
 
 class TriMesh(object):
     def __init__(self, verts, faces):
@@ -32,11 +32,9 @@ class TriMesh(object):
         self.mass = None
 
     def LB_decomposition(self, k=None):
-        # stiffness matrix
         self.stiffness = self.compute_stiffness_matrix()
-        # mass matrix
         self.mass = self.compute_fem_mass_matrix()
-        # compute Laplace-Beltrami basis (eigen-vectors are stored column-wise)
+        # Laplace-Beltrami basis; eigenvectors are stored column-wise.
         self.eigen_vals, self.eigen_vecs = eigsh(
             A=self.stiffness, k=k, M=self.mass, sigma=-0.01
         )
@@ -78,7 +76,6 @@ class TriMesh(object):
     def compute_fem_mass_matrix(self):
         verts = self.verts
         faces = self.faces
-        # compute face areas
         v1 = verts[faces[:, 0]]
         v2 = verts[faces[:, 1]]
         v3 = verts[faces[:, 2]]
@@ -100,25 +97,10 @@ class TriMesh(object):
 def fem_decomp(verts, faces, max_eigen_val=5, k=128):
     trimesh = TriMesh(verts=verts, faces=faces.astype(int))
 
-    # HMR uses a growing and variable number of eigen vecs. This only makes sense for small surfaces such as pockets.
-    # In our case, even after 600 evecs, the eval is 1.06 << 5=hmr_cutoff
-    # num_verts = len(verts)
-    # num_eigs = int(0.16 * num_verts)
-    # max_val = 0
-    # while max_val < max_eigen_val:
-    #     num_eigs += 5
-    #     print(num_eigs, max_val)
-    #     trimesh.LB_decomposition(k=num_eigs)  # scipy eigsh must have k < N
-    #     max_val = np.max(trimesh.eigen_vals)
-    # cutoff = np.argmax(trimesh.eigen_vals > max_eigen_val)
-    # eigen_vals = trimesh.eigen_vals[:cutoff]
-    # eigen_vecs = trimesh.eigen_vecs[:, :cutoff]
-
     trimesh.LB_decomposition(k=k)  # scipy eigsh must have k < N
     eigen_vals = trimesh.eigen_vals
     eigen_vecs = trimesh.eigen_vecs
 
-    # save features
     eigen_vals = eigen_vals.astype(np.float32)
     eigen_vecs = eigen_vecs.astype(np.float32)
     mass = trimesh.mass.astype(np.float32)
@@ -127,7 +109,8 @@ def fem_decomp(verts, faces, max_eigen_val=5, k=128):
 
 def normalize(x, divide_eps=1e-6):
     """
-    Computes norm^2 of an array of vectors. Given (shape,d), returns (shape) after norm along last dimension
+    Scale an array of vectors to unit length along the last dimension.
+    Given (..., d), returns (..., d).
     """
     if len(x.shape) == 1:
         raise ValueError(
@@ -175,7 +158,6 @@ def vertex_normals(verts, faces, permissive=False, use_igl=False, name=""):
 
         return igl.per_vertex_normals(verts, faces)
 
-    # --- Compute normals ---
     normals = mesh_vertex_normals(verts, faces)
 
     # if any are NaN, diagnose and attempt fix
@@ -240,11 +222,8 @@ def vertex_normals(verts, faces, permissive=False, use_igl=False, name=""):
 
 def build_tangent_frames(verts, faces, normals=None):
     """
-    Define a local frame based on three normal to get an approx of local manifold
-    :param verts:
-    :param faces:
-    :param normals:
-    :return:
+    Build a per-vertex orthonormal frame (basisX, basisY, normal) approximating
+    the local tangent plane. Returns (V, 3, 3).
     """
     V = verts.shape[0]
     dtype = verts.dtype
@@ -270,11 +249,8 @@ def build_tangent_frames(verts, faces, normals=None):
 
 def edge_tangent_vectors(verts, frames, edges):
     """
-    Get tangent vector of edges in each local frame
-    :param verts:
-    :param frames:
-    :param edges:
-    :return:
+    Express each edge vector in the (basisX, basisY) frame of its tail vertex.
+    Returns (E, 2).
     """
     edge_vecs = verts[edges[1, :], :] - verts[edges[0, :], :]
     basisX = frames[edges[0, :], 0, :]
@@ -339,12 +315,10 @@ def build_grad(verts, edges, edge_tangent_vectors):
             col_inds.append(i_glob)
             data_vals.append(sol_coefs[i_neigh])
 
-    # build the sparse matrix
     row_inds = np.array(row_inds, dtype=np.int32)
     col_inds = np.array(col_inds, dtype=np.int32)
     data_vals = np.array(data_vals)
 
-    # data_vals = np.array(data_vals, dtype=np.float32)
     mat = scipy.sparse.coo_matrix(
         (data_vals, (row_inds, col_inds)), shape=(N, N)
     ).tocsc()
@@ -380,6 +354,30 @@ def compute_operators(
     Note: for a generalized eigenvalue problem, the mass matrix matters! The eigenvectors are only orthonormal with respect to the mass matrix,
     like v^H M v, so the mass (given as the diagonal vector massvec) needs to be used in projections, etc.
     """
+    massvec, L, evals, evecs = laplacian_eigenbasis(verts, faces, k_eig, use_fem_decomp)
+
+    # Read off neighbors & rotations from the Laplacian
+    L_coo = L.tocoo()
+    inds_row = L_coo.row
+    inds_col = L_coo.col
+
+    # For meshes, we use the same edges as were used to build the Laplacian.
+    frames = build_tangent_frames(verts, faces, normals=normals)
+    edges = np.stack((inds_row, inds_col), axis=0)
+    edge_vecs = edge_tangent_vectors(verts, frames, edges)
+    grad_mat = build_grad(verts, edges, edge_vecs)
+
+    # Split complex gradient in to two real sparse mats (torch doesn't like complex sparse matrices)
+    gradX = np.real(grad_mat).astype(np.float32)
+    gradY = np.imag(grad_mat).astype(np.float32)
+    return frames, massvec, L, evals, evecs, gradX, gradY
+
+
+def laplacian_eigenbasis(verts, faces, k_eig=128, use_fem_decomp=False):
+    """Cotan Laplacian, lumped mass and Laplacian eigenpairs of a mesh.
+
+    Returns (massvec, L, evals, evecs) as used by compute_operators.
+    """
     eps = 1e-8
 
     # Clamp k_eig for small meshes (eigsh requires k < n_verts)
@@ -389,7 +387,6 @@ def compute_operators(
         raise ValueError(
             f"Mesh too small: {n_verts}, need at least {k_eig} eigenvectors"
         )
-    # Build the scalar Laplacian
     L = pp3d.cotan_laplacian(verts, faces, denom_eps=1e-10)
 
     if np.isnan(L.data).any():
@@ -398,7 +395,6 @@ def compute_operators(
     # Make L csc just out of coherence with the rest; arrays are the same since L is symmetric
     L = L.tocsc()
 
-    # === Compute the eigenbasis
     if not use_fem_decomp:
         massvec = pp3d.vertex_areas(verts, faces)
         massvec += eps * np.mean(massvec)
@@ -407,7 +403,6 @@ def compute_operators(
         massvec = scipy.sparse.diags(massvec)
         M_mat = massvec
 
-        # Prepare matrices
         L_eigsh = (L + scipy.sparse.identity(L.shape[0]) * eps).tocsc()
         eigs_sigma = eps
 
@@ -438,23 +433,7 @@ def compute_operators(
     else:
         # It's a numpy array (diagonal elements)
         massvec = massvec.astype(np.float32)
-
-    # Read off neighbors & rotations from the Laplacian
-    L_coo = L.tocoo()
-    inds_row = L_coo.row
-    inds_col = L_coo.col
-
-    # == Build gradient matrices
-    # For meshes, we use the same edges as were used to build the Laplacian.
-    frames = build_tangent_frames(verts, faces, normals=normals)
-    edges = np.stack((inds_row, inds_col), axis=0)
-    edge_vecs = edge_tangent_vectors(verts, frames, edges)
-    grad_mat = build_grad(verts, edges, edge_vecs)
-
-    # Split complex gradient in to two real sparse mats (torch doesn't like complex sparse matrices)
-    gradX = np.real(grad_mat).astype(np.float32)
-    gradY = np.imag(grad_mat).astype(np.float32)
-    return frames, massvec, L, evals, evecs, gradX, gradY
+    return massvec, L, evals, evecs
 
 
 def get_operators(
@@ -467,7 +446,8 @@ def get_operators(
     use_fem_decomp=False,
 ):
     """
-    We remove the hashing util and add a filename for the npz instead.
+    Compute the operators of a mesh and cache them at `npz_path`. Does nothing
+    if that file already exists, unless `recompute` is set.
     """
     if not os.path.exists(npz_path) or recompute:
         frames, mass, L, evals, evecs, gradX, gradY = compute_operators(
@@ -521,7 +501,8 @@ def compute_poisson_operators(verts, faces, high_precision=True):
     import torch_mesh_ops as TMO
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    V = torch.as_tensor(verts, dtype=torch.float32).to(device)
+    operator_dtype = torch.float64 if high_precision else torch.float32
+    V = torch.as_tensor(verts, dtype=operator_dtype).to(device)
     F = torch.as_tensor(faces, dtype=torch.long).to(device)
     V = V.unsqueeze(0).contiguous()
     F = F.unsqueeze(0).contiguous()
@@ -546,6 +527,15 @@ def build_poisson_solver(L, device=None):
         L = L.to(device)
     nV = L.shape[-1]
     eps = 1e-6
+
+    # Cotangent Laplacians have a constant nullspace.
+    sparse_eps_diag = torch.sparse.spdiags(
+        eps * torch.ones(nV, dtype=L.dtype),
+        torch.zeros(1, dtype=torch.long),
+        (nV, nV),
+    ).to(L.device)
+    L = (L + sparse_eps_diag).coalesce()
+
     for _ in range(5):
         L = L.coalesce()
         try:
@@ -559,7 +549,7 @@ def build_poisson_solver(L, device=None):
         except Exception:
             eps *= 10.0
             sparse_eps_diag = torch.sparse.spdiags(
-                eps * torch.ones(nV),
+                eps * torch.ones(nV, dtype=L.dtype),
                 torch.zeros(1, dtype=torch.long),
                 (nV, nV),
             ).to(L.device)
@@ -569,7 +559,8 @@ def build_poisson_solver(L, device=None):
 
 def load_operators(npz_file):
     """
-    We remove the hashing util and add a filename for the npz instead.
+    Read back a cache written by get_operators.
+    Returns (mass, L, evals, evecs, vnormals, gradX, gradY).
     """
     if not isinstance(npz_file, np.lib.npyio.NpzFile):
         npz_file = np.load(npz_file, allow_pickle=True)
@@ -592,7 +583,6 @@ if __name__ == "__main__":
     faces = np.asarray(mesh.triangles, dtype=np.int32)
 
     operator_file = "../../data/example_files/example_operator.npz"
-    # get_operators(operator_file, vertices, faces, k_eig=128, recompute=True, use_fem_decomp=False)
     get_operators(
         operator_file, vertices, faces, k_eig=128, recompute=True, use_fem_decomp=True
     )

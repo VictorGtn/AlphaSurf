@@ -1,9 +1,13 @@
 """
 Lightning DataModule for CATH S3F-style pretraining.
 
-Two data paths:
-  - s3f_exact encoder: loads precomputed dMaSIF point clouds from
-    `precompute_dir` via CATHDatasetS3FExact.
+Three data paths:
+  - s3f_exact encoder, `on_fly` null: loads precomputed dMaSIF point clouds
+    from `precompute_dir` via CATHDatasetS3FExact.
+  - s3f_exact encoder, `on_fly` set: parses PDBs via CATHDatasetS3FExactOnFly.
+    With `on_fly.surface_in_workers` the dMaSIF cloud is generated per protein
+    on CPU inside the dataloader worker; otherwise it is generated for each
+    batch in `on_after_batch_transfer`, once the batch is on the GPU.
   - other encoders: on-the-fly ProteinLoader pipeline (alpha-complex mesh
     + residue graph) via CATHDataset.
 
@@ -26,11 +30,20 @@ class S3FPretrainDataModule(pl.LightningDataModule):
         self.encoder_name = getattr(cfg.encoder, "name", "")
         self.is_s3f_exact = "s3f_exact" in self.encoder_name
 
-        if self.is_s3f_exact:
+        # For s3f_exact, `on_fly` selects runtime dMaSIF generation; leaving it
+        # null uses `precompute_dir`, as elsewhere in the repo.
+        self.s3f_on_fly = self.is_s3f_exact and getattr(cfg, "on_fly", None) is not None
+        self.s3f_surface_in_workers = self.s3f_on_fly and bool(
+            getattr(cfg.on_fly, "surface_in_workers", True)
+        )
+
+        if self.s3f_on_fly:
+            self.pdb_dir = cfg.data_dir
+        elif self.is_s3f_exact:
             if not getattr(cfg, "precompute_dir", None):
                 raise ValueError(
                     "precompute_dir must be set for s3f_exact encoder "
-                    "(run precompute_s3f_exact.py first)"
+                    "(run precompute_s3f_exact.py first, or set on_fly)"
                 )
             self.precompute_dir = cfg.precompute_dir
         else:
@@ -101,7 +114,14 @@ class S3FPretrainDataModule(pl.LightningDataModule):
                     raise ValueError(
                         "surface_esm requires an s_pre_block in the first encoder block"
                     )
-                block0.s_pre_block.dim_in += cfg.cfg_head.encoded_dims
+                surface_esm_mode = str(getattr(surface_esm_cfg, "mode", "light"))
+                if surface_esm_mode == "light":
+                    block0.s_pre_block.dim_in += cfg.cfg_head.encoded_dims
+                elif surface_esm_mode == "s3f_full":
+                    surface_esm_cfg.input_dim = block0.s_pre_block.dim_in
+                    block0.s_pre_block.dim_in = ESM_EMBED_DIM
+                else:
+                    raise ValueError(f"Unknown surface_esm.mode: {surface_esm_mode}")
 
     @staticmethod
     def _collate_fn(batch):
@@ -110,8 +130,30 @@ class S3FPretrainDataModule(pl.LightningDataModule):
             return None
         return AtomBatch.from_data_list(batch)
 
+    def on_after_batch_transfer(self, batch, dataloader_idx):
+        """Generate the batch's dMaSIF surfaces once it is on the GPU."""
+        if not self.s3f_on_fly or self.s3f_surface_in_workers or batch is None:
+            return batch
+        from alphasurf.tasks.s3f_pretrain.dataset_s3f_exact import attach_surfaces
+
+        return attach_surfaces(batch, device=batch.graph.node_pos.device)
+
     def _create_dataset(self, split: str):
         seed = getattr(self.cfg, "seed", 0) + (0 if split == "train" else 1)
+        if self.s3f_on_fly:
+            from alphasurf.tasks.s3f_pretrain.dataset_s3f_exact import (
+                CATHDatasetS3FExactOnFly,
+            )
+
+            return CATHDatasetS3FExactOnFly(
+                pdb_dir=self.pdb_dir,
+                split=split,
+                mask_rate=getattr(self.cfg, "mask_rate", 0.15),
+                max_length=getattr(self.cfg, "max_length", 250),
+                seed=seed,
+                surface_in_workers=self.s3f_surface_in_workers,
+            )
+
         if self.is_s3f_exact:
             from alphasurf.tasks.s3f_pretrain.dataset_s3f_exact import (
                 CATHDatasetS3FExact,

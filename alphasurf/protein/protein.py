@@ -1,9 +1,4 @@
-"""
-Unified Protein representation bundling surface and graph.
-
-This module provides a dataclass that encapsulates both surface and graph
-representations of a protein, making it reusable across downstream tasks.
-"""
+"""Unified Protein representation bundling surface and graph."""
 
 from dataclasses import dataclass, field
 from typing import Optional
@@ -16,11 +11,8 @@ from torch_geometric.data import Data
 @dataclass
 class Protein:
     """
-    Unified protein representation bundling surface and graph.
-
-    This is the core abstraction that decouples protein loading from
-    task-specific logic. A Protein can be loaded from disk or generated
-    on-the-fly, and then passed to task-specific datasets.
+    Decouples protein loading from task-specific logic: a Protein is loaded
+    from disk or generated on-the-fly, then passed to a task dataset.
 
     Attributes:
         surface: SurfaceObject with vertices, faces, operators, and features

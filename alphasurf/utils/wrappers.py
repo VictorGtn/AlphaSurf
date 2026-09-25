@@ -92,13 +92,19 @@ def get_default_input(in_dim_surface, in_dim_graph, model_dim=128, dropout=0.1):
     return input_block
 
 
-def get_middle_block(model_dim=128, dropout=0.1, surface_encoder="diffusion"):
+def get_middle_block(
+    model_dim=128,
+    dropout=0.1,
+    surface_encoder="diffusion",
+    diffusion_gradient_features=True,
+):
     """
     Input goes through a surface and a graph encoder,
     then each feature is compacted, exchanged with a message passing and aggregated back
     :param model_dim:
     :param dropout:
     :param surface_encoder: "diffusion" or "poisson"
+    :param diffusion_gradient_features: Include tangent-gradient features.
     :return:
     """
     # Encoders
@@ -113,6 +119,7 @@ def get_middle_block(model_dim=128, dropout=0.1, surface_encoder="diffusion"):
             use_layernorm=True,
             init_time=10,
             init_std=10,
+            with_gradient_features=diffusion_gradient_features,
         )
     pronet = ProNet(hidden_channels=model_dim, mid_emb=half_dim, dropout=0.1)
 
@@ -158,6 +165,7 @@ def get_default_model(
     dropout=0.1,
     n_block=4,
     surface_encoder="diffusion",
+    diffusion_gradient_features=True,
 ):
     """
     The default alphasurf construct leverages an input encoding block along with four middle blocks
@@ -167,6 +175,7 @@ def get_default_model(
     :param dropout:
     :param n_block:
     :param surface_encoder: "diffusion" or "poisson"
+    :param diffusion_gradient_features: Include tangent-gradient features.
     :return:
     """
     block_list = [
@@ -177,7 +186,10 @@ def get_default_model(
     for _ in range(n_block):
         block_list.append(
             get_middle_block(
-                model_dim=model_dim, dropout=dropout, surface_encoder=surface_encoder
+                model_dim=model_dim,
+                dropout=dropout,
+                surface_encoder=surface_encoder,
+                diffusion_gradient_features=diffusion_gradient_features,
             )
         )
     return ProteinEncoder.from_blocks_list(block_list=block_list)

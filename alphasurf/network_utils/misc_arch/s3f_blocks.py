@@ -77,16 +77,20 @@ def _surface_residue_knn(
     return nn_idx, nn_dists
 
 
-def _edge_features(pos, edge_index):
+def _edge_features(pos, edge_index, flip_vector=False):
     """RBF (16-dim scalar, D_max=20, σ=1.25) + edge vector (1) per edge.
 
     D_max is decoupled from the radius-graph cutoff (S3F uses 20 Å basis
     span even though edges are <= 10 Å).
+
+    `flip_vector` negates the edge vector, as the surface branch requires.
     """
     src, dst = edge_index[0], edge_index[1]
     vec = pos[dst] - pos[src]
     dist = vec.norm(dim=-1)
     rbf = _rbf(dist, D_min=0.0, D_max=RBF_D_MAX, D_count=RBF_DIM)
+    if flip_vector:
+        vec = -vec
     return (rbf, vec.unsqueeze(-2))
 
 
@@ -107,10 +111,21 @@ class S3FStructureInit(nn.Module):
         self.residue_embedding = nn.Linear(ESM_DIM, ESM_DIM, bias=False)
         self.W_v = nn.Sequential(
             GVPLayerNorm((ESM_DIM, 0)),
-            GVP((ESM_DIM, 0), node_h_dim, activations=(None, None)),
+            GVP(
+                (ESM_DIM, 0),
+                node_h_dim,
+                activations=(None, None),
+                vector_gate=vector_gate,
+            ),
         )
         self.W_e = nn.Sequential(
-            GVPLayerNorm((RBF_DIM, 1)), GVP((RBF_DIM, 1), edge_h_dim)
+            GVPLayerNorm((RBF_DIM, 1)),
+            GVP(
+                (RBF_DIM, 1),
+                edge_h_dim,
+                activations=(None, None),
+                vector_gate=vector_gate,
+            ),
         )
 
     def forward(self, surface, graph):
@@ -170,10 +185,21 @@ class S3FSurfaceInit(nn.Module):
         )
         self.W_v = nn.Sequential(
             GVPLayerNorm((ESM_DIM, 0)),
-            GVP((ESM_DIM, 0), node_h_dim, activations=(None, None)),
+            GVP(
+                (ESM_DIM, 0),
+                node_h_dim,
+                activations=(None, None),
+                vector_gate=vector_gate,
+            ),
         )
         self.W_e = nn.Sequential(
-            GVPLayerNorm((RBF_DIM, 1)), GVP((RBF_DIM, 1), edge_h_dim)
+            GVPLayerNorm((RBF_DIM, 1)),
+            GVP(
+                (RBF_DIM, 1),
+                edge_h_dim,
+                activations=(None, None),
+                vector_gate=vector_gate,
+            ),
         )
 
     def forward(self, surface, graph):
@@ -214,7 +240,7 @@ class S3FSurfaceInit(nn.Module):
         # As for the residue graph, surface kNN edges are constructed per
         # protein by the dataset and made batch-safe by PyG.
         edge_index = surface.edge_index
-        edge_s, edge_v = _edge_features(surf_pos, edge_index)
+        edge_s, edge_v = _edge_features(surf_pos, edge_index, flip_vector=True)
         edge_s, edge_v = self.W_e((edge_s, edge_v))
 
         surface.gvp_s = s
@@ -240,14 +266,23 @@ class S3FStructureGVP(nn.Module):
         self.layers = nn.ModuleList(
             [
                 GVPConvLayer(
-                    node_h_dim, edge_h_dim, drop_rate=drop_rate, vector_gate=vector_gate
+                    node_h_dim,
+                    edge_h_dim,
+                    drop_rate=drop_rate,
+                    activations=(F.relu, None),
+                    vector_gate=vector_gate,
                 )
                 for _ in range(num_layers)
             ]
         )
         self.W_out = nn.Sequential(
             GVPLayerNorm(node_h_dim),
-            GVP(node_h_dim, (node_h_dim[0], 0), activations=(F.relu, None)),
+            GVP(
+                node_h_dim,
+                (node_h_dim[0], 0),
+                activations=(F.relu, None),
+                vector_gate=vector_gate,
+            ),
         )
 
     def forward(self, surface, graph):
@@ -255,8 +290,8 @@ class S3FStructureGVP(nn.Module):
         edge_attr = (graph.gvp_edge_s, graph.gvp_edge_v)
         for layer in self.layers:
             h = layer(h, graph.gvp_edge_index, edge_attr)
-        out = self.W_out(h)
-        graph.gvp_out = out[0]
+        # W_out has 0 output vector channels, so it returns a bare tensor.
+        graph.gvp_out = self.W_out(h)
         return surface, graph
 
 
@@ -275,14 +310,23 @@ class S3FSurfaceGVP(nn.Module):
         self.layers = nn.ModuleList(
             [
                 GVPConvLayer(
-                    node_h_dim, edge_h_dim, drop_rate=drop_rate, vector_gate=vector_gate
+                    node_h_dim,
+                    edge_h_dim,
+                    drop_rate=drop_rate,
+                    activations=(F.relu, None),
+                    vector_gate=vector_gate,
                 )
                 for _ in range(num_layers)
             ]
         )
         self.W_out = nn.Sequential(
             GVPLayerNorm(node_h_dim),
-            GVP(node_h_dim, (node_h_dim[0], 0), activations=(F.relu, None)),
+            GVP(
+                node_h_dim,
+                (node_h_dim[0], 0),
+                activations=(F.relu, None),
+                vector_gate=vector_gate,
+            ),
         )
 
     def forward(self, surface, graph):
@@ -290,30 +334,44 @@ class S3FSurfaceGVP(nn.Module):
         edge_attr = (surface.gvp_edge_s, surface.gvp_edge_v)
         for layer in self.layers:
             h = layer(h, surface.gvp_edge_index, edge_attr)
-        out = self.W_out(h)
-        surface.gvp_out = out[0]
+        surface.gvp_out = self.W_out(h)
         return surface, graph
 
 
 class S3FFusion(nn.Module):
     """Pool surface features to residues, fuse additively with structure output.
 
-    Matches S3F released code: for each backbone atom (N/CA/C), find k=20
-    nearest surface points; mean-pool over all 60 per residue. Uses the
-    precomputed `surface.res2surf` (n_res, 60) index from the precompute
-    script; S3FSurfaceData's __inc__ makes the indices batch-safe.
+    Two readout modes, selected by `readout`:
+
+    `local` (the paper's Eq. 5): for each backbone atom (N/CA/C), find k=20
+    nearest surface points and mean-pool over all 60 per residue, using the
+    precomputed `surface.res2surf` (n_res, 60) index; S3FSurfaceData's
+    `__inc__` makes the indices batch-safe.
+
+    `released`: a single mean over every surface point, added to all residues
+    alike, as the released S3F computes it. The mean is taken over the batch,
+    so above batch size 1 proteins share one surface vector.
 
     Reads graph.gvp_out (structure) and surface.gvp_out (surface).
     Writes fused [n_res, dim] into graph.x.
     """
 
-    def __init__(self, node_h_dim=(256, 16), num_surf_res_neighbor=20):
+    def __init__(self, node_h_dim=(256, 16), num_surf_res_neighbor=20, readout="local"):
         super().__init__()
+        if readout not in ("local", "released"):
+            raise ValueError(
+                f"S3FFusion readout must be 'local' or 'released', got {readout!r}"
+            )
         self.k_pool = num_surf_res_neighbor
+        self.readout = readout
 
     def forward(self, surface, graph):
         bb_feat = graph.gvp_out
         surf_feat = surface.gvp_out
+
+        if self.readout == "released":
+            graph.x = bb_feat + surf_feat.mean(dim=0, keepdim=True)
+            return surface, graph
 
         res2surf = getattr(surface, "res2surf", None)
         if res2surf is None or res2surf.shape[0] != bb_feat.shape[0]:

@@ -116,7 +116,6 @@ def load_pinder_split(
         print(f"Sampling 1 representative per cluster from {len(split_df)} systems...")
 
         # Shuffle deterministically, then take the first of each cluster
-        # This is equivalent to random sampling per group but more robust/faster
         shuffled_df = split_df.sample(frac=1, random_state=42)
         sampled_df = shuffled_df.drop_duplicates(subset=["cluster_id"])
 
@@ -422,16 +421,16 @@ class PinderPairDataset(Dataset):
 
     def _get_pdb_path(self, system: Dict, protein_type: str) -> str:
         """Get PDB path for receptor or ligand."""
-        # 1. Check for explicit path
+        # Explicit path
         path_key = f"{protein_type}_path"
         if path_key in system and system[path_key]:
             return system[path_key]
 
-        # 2. Check for explicit pdb key (legacy)
+        # Explicit pdb key (legacy)
         if f"{protein_type}_pdb" in system:
             return system[f"{protein_type}_pdb"]
 
-        # 3. Construct from ID and directory
+        # Construct from ID and directory
         system_id = system["id"]
         protein_id = system.get(f"{protein_type}_id", system_id)
         setting = system.get("setting")
@@ -469,7 +468,6 @@ class PinderPairDataset(Dataset):
         visited = torch.zeros(n_nodes, dtype=torch.bool)
         n_components = 0
 
-        # Build adjacency list from edge_index
         adj_list = [[] for _ in range(n_nodes)]
         if hasattr(graph, "edge_index") and graph.edge_index is not None:
             edges = graph.edge_index.t().tolist()
@@ -510,15 +508,12 @@ class PinderPairDataset(Dataset):
         Returns:
             Tuple of (positive_pairs, negative_pairs) each shape (2, K)
         """
-        # Compute pairwise distances
         dists = torch.cdist(pos_1, pos_2)
 
-        # Interface: residue pairs within threshold
         interface_mask = dists < threshold
         pos_i, pos_j = torch.where(interface_mask)
         pos_pairs = torch.stack([pos_i, pos_j]).numpy()
 
-        # Non-interface pairs
         neg_i, neg_j = torch.where(~interface_mask)
         neg_pairs = torch.stack([neg_i, neg_j]).numpy()
 
@@ -545,18 +540,14 @@ class PinderPairDataset(Dataset):
         Returns:
             Tuple of (positive_pairs, negative_pairs) each shape (2, K)
         """
-        # Compute pairwise atom-atom distances
         atom_dists = torch.cdist(atom_pos_1, atom_pos_2)  # (N_atoms1, N_atoms2)
 
-        # Find atom pairs within threshold
         close_atoms = atom_dists < threshold
         atom_i, atom_j = torch.where(close_atoms)
 
-        # Map atoms to residues
         res_i = res_map_1[atom_i]
         res_j = res_map_2[atom_j]
 
-        # Get unique residue pairs (interface)
         res_pairs = torch.stack([res_i, res_j], dim=1)
         unique_res_pairs = torch.unique(res_pairs, dim=0)
 
@@ -817,7 +808,6 @@ class PinderPairDataset(Dataset):
         if num_pos == 0:
             return None, None, None
 
-        # Determine number of samples
         if ratio == -1:
             num_pos_use = num_pos
             num_neg_use = num_neg
@@ -830,7 +820,6 @@ class PinderPairDataset(Dataset):
         num_pos_use = max(1, int(math.ceil(num_pos_use)))
         num_neg_use = max(1, int(math.ceil(num_neg_use)))
 
-        # Sample
         pos_idx = np.random.choice(pos_pairs.shape[1], size=num_pos_use, replace=False)
         neg_idx = np.random.choice(
             neg_pairs.shape[1], size=min(num_neg_use, num_neg), replace=False
@@ -868,7 +857,6 @@ class PinderPairDataset(Dataset):
         if g1_len < 20 or g2_len < 20:
             return None
 
-        # Graph interface
         assert (
             "atom_pos" in clean_1.metadata and "atom_res_map" in clean_1.metadata
         ), f"Missing atom data for {system['id']} receptor"
@@ -1062,7 +1050,6 @@ class PinderPairDataset(Dataset):
         else:
             system = self.systems[idx]
 
-        # Resolve paths
         receptor_path = self._get_pdb_path(system, "receptor")
         ligand_path = self._get_pdb_path(system, "ligand")
 
@@ -1116,7 +1103,6 @@ class PinderPairDataset(Dataset):
         if g1_len < 20 or g2_len < 20:
             return None
 
-        # --- Graph residue pairs ---
         precomputed = None
         if self.SURFACE_LABEL_MODE == "dist":
             # dist mode: always compute fresh from the currently-loaded proteins.
@@ -1179,7 +1165,6 @@ class PinderPairDataset(Dataset):
                 if pos_pairs.shape[1] < 5:
                     return None
 
-        # --- Surface vertex pairs ---
         surf_pos_pairs = np.empty((2, 0))
         surf_neg_pairs = np.empty((2, 0))
         surf_n1 = 0
@@ -1372,7 +1357,6 @@ class PinderPairDataset(Dataset):
                 surf_n1 = len(protein_1.surface.verts)
                 surf_n2 = len(protein_2.surface.verts)
 
-        # Sample graph pairs
         if neg_pairs is None:
             idx_left, idx_right, labels = self._sample_graph_pairs_from_complement(
                 pos_pairs, g1_len, g2_len
@@ -1382,7 +1366,6 @@ class PinderPairDataset(Dataset):
         if idx_left is None:
             return None
 
-        # Sample surface pairs
         if surf_pos_pairs.shape[1] >= 5:
             use_lazy_neg = surf_neg_pairs.shape[1] == 0
             if use_lazy_neg:
@@ -1538,7 +1521,6 @@ class PinderAlignedDataset(PinderPairDataset):
         """
         ref_to_tar = self._get_alignment_map(ref_protein, target_protein)
 
-        # Extract mapped indices
         mapped = []
         for ridx in ref_indices.tolist():
             if ridx in ref_to_tar:
@@ -1551,11 +1533,7 @@ class PinderAlignedDataset(PinderPairDataset):
     def __getitem__(self, idx: int) -> Optional[Data]:
         system = self.systems[idx]
 
-        # 1. Load Reference (Holo)
-        # Usually Holo is just the standard PDB ID.
-        # The system ID is the Pinder ID.
-
-        # 1. Load Target (Apo/AF2)
+        # Load target (apo/af2); the reference holo is loaded below for labels.
         target_r_path = self._get_pdb_path(system, "receptor")
         target_l_path = self._get_pdb_path(system, "ligand")
 
@@ -1574,7 +1552,7 @@ class PinderAlignedDataset(PinderPairDataset):
         if target_r.surface is None or target_l.surface is None:
             return None
 
-        # 2. Check if we need alignment
+        # Align only when the target sequence differs from holo
 
         def get_holo_path(sys, ptype):
             path = sys.get(f"holo_{ptype}_path")
@@ -1607,7 +1585,7 @@ class PinderAlignedDataset(PinderPairDataset):
         if not holo_r.has_graph() or not holo_l.has_graph():
             return None
 
-        # 3. Compute Interface on Holo (Reference)
+        # Compute the interface on holo, then map it onto the target
 
         assert (
             "atom_pos" in holo_r.metadata and "atom_res_map" in holo_r.metadata
@@ -1627,7 +1605,6 @@ class PinderAlignedDataset(PinderPairDataset):
         if pos_pairs_ref.shape[1] < 1:
             return None
 
-        # 4. Map Holo Indices -> Target Indices
         map_r = self._get_alignment_map(holo_r, target_r)
         map_l = self._get_alignment_map(holo_l, target_l)
 
@@ -1644,7 +1621,6 @@ class PinderAlignedDataset(PinderPairDataset):
 
         pos_pairs = np.array(valid_pairs).T  # (2, K)
 
-        # 5. Generate All potential Negatives for sampling (standard logic)
         n_res1 = len(target_r.graph.node_pos)
         n_res2 = len(target_l.graph.node_pos)
         neg_pairs = _generate_negative_pairs(pos_pairs, n_res1, n_res2)
@@ -1652,12 +1628,11 @@ class PinderAlignedDataset(PinderPairDataset):
         if neg_pairs.shape[1] == 0:
             return None
 
-        # 6. Sample using parent logic (standardizes neg_to_pos_ratio behavior)
+        # Parent sampling keeps neg_to_pos_ratio behaviour identical
         idx_left, idx_right, labels = self._sample_pairs(pos_pairs, neg_pairs)
         if idx_left is None:
             return None
 
-        # 7. Surfaces
         surf_idx_left = torch.tensor([], dtype=torch.long)
         surf_idx_right = torch.tensor([], dtype=torch.long)
         surf_labels = torch.tensor([], dtype=torch.float)

@@ -8,14 +8,15 @@ import pandas as pd
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-TABLE = SCRIPT_DIR / "masif_surface_benchmark_serial" / "surface_speed_vertices.csv"
+OUTPUTS_DIR = SCRIPT_DIR / "outputs"
+TABLE = OUTPUTS_DIR / "masif_surface_benchmark_serial" / "surface_speed_vertices.csv"
 NEW_SURFACES = (
-    SCRIPT_DIR
+    OUTPUTS_DIR
     / "masif_surface_benchmark_all_serial_20260821"
     / "pinder_benchmark_raw.csv"
 )
 NEW_MSMS = (
-    SCRIPT_DIR / "masif_msms_simplified_serial_20260821" / "pinder_benchmark_raw.csv"
+    OUTPUTS_DIR / "masif_msms_simplified_serial_20260821" / "pinder_benchmark_raw.csv"
 )
 OUTPUT = TABLE
 

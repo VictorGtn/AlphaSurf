@@ -5,15 +5,11 @@ This module consolidates surface and graph loading with integrated transform
 support. Transforms (noise, patch extraction) are applied DURING generation
 so that computed features (operators, edges, etc.) reflect the transformed geometry.
 
-Transform Order:
-1. Parse PDB -> raw arrays
-2. Apply atom noise (joint: both, independent: graph only)
-3. Generate mesh from atoms
-4. Extract patch (if configured)
-5. Apply mesh noise (independent mode only)
-6. Compute operators on final mesh
-7. Build graph from (noised) arrays
-8. Expand features
+Transform order: parse the PDB into raw arrays, apply atom noise (to both
+branches under the joint modes, to the graph only under `independent`), generate
+the mesh, extract the patch if configured, apply mesh noise (under
+`independent`, `joint_mesh` and `alpha_joint_mesh`), compute operators on the
+final mesh, build the graph from the same arrays, and expand features.
 """
 
 import logging
@@ -22,7 +18,12 @@ from typing import Any, Literal, Optional, Tuple
 
 import numpy as np
 import torch
-from alphasurf.protein.graphs import atom_type_dict, get_sbl_radius, parse_pdb_path
+from alphasurf.protein.graphs import (
+    atom_type_dict,
+    get_sbl_radius,
+    parse_pdb_path,
+    res_type_to_hphob,
+)
 from alphasurf.protein.protein import Protein
 from alphasurf.protein.residue_graph import ResidueGraphBuilder
 from alphasurf.protein.surfaces import SurfaceObject
@@ -45,10 +46,6 @@ ALANINE_C_CA_CB_ANGLE_DEG = 110.28430
 class ProteinLoader:
     """
     Load proteins either from disk or generate on-the-fly.
-
-    This is the unified entry point for protein loading. Transforms (noise,
-    patch extraction) are applied during generation, ensuring that all
-    computed features (operators, edges, etc.) reflect the transformed geometry.
 
     Modes:
         - "disk": Load precomputed surfaces and graphs from directory
@@ -100,6 +97,7 @@ class ProteinLoader:
         self.graph_config = graph_config
         self.noise_augmentor = noise_augmentor
         self.patch_extractor = patch_extractor
+        self.read_b_factors = getattr(graph_config, "read_b_factors", True)
 
         if mode == "on_fly" and pdb_dir is None:
             raise ValueError("pdb_dir is required for on_fly mode")
@@ -238,7 +236,6 @@ class ProteinLoader:
             if "node_len" not in graph.keys():
                 graph.node_len = len(graph.node_pos)
 
-            # Load ESM if configured
             use_esm = (
                 getattr(self.graph_config, "use_esm", False)
                 if self.graph_config
@@ -251,7 +248,6 @@ class ProteinLoader:
 
             if hasattr(graph, "features") and graph.features is not None:
                 with torch.no_grad():
-                    # Determine keys to use
                     feat_keys = self._graph_feat_keys
                     if (
                         use_esm
@@ -310,12 +306,30 @@ class ProteinLoader:
             logger.warning("PDB file not found: %s", pdb_path)
             return None
 
+        residue_b_factors = (
+            self._read_residue_b_factors(pdb_path)
+            if self.read_b_factors and not ala_strip_positions
+            else None
+        )
         parsed_arrays = self._parse_pdb(pdb_path)
         if parsed_arrays is None:
             return None
 
+        if residue_b_factors is not None and len(residue_b_factors) != len(
+            parsed_arrays[0]
+        ):
+            logger.warning(
+                "PDB residue/B-factor count mismatch for %s: %d vs %d",
+                pdb_path,
+                len(residue_b_factors),
+                len(parsed_arrays[0]),
+            )
+            residue_b_factors = None
+
         if crop_window is not None:
             parsed_arrays = self._crop_parsed_arrays(parsed_arrays, *crop_window)
+            if residue_b_factors is not None:
+                residue_b_factors = residue_b_factors[crop_window[0] : crop_window[1]]
 
         if ala_strip_positions:
             parsed_arrays = self._strip_sidechains_to_ala(
@@ -335,21 +349,38 @@ class ProteinLoader:
             parsed_for_graph = parsed_arrays
             alpha_override = None
 
-        # Generate surface
-        surface = self._generate_surface(
-            pdb_path=pdb_path,
-            protein_name=protein_name,
-            pocket_name=pocket_name,
-            parsed_arrays=parsed_for_surface,
-            alpha_override=alpha_override,
-        )
+        from alphasurf.utils.timing_stats import Timer
 
-        # Generate graph from (potentially noised) arrays
-        graph = self._generate_graph(
-            pdb_path=pdb_path,
-            protein_name=protein_name,
-            parsed_arrays=parsed_for_graph,
-        )
+        with Timer("surface_pipeline"):
+            surface = self._generate_surface(
+                pdb_path=pdb_path,
+                protein_name=protein_name,
+                pocket_name=pocket_name,
+                parsed_arrays=parsed_for_surface,
+                alpha_override=alpha_override,
+            )
+
+        with Timer("graph_pipeline"):
+            graph = self._generate_graph(
+                pdb_path=pdb_path,
+                protein_name=protein_name,
+                parsed_arrays=parsed_for_graph,
+            )
+
+        if (
+            graph is not None
+            and residue_b_factors is not None
+            and hasattr(graph, "node_pos")
+        ):
+            if len(residue_b_factors) == len(graph.node_pos):
+                graph.b_factor = torch.from_numpy(residue_b_factors).float()
+            else:
+                logger.warning(
+                    "Generated graph/B-factor count mismatch for %s: %d vs %d",
+                    pdb_path,
+                    len(residue_b_factors),
+                    len(graph.node_pos),
+                )
 
         if surface is None and graph is None:
             return None
@@ -380,7 +411,6 @@ class ProteinLoader:
             except TypeError:
                 arrays = parse_pdb_path(pdb_path)
 
-            # Ensure float32 for consistency
             arrays_list = list(arrays)
             if len(arrays_list) > 7:
                 if arrays_list[5].dtype != np.float32:
@@ -392,6 +422,33 @@ class ProteinLoader:
         except Exception as e:
             logger.warning("PDB parsing failed for %s: %s", pdb_path, e)
             return None
+
+    @staticmethod
+    def _read_residue_b_factors(pdb_path: str) -> Optional[np.ndarray]:
+        """Read one representative B-factor for each standard PDB residue."""
+        from Bio.PDB import PDBParser
+
+        try:
+            structure = PDBParser(QUIET=True).get_structure("plddt", pdb_path)
+        except Exception as error:
+            logger.warning("Could not read PDB B-factors from %s: %s", pdb_path, error)
+            return None
+
+        values = []
+        for residue in structure.get_residues():
+            if residue.id[0] != " ":
+                continue
+            atoms = list(residue.get_atoms())
+            ca = next((atom for atom in atoms if atom.get_name() == "CA"), None)
+            if ca is not None:
+                values.append(float(ca.get_bfactor()))
+                continue
+            atom_values = [float(atom.get_bfactor()) for atom in atoms]
+            values.append(float(np.mean(atom_values)) if atom_values else np.nan)
+
+        if not values:
+            return None
+        return np.asarray(values, dtype=np.float32)
 
     @staticmethod
     def _crop_parsed_arrays(arrays: Tuple, start: int, end: int) -> Tuple:
@@ -712,12 +769,21 @@ class ProteinLoader:
         use_igl_normals = getattr(cfg, "use_igl_normals", False)
         nanoshaper_grid_scale = getattr(cfg, "nanoshaper_grid_scale", 0.3)
         edtsurf_grid_scale = getattr(cfg, "edtsurf_grid_scale", 0.5)
-        edtsurf_surface_mode = getattr(cfg, "edtsurf_surface_mode", 1)
+        edtsurf_surface_mode = getattr(cfg, "edtsurf_surface_mode", 2)
         use_poisson = getattr(cfg, "use_poisson", False)
         poisson_high_precision = getattr(cfg, "poisson_high_precision", True)
         tufting = getattr(cfg, "tufting", False)
 
         try:
+            if surface_method == "patch_graph":
+                return self._generate_patch_graph_surface(
+                    cfg=cfg,
+                    protein_name=protein_name,
+                    parsed_arrays=parsed_arrays,
+                    pocket_name=pocket_name,
+                    alpha_value=alpha_value,
+                )
+
             extra_kwargs = {}
             if (
                 surface_method in ("alpha_complex", "nanoshaper", "msms")
@@ -800,7 +866,8 @@ class ProteinLoader:
                     else:
                         patch_verts, patch_faces = verts, faces
 
-                # Apply mesh noise BEFORE computing operators (no-ops unless augmentor is independent)
+                # Mesh noise must land before the operators are computed. A no-op
+                # unless the mode is independent, joint_mesh or alpha_joint_mesh.
                 if self.noise_augmentor is not None:
                     patch_verts = self.noise_augmentor.apply_mesh_noise(
                         patch_verts, patch_faces
@@ -858,7 +925,8 @@ class ProteinLoader:
                 else:
                     raise ValueError(f"Unknown surface method: {surface_method}")
 
-                # Apply mesh noise BEFORE computing operators (no-ops unless augmentor is independent)
+                # Mesh noise must land before the operators are computed. A no-op
+                # unless the mode is independent, joint_mesh or alpha_joint_mesh.
                 if self.noise_augmentor is not None:
                     verts = self.noise_augmentor.apply_mesh_noise(verts, faces)
 
@@ -877,7 +945,8 @@ class ProteinLoader:
 
                 surface.add_geom_feats()
 
-            # Compute vertex-to-residue mapping + atom types
+            # Map each vertex to the atom it coincides with, if any. Alpha-complex
+            # vertices sit exactly on atom centres; other methods leave this -1.
             if parsed_arrays is not None and surface is not None:
                 atom_pos_np = parsed_arrays[5]
                 atom_types_np = parsed_arrays[4]
@@ -911,6 +980,254 @@ class ProteinLoader:
             logger.warning("Surface generation failed for %s: %s", protein_name, e)
 
             return None
+
+    def _generate_patch_graph_surface(
+        self,
+        cfg,
+        protein_name: str,
+        parsed_arrays: Tuple,
+        pocket_name: Optional[str],
+        alpha_value: float,
+    ) -> Optional[SurfaceObject]:
+        """Build a DiffusionNet-compatible surface from SBL spherical patches."""
+        if parsed_arrays is None:
+            return None
+
+        from alphasurf.protein.patch_operators import (
+            build_patch_operators,
+            extract_patch_graph,
+            induced_patch_subgraph,
+            load_patch_graph,
+        )
+
+        amino_types = parsed_arrays[0]
+        atom_amino_id = parsed_arrays[2]
+        atom_types = parsed_arrays[4]
+        atom_pos = parsed_arrays[5]
+        atom_charge = parsed_arrays[6]
+        atom_radius = parsed_arrays[7]
+        probe_radius = getattr(cfg, "patch_probe_radius", 1.4)
+        k_eig = getattr(cfg, "k_eig", 128)
+
+        patch_graph_dir = getattr(cfg, "patch_graph_dir", None)
+        cache_path = (
+            os.path.join(str(patch_graph_dir), f"{protein_name}.npz")
+            if patch_graph_dir
+            else None
+        )
+        cache_is_compatible = not (
+            self.noise_augmentor is not None and self.noise_augmentor.enabled
+        )
+        if cache_path and cache_is_compatible and os.path.exists(cache_path):
+            patch_graph = load_patch_graph(
+                cache_path,
+                alpha=alpha_value,
+                probe_radius=probe_radius,
+                atom_positions=atom_pos,
+                atom_radii=atom_radius,
+            )
+        else:
+            patch_graph = extract_patch_graph(
+                atom_pos,
+                atom_radius,
+                alpha=alpha_value,
+                probe_radius=probe_radius,
+            )
+
+        use_whole_surfaces = getattr(cfg, "use_whole_surfaces", True)
+        if (
+            not use_whole_surfaces
+            and pocket_name is not None
+            and self.patch_extractor is not None
+        ):
+            reference_vertices = self.patch_extractor.get_patch_vertices(pocket_name)
+            if reference_vertices is None:
+                return None
+
+            from scipy.spatial import cKDTree
+
+            distances, _ = cKDTree(reference_vertices).query(
+                patch_graph.patch_center, k=1
+            )
+            min_patches = getattr(cfg, "patch_graph_min_patches", 16)
+            radius = self.patch_extractor.radius
+            # A null max_radius means unbounded, as in PatchExtractor.extract_patch.
+            max_radius = self.patch_extractor.max_radius
+            if max_radius is None:
+                max_radius = float(distances.max())
+            selected_mask = None
+            while radius <= max_radius:
+                candidate_mask = distances <= radius
+                if np.count_nonzero(candidate_mask) >= min_patches:
+                    selected_mask = self._largest_patch_graph_component(
+                        patch_graph, candidate_mask
+                    )
+                    if np.count_nonzero(selected_mask) >= min_patches:
+                        break
+                radius += 2.0
+
+            if selected_mask is None or np.count_nonzero(selected_mask) < min_patches:
+                logger.warning(
+                    "Patch-graph extraction failed for %s: fewer than %d patches "
+                    "within %.1f A",
+                    pocket_name,
+                    min_patches,
+                    max_radius,
+                )
+                return None
+            patch_graph = induced_patch_subgraph(patch_graph, selected_mask)
+
+        operators = build_patch_operators(patch_graph, k_eig=k_eig)
+        fields = operators.diffusionnet_fields()
+        n_patches = patch_graph.num_patches
+
+        # Curvature is constant per atom type on spherical patches, so the
+        # per-patch shape is described by its extent instead.
+        area = patch_graph.patch_area
+        exposed_fraction = area / (4.0 * np.pi * patch_graph.patch_radius**2)
+        boundary_length = np.zeros(n_patches)
+        np.add.at(boundary_length, patch_graph.edge_index[0], patch_graph.shared_arc_length)
+        np.add.at(boundary_length, patch_graph.edge_index[1], patch_graph.shared_arc_length)
+        # Areas and boundary ratios span several orders of magnitude.
+        log_area = np.log(area)
+        log_boundary_area_ratio = np.log(boundary_length / area)
+
+        # Spherical patches are convex inside; concavity lives on the arcs where
+        # the normal jumps. Signed dihedral angle per arc (negative = concave),
+        # averaged over a patch's arcs weighted by arc length.
+        source, target = patch_graph.edge_index
+        normals = patch_graph.patch_normal
+        centers = patch_graph.patch_center
+        cos_angle = np.clip(np.sum(normals[source] * normals[target], axis=1), -1.0, 1.0)
+        angle = np.arccos(cos_angle)
+        orientation = np.sum(
+            (normals[target] - normals[source]) * (centers[target] - centers[source]), axis=1
+        )
+        angle = np.where(orientation < 0.0, -angle, angle)
+        both_valid = patch_graph.patch_normal_valid[source] & patch_graph.patch_normal_valid[target]
+        weighted_angle = np.where(both_valid, angle * patch_graph.shared_arc_length, 0.0)
+        junction_angle = np.zeros(n_patches)
+        np.add.at(junction_angle, source, weighted_angle)
+        np.add.at(junction_angle, target, weighted_angle)
+        junction_angle /= np.maximum(boundary_length, 1e-12)
+
+        hks_times = np.geomspace(0.1, 1000.0, 16)
+        hks_phase = np.exp(-operators.eigenvalues[None, :] * hks_times[:, None])
+        hks = (operators.eigenvectors**2) @ hks_phase.T
+        hks /= np.maximum(hks.mean(axis=0, keepdims=True), 1e-12)
+
+        geometry_features = np.concatenate(
+            (
+                log_area[:, None],
+                exposed_fraction[:, None],
+                log_boundary_area_ratio[:, None],
+                junction_angle[:, None],
+                hks,
+                normals,
+            ),
+            axis=1,
+        ).astype(np.float32)
+
+        surface = SurfaceObject(
+            verts=patch_graph.patch_center.astype(np.float32),
+            faces=np.empty((0, 3), dtype=np.int64),
+            mass=fields["mass"],
+            L=fields["L"],
+            evals=fields["evals"],
+            evecs=fields["evecs"],
+            gradX=fields["gradX"],
+            gradY=fields["gradY"],
+            vnormals=normals.astype(np.float32),
+        )
+        surface.features.add_named_features("geom_feats", geometry_features)
+
+        # Each patch belongs to one atom, so atom chemistry is exact on the node.
+        parent = patch_graph.patch_atom_index
+        surface.features.add_named_oh_features(
+            "atom_types", np.asarray(atom_types)[parent], nclasses=12
+        )
+        hphob = np.asarray(
+            [res_type_to_hphob[amino_types[atom_amino_id[i]]] for i in parent],
+            dtype=np.float32,
+        )
+        surface.features.add_named_features("hphobs", hphob[:, None])
+        if atom_charge is not None:
+            surface.features.add_named_features(
+                "charge", np.asarray(atom_charge, dtype=np.float32)[parent].reshape(-1, 1)
+            )
+        surface.drop_ratio = 0.0
+        surface.drop_ratio_vertex = 0.0
+        surface.from_numpy()
+
+        parent_atoms = torch.from_numpy(patch_graph.patch_atom_index).long()
+        surface.vert_atom_ids = parent_atoms
+        surface.vert_atom_types = torch.from_numpy(
+            np.asarray(atom_types)[patch_graph.patch_atom_index]
+        ).long()
+        surface.patch_area = torch.from_numpy(patch_graph.patch_area.astype(np.float32))
+        surface.patch_radius = torch.from_numpy(
+            patch_graph.patch_radius.astype(np.float32)
+        )
+        surface.patch_sphere_center = torch.from_numpy(
+            patch_graph.patch_sphere_center.astype(np.float32)
+        )
+        surface.patch_area_centroid = torch.from_numpy(
+            patch_graph.patch_area_centroid.astype(np.float32)
+        )
+        surface.patch_normal_valid = torch.from_numpy(patch_graph.patch_normal_valid)
+        surface.patch_arc_count = torch.from_numpy(
+            patch_graph.arc_count.astype(np.int64)
+            if patch_graph.arc_count is not None
+            else np.ones(patch_graph.num_edges, dtype=np.int64)
+        )
+        surface.patch_edge_index = torch.from_numpy(
+            patch_graph.edge_index.astype(np.int64)
+        )
+        surface.shared_arc_length = torch.from_numpy(
+            patch_graph.shared_arc_length.astype(np.float32)
+        )
+
+        with torch.no_grad():
+            surface.expand_features(
+                remove_feats=True,
+                feature_keys=self._surface_feat_keys,
+                oh_keys=self._surface_oh_keys,
+            )
+        return surface
+
+    @staticmethod
+    def _largest_patch_graph_component(
+        patch_graph, node_mask: np.ndarray
+    ) -> np.ndarray:
+        """Keep the largest connected component of a masked patch graph."""
+        import scipy.sparse
+
+        selected = np.flatnonzero(node_mask)
+        if selected.size == 0:
+            return node_mask
+
+        old_to_new = np.full(patch_graph.num_patches, -1, dtype=np.int64)
+        old_to_new[selected] = np.arange(selected.size)
+        source, target = patch_graph.edge_index
+        edge_mask = node_mask[source] & node_mask[target]
+        local_source = old_to_new[source[edge_mask]]
+        local_target = old_to_new[target[edge_mask]]
+        adjacency = scipy.sparse.coo_matrix(
+            (
+                np.ones(2 * local_source.size),
+                (
+                    np.concatenate((local_source, local_target)),
+                    np.concatenate((local_target, local_source)),
+                ),
+            ),
+            shape=(selected.size, selected.size),
+        )
+        _, labels = scipy.sparse.csgraph.connected_components(adjacency, directed=False)
+        component_areas = np.bincount(labels, weights=patch_graph.patch_area[selected])
+        keep_label = int(np.argmax(component_areas))
+        output_mask = np.zeros(patch_graph.num_patches, dtype=bool)
+        output_mask[selected[labels == keep_label]] = True
+        return output_mask
 
     def _generate_graph(
         self,

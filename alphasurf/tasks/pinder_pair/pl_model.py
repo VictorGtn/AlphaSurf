@@ -56,11 +56,9 @@ class PinderPairModule(AtomPLModule):
         """
         Derive binding site labels (1 if in any positive pair) from pair labels.
         """
-        # Initialize with zeros
         site_labels_1 = torch.zeros(num_nodes_1, device=pair_labels.device)
         site_labels_2 = torch.zeros(num_nodes_2, device=pair_labels.device)
 
-        # Identify positive pairs
         pos_mask = pair_labels == 1
 
         if pos_mask.sum() > 0:
@@ -74,7 +72,10 @@ class PinderPairModule(AtomPLModule):
         return site_labels_1, site_labels_2
 
     def step(self, batch):
-        if batch is None or batch.num_graphs < self.hparams.cfg.min_batch_size:
+        # The eval sampler emits single-system batches for systems that exhaust
+        # the atom budget alone; those are valid at eval time and must be scored.
+        min_graphs = self.hparams.cfg.min_batch_size if self.training else 1
+        if batch is None or batch.num_graphs < min_graphs:
             return None, None, None, {}
 
         if isinstance(batch.label, list):
@@ -93,11 +94,9 @@ class PinderPairModule(AtomPLModule):
         out = self.model(batch)
         graph_out = out["graph"]
 
-        # Graph pair loss
         pair_logits = graph_out["pair_logit"].squeeze(-1)
         loss_graph = self.criterion(pair_logits, labels.float())
 
-        # Surface pair loss
         loss_surf = torch.tensor(0.0, device=labels.device)
         surf_out = out["surface"]
         if surf_out is not None and hasattr(batch, "surface_label"):
@@ -119,10 +118,8 @@ class PinderPairModule(AtomPLModule):
         return total_loss, pair_logits, labels, loss_dict
 
     def _step_metric(self, batch, labels):
-        # Forward pass
         out = self.model(batch)
 
-        # --- Graph Loss ---
         graph_out = out["graph"]
         emb_left = graph_out["emb_left"]
         emb_right = graph_out["emb_right"]
@@ -135,12 +132,10 @@ class PinderPairModule(AtomPLModule):
         idx_left = _offset_and_concat(batch.idx_left, base_left, batch.label)
         idx_right = _offset_and_concat(batch.idx_right, base_right, batch.label)
 
-        # Compute binding site labels (ground truth)
         site_labels_1, site_labels_2 = self._get_site_labels(
             batch, batch.g1_len.sum(), batch.g2_len.sum(), idx_left, idx_right, labels
         )
 
-        # Calculate Graph Loss
         loss_graph, loss_dict_graph = self.criterion(
             site_pred_left=site_pred_1,
             site_pred_right=site_pred_2,
@@ -151,7 +146,6 @@ class PinderPairModule(AtomPLModule):
             pair_labels=labels,
         )
 
-        # Calculate Surface Loss (if available)
         loss_surf = 0.0
         surf_out = out["surface"]
         if surf_out is not None:
@@ -189,7 +183,6 @@ class PinderPairModule(AtomPLModule):
                     s_labels,
                 )
 
-                # Check / Init separate surface criterion
                 if not hasattr(self, "surface_criterion"):
                     self.surface_criterion = PinderPairLoss(
                         lambda_site=self.criterion.lambda_site,
@@ -208,7 +201,6 @@ class PinderPairModule(AtomPLModule):
                 )
                 loss_surf = loss_s
 
-                # Merge dicts
                 for k, v in loss_dict_s.items():
                     loss_dict_graph[f"{k}_surf"] = v
 
@@ -216,7 +208,6 @@ class PinderPairModule(AtomPLModule):
         # Use simple dot product as similarity score
         logits = (emb_left * emb_right).sum(dim=1)
 
-        # Total Loss
         surface_loss_weight = getattr(self.hparams.cfg, "surface_loss_weight", 1.0)
         total_loss = loss_graph + surface_loss_weight * loss_surf
 
@@ -279,7 +270,6 @@ class PinderPairModule(AtomPLModule):
                 print_summary()
 
     def training_step(self, batch, batch_idx):
-        # Lazy init surface criterion (metric mode only)
         if self.loss_mode == "metric" and not hasattr(self, "surface_criterion"):
             self.surface_criterion = PinderPairLoss(
                 lambda_site=self.criterion.lambda_site,
@@ -300,12 +290,10 @@ class PinderPairModule(AtomPLModule):
             batch_size=len(logits),
         )
 
-        # Log components
         for k, v in loss_dict.items():
             if isinstance(v, torch.Tensor):
                 self.log(f"loss/{k}", v.item(), on_step=True, batch_size=len(logits))
 
-        # Metrics
         acc = compute_accuracy(logits, labels, add_sigmoid=True)
         auroc = compute_auroc(logits, labels)
 
@@ -322,17 +310,11 @@ class PinderPairModule(AtomPLModule):
 
         print_summary()
 
-    # ── Validation ──────────────────────────────────────────────
-
     def on_validation_epoch_start(self):
         self._val_logits = []
         self._val_labels = []
-        # Support for Test-during-Val
-        self._test_val_logits = []
-        self._test_val_labels = []
 
-    def validation_step(self, batch, batch_idx, dataloader_idx=0):
-        # Lazy init surface criterion (metric mode only)
+    def validation_step(self, batch, batch_idx):
         if self.loss_mode == "metric" and not hasattr(self, "surface_criterion"):
             self.surface_criterion = PinderPairLoss(
                 lambda_site=self.criterion.lambda_site,
@@ -346,29 +328,18 @@ class PinderPairModule(AtomPLModule):
         if loss is None:
             return None
 
-        # Determine which set we are processing
-        is_val = dataloader_idx == 0
-        prefix = "val" if is_val else "test_val"
-
         self.log(
-            f"loss/{prefix}",
+            "loss/val",
             loss.item(),
             on_epoch=True,
             prog_bar=True,
             batch_size=len(logits),
-            add_dataloader_idx=False,
         )
 
-        # Accumulate for global AUROC
-        if is_val:
-            self._val_logits.append(logits.detach().cpu())
-            self._val_labels.append(labels.detach().cpu())
-        else:
-            self._test_val_logits.append(logits.detach().cpu())
-            self._test_val_labels.append(labels.detach().cpu())
+        self._val_logits.append(logits.detach().cpu())
+        self._val_labels.append(labels.detach().cpu())
 
     def on_validation_epoch_end(self):
-        # 1. Process Validation Set (Index 0)
         if self._val_logits:
             all_logits = torch.cat(self._val_logits)
             all_labels = torch.cat(self._val_labels)
@@ -385,27 +356,8 @@ class PinderPairModule(AtomPLModule):
             self._val_logits.clear()
             self._val_labels.clear()
         else:
-            # Fallback if empty
             self.log("auroc/val", 0.5, prog_bar=True)
             self.log("auroc_val", 0.5, prog_bar=True, logger=False)
-
-        # 2. Process Test Set (Index 1) - if present
-        if self._test_val_logits:
-            all_logits_test = torch.cat(self._test_val_logits)
-            all_labels_test = torch.cat(self._test_val_labels)
-
-            auroc_test = compute_auroc(all_logits_test, all_labels_test)
-            acc_test = compute_accuracy(
-                all_logits_test, all_labels_test, add_sigmoid=True
-            )
-
-            self.log("auroc/test_val", auroc_test, prog_bar=True)
-            self.log("acc/test_val", acc_test, prog_bar=True)
-
-            self._test_val_logits.clear()
-            self._test_val_labels.clear()
-
-    # ── Test ────────────────────────────────────────────────────
 
     def on_test_epoch_start(self):
         self._test_logits.clear()
@@ -413,7 +365,6 @@ class PinderPairModule(AtomPLModule):
         self._test_per_system = []
 
     def test_step(self, batch, batch_idx):
-        # Lazy init surface criterion (metric mode only)
         if self.loss_mode == "metric" and not hasattr(self, "surface_criterion"):
             self.surface_criterion = PinderPairLoss(
                 lambda_site=self.criterion.lambda_site,
@@ -435,11 +386,9 @@ class PinderPairModule(AtomPLModule):
             batch_size=len(logits),
         )
 
-        # Accumulate for global AUROC
         self._test_logits.append(logits.detach().cpu())
         self._test_labels.append(labels.detach().cpu())
 
-        # Accumulate per-system for per-system AUROC
         if isinstance(batch.label, list):
             per_system_labels = [lab.reshape(-1) for lab in batch.label]
             sys_ids = (
@@ -522,7 +471,6 @@ class PinderPairModule(AtomPLModule):
         else:
             self.log("auroc/test", 0.5, prog_bar=True)
 
-        # Dump per-system results to CSV
         dump_dir = getattr(self.hparams.cfg, "dump_per_system", None)
         if dump_dir and per_system_rows:
             import pandas as pd

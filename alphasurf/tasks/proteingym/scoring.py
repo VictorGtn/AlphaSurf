@@ -1,19 +1,17 @@
 """
 Scoring for ProteinGym.
 
-Option D (embedding-delta heuristic): clone WT graph, overwrite residue-type
-one-hot at mutated positions, re-encode, score = -sum ||emb_MT - emb_WT||.
-Training-free, not a log-odds; not comparable to leaderboard rows.
+`alphasurf`: mask the mutation positions, run the S3F-pretrained encoder +
+residue head, score = sum [log P(MT | masked) - log P(WT | masked)]. Requires an
+S3FPretrainModule checkpoint. A proper log-odds, comparable to leaderboard rows
+(S3F, ESM-2, etc.).
 
-Option F (S3F-style log-odds): mask mutation positions, run the S3F-pretrained
-encoder + residue head, score = sum [log P(MT | masked) - log P(WT | masked)].
-Requires an S3FPretrainModule checkpoint. Produces a proper log-odds that IS
-comparable to leaderboard rows (S3F, ESM-2, etc.).
+`esm2`: the same log-odds from the frozen ESM-2 branch alone, ignoring
+structure. The pure-sequence baseline.
 """
 
 from __future__ import annotations
 
-import copy
 import logging
 import sys
 from typing import Dict, List, Sequence, Tuple
@@ -24,20 +22,14 @@ from torch.utils.data import DataLoader, Dataset
 from torch_geometric.data import Data
 from tqdm import tqdm
 
-from alphasurf.protein.graphs import (
-    protein_letters_1to3,
-    res_type_dict,
-    res_type_to_hphob,
-)
+from alphasurf.protein.graphs import protein_letters_1to3, res_type_dict
 from alphasurf.tasks.proteingym.dataset import ASSAY_RESIDUE_RANGES, DMSAssay
-from alphasurf.tasks.proteingym.model import encode_graphs, encode_single_graph
 
 logger = logging.getLogger("alphasurf.proteingym.scoring")
 
 # graph.x layout: col 0 = hphob, cols 1..21 = AA one-hot (21 classes, UNK at 20),
 # cols 22..30 = SSE one-hot. See ResidueGraphBuilder.arrays_to_resgraph.
 RES_TYPE_ONEHOT_SLICE = slice(1, 22)
-HPHOB_COL = 0
 ESM_MAX_RESIDUES = 1022
 
 
@@ -47,68 +39,23 @@ def aa_one_letter_to_idx(aa: str) -> int:
     return res_type_dict.get(three, res_type_dict["UNK"])
 
 
-def clone_graph_with_mutation(graph, positions: Sequence[int], mt_aas: Sequence[str]):
-    """Deep-copy a WT graph and overwrite the residue-type (and hphob) features
-    at the given positions to encode the mutant amino-acid identity."""
-    new_graph = copy.deepcopy(graph)
-    x = new_graph.x.clone()
-    for pos, aa in zip(positions, mt_aas):
-        idx = aa_one_letter_to_idx(aa)
-        x[pos, RES_TYPE_ONEHOT_SLICE] = 0.0
-        x[pos, RES_TYPE_ONEHOT_SLICE.start + idx] = 1.0
-        x[pos, HPHOB_COL] = res_type_to_hphob[idx]
-    new_graph.x = x
-    return new_graph
-
-
-def _batched(items: List, batch_size: int):
-    for i in range(0, len(items), batch_size):
-        yield items[i : i + batch_size]
-
-
-def score_assay(
-    module,
-    wt_graph,
-    wt_surface,
-    assay: DMSAssay,
-    device: str,
-    batch_size: int = 8,
-) -> np.ndarray:
-    """Score every mutant in an assay with the embedding-delta heuristic.
-
-    Returns a float array of length `len(assay.mutants)` aligned with the
-    mutant order in `assay`.
-    """
-    wt_emb = encode_single_graph(module, wt_graph, wt_surface, device)
-
-    mt_graphs = [
-        clone_graph_with_mutation(wt_graph, m.positions, m.mt_aas)
-        for m in assay.mutants
-    ]
-    mt_surfaces = [wt_surface for _ in mt_graphs]
-
-    scores: List[float] = []
-    for graph_batch, surface_batch in zip(
-        _batched(mt_graphs, batch_size), _batched(mt_surfaces, batch_size)
-    ):
-        emb_x, ptr = encode_graphs(module, graph_batch, surface_batch, device)
-        for i, g in enumerate(graph_batch):
-            start, end = ptr[i].item(), ptr[i + 1].item()
-            mt_emb = emb_x[start:end]
-            mutant = assay.mutants[len(scores)]
-            delta = (mt_emb[mutant.positions] - wt_emb[mutant.positions]).norm(dim=-1)
-            scores.append(-float(delta.sum().item()))
-    return np.array(scores, dtype=np.float64)
-
-
 def compute_metrics(targets: np.ndarray, predictions: np.ndarray) -> Dict[str, float]:
-    """Spearman / Pearson / MAE / RMSE between targets and predictions."""
+    """Spearman / Pearson / MAE / RMSE between targets and predictions.
+
+    Mutants whose score could not be produced come back as NaN. scipy
+    propagates a single NaN into the correlation, which would drop the whole
+    assay from the aggregate, so they are excluded here and counted instead.
+    """
+    scored = np.isfinite(predictions) & np.isfinite(targets)
+    counts = {"num_mutants": int(len(targets)), "num_scored": int(scored.sum())}
+    targets, predictions = targets[scored], predictions[scored]
     if len(targets) < 2:
         return {
             "spearmanr": float("nan"),
             "pearsonr": float("nan"),
             "mae": float("nan"),
             "rmse": float("nan"),
+            **counts,
         }
     rho, _ = spearmanr(predictions, targets)
     r, _ = pearsonr(predictions, targets)
@@ -119,10 +66,8 @@ def compute_metrics(targets: np.ndarray, predictions: np.ndarray) -> Dict[str, f
         "pearsonr": float(r),
         "mae": mae,
         "rmse": rmse,
+        **counts,
     }
-
-
-# ── Option F: S3F-style log-odds scoring ──────────────────────────────
 
 
 def get_optimal_window(
@@ -282,6 +227,126 @@ class MaskedGeometryDataset(Dataset):
         return sample, mutant_indices, len(positions)
 
 
+class S3FGeometryDataset(Dataset):
+    """Build one s3f_exact sample per unique mutation-site set.
+
+    The surface is built once from the full backbone and carries no side-chain
+    information, so masking changes only the sequence, as in S3F. Windows are
+    cut with the same res2surf correspondence crop used in pretraining.
+    """
+
+    def __init__(
+        self,
+        reference,
+        assay_id: str,
+        structure_length: int,
+        group_items,
+        sequence_length: int | None = None,
+        structure_offset: int = 0,
+    ):
+        self.reference = reference
+        self.assay_id = assay_id
+        self.structure_length = structure_length
+        self.sequence_length = (
+            structure_length if sequence_length is None else sequence_length
+        )
+        self.structure_offset = structure_offset
+        self.group_items = group_items
+
+    def __len__(self):
+        return len(self.group_items)
+
+    def __getitem__(self, index):
+        import torch
+
+        from alphasurf.tasks.s3f_pretrain.dataset_s3f_exact import (
+            LETTER_TO_IDX,
+            CATHDatasetS3FExact,
+            _edge_attr,
+            _radius_edges,
+            build_surface_data,
+        )
+
+        positions_key, mutant_indices = self.group_items[index]
+        positions = list(positions_key)
+        window = _scoring_window(
+            self.assay_id,
+            self.sequence_length,
+            positions,
+            structure_length=self.structure_length,
+            structure_offset=self.structure_offset,
+        )
+        if window is None:
+            logger.warning(
+                "[%s] sequence crop for %s is not covered by the structure",
+                self.assay_id,
+                positions,
+            )
+            return None
+        start, end = window
+        relative_positions = [position - start for position in positions]
+
+        surf = self.reference.surface
+        if start == 0 and end == self.structure_length:
+            surf_pos, surf_normals, surf_feat = (
+                surf["surf_pos"],
+                surf["surf_normals"],
+                surf["surf_feat"],
+            )
+            res2surf = surf["res2surf"].reshape(end, -1)
+        else:
+            surf_pos, surf_normals, surf_feat, res2surf = (
+                CATHDatasetS3FExact._crop_surface(
+                    surf["surf_pos"],
+                    surf["surf_normals"],
+                    surf["surf_feat"],
+                    surf["res2surf"][start:end],
+                )
+            )
+
+        ca_pos = self.reference.bb_pos[start:end, 1].contiguous()
+        edge_index = _radius_edges(ca_pos)
+        edge_rbf, edge_vec = _edge_attr(ca_pos, edge_index)
+        graph = Data(
+            x=torch.ones(end - start, 1),
+            node_pos=ca_pos,
+            edge_index=edge_index,
+            edge_rbf=edge_rbf,
+            edge_vec=edge_vec,
+        )
+        sequence = self.reference.sequence[start:end]
+        sample = Data(
+            graph=graph,
+            surface=build_surface_data(surf_pos, surf_normals, surf_feat, res2surf),
+            sequence=sequence,
+            masked_positions=torch.tensor(relative_positions, dtype=torch.long),
+            structure_positions=torch.tensor(positions, dtype=torch.long),
+            mask_types=torch.zeros(len(positions), dtype=torch.long),
+            target_residues=torch.tensor(
+                [LETTER_TO_IDX.get(sequence[p], -1) for p in relative_positions],
+                dtype=torch.long,
+            ),
+            random_aa_indices=torch.full((len(positions),), -1, dtype=torch.long),
+        )
+        return sample, mutant_indices, len(positions)
+
+
+def s3f_head_to_res_type_index():
+    """Column index that reorders s3f_exact head logits into res_type_dict order.
+
+    The s3f_exact head is trained on LETTER_TO_IDX classes, while scoring and
+    the ESM logits use res_type_dict indices.
+    """
+    import torch
+
+    from alphasurf.tasks.s3f_pretrain.dataset_s3f_exact import LETTER_TO_IDX
+
+    index = torch.empty(len(LETTER_TO_IDX), dtype=torch.long)
+    for letter, head_idx in LETTER_TO_IDX.items():
+        index[aa_one_letter_to_idx(letter)] = head_idx
+    return index
+
+
 def collate_masked_geometry(items):
     """Keep worker-built samples as a list for AtomBatch collation on the GPU host."""
     return [item for item in items if item is not None], len(items)
@@ -394,7 +459,46 @@ def _score_esm_fallback_groups(
     return fallback_positions
 
 
-def score_assay_option_f(
+def score_assay_esm2(
+    module,
+    assay: DMSAssay,
+    device: str,
+    batch_size: int = 8,
+) -> Tuple[np.ndarray, Dict[str, int]]:
+    """Score an assay with masked ESM-2 log-odds only, ignoring structure.
+
+    This is the pure-sequence baseline: it reuses the exact ESM path that
+    ``score_assay_alphasurf`` falls back to, so a harness bug shows up as a
+    deviation from ESM-2's published 0.414 rather than being confounded with the
+    structural head. Positions are already sequence coordinates here, so no
+    structure offset is applied and no AF2 structure is read.
+    """
+    model = module.model
+    groups: Dict[Tuple[int, ...], List[int]] = {}
+    for mutant_index, mutant in enumerate(assay.mutants):
+        groups.setdefault(tuple(mutant.positions), []).append(mutant_index)
+
+    scores = np.full(len(assay.mutants), np.nan, dtype=np.float64)
+    scored_positions = _score_esm_fallback_groups(
+        model,
+        assay,
+        list(groups.items()),
+        scores,
+        device,
+        batch_size,
+        assay.seq_len,
+        0,
+    )
+    diagnostics = {
+        "num_groups": len(groups),
+        "num_groups_geometry_failed": 0,
+        "num_positions_low_plddt": 0,
+        "num_positions_esm_scored": scored_positions,
+    }
+    return scores, diagnostics
+
+
+def score_assay_alphasurf(
     module,
     loader,
     pdb_path,
@@ -410,6 +514,7 @@ def score_assay_option_f(
     structure_offset: int = 0,
     reference_protein=None,
     plddt_threshold: float | None = 70.0,
+    s3f_reference=None,
 ) -> np.ndarray:
     """Score mutants with S3F-style log-odds from the residue head.
 
@@ -425,8 +530,12 @@ def score_assay_option_f(
     B-factor below ``plddt_threshold``, the ESM-2 logits replace the structural
     logits, matching S3F's low-confidence fallback. If masked geometry
     generation fails, the same masked ESM-2 log-odds are used for that group.
+    For s3f_exact checkpoints, pass ``s3f_reference`` (an S3FReference): its
+    backbone surface is reused for every group and only the sequence is masked.
 
-    Returns a float array of length len(assay.mutants).
+    Returns a float array of length len(assay.mutants) plus a diagnostics dict
+    recording how much of the assay was scored by the fallbacks rather than by
+    the structural head.
     """
     import torch as _torch
 
@@ -435,9 +544,14 @@ def score_assay_option_f(
     model = module.model
 
     reference_b_factors = None
-    if plddt_threshold is not None and reference_protein is not None:
-        reference_graph = getattr(reference_protein, "graph", None)
-        reference_b_factors = getattr(reference_graph, "b_factor", None)
+    if plddt_threshold is not None and (
+        reference_protein is not None or s3f_reference is not None
+    ):
+        if s3f_reference is not None:
+            reference_b_factors = s3f_reference.b_factor
+        else:
+            reference_graph = getattr(reference_protein, "graph", None)
+            reference_b_factors = getattr(reference_graph, "b_factor", None)
         if reference_b_factors is not None:
             reference_b_factors = reference_b_factors.to(device)
         else:
@@ -446,10 +560,12 @@ def score_assay_option_f(
                 assay.assay_id,
             )
 
+    if structure_length is None and s3f_reference is not None:
+        structure_length = len(s3f_reference.sequence)
     if structure_length is None:
         reference = reference_protein or loader.load(protein_name, pdb_path=pdb_path)
         if reference is None or reference.graph is None:
-            return np.full(len(assay.mutants), np.nan, dtype=np.float64)
+            return np.full(len(assay.mutants), np.nan, dtype=np.float64), {}
         structure_length = int(reference.graph.x.shape[0])
     if sequence_length is None:
         sequence_length = assay.seq_len
@@ -463,17 +579,30 @@ def score_assay_option_f(
     # Checkpoints predating configurable structural masking were all trained
     # with the N/CA/C/O-only behavior.
     structure_mask_mode = str(getattr(structure_mask_cfg, "mode", "backbone"))
-    geometry_dataset = MaskedGeometryDataset(
-        protein_loader=loader,
-        pdb_path=str(pdb_path),
-        protein_name=protein_name,
-        assay_id=assay.assay_id,
-        structure_length=structure_length,
-        group_items=list(groups.items()),
-        structure_mask_mode=structure_mask_mode,
-        sequence_length=sequence_length,
-        structure_offset=structure_offset,
-    )
+    head_to_res_type = None
+    if s3f_reference is not None:
+        structure_mask_mode = "sequence"
+        head_to_res_type = s3f_head_to_res_type_index().to(device)
+        geometry_dataset = S3FGeometryDataset(
+            reference=s3f_reference,
+            assay_id=assay.assay_id,
+            structure_length=structure_length,
+            group_items=list(groups.items()),
+            sequence_length=sequence_length,
+            structure_offset=structure_offset,
+        )
+    else:
+        geometry_dataset = MaskedGeometryDataset(
+            protein_loader=loader,
+            pdb_path=str(pdb_path),
+            protein_name=protein_name,
+            assay_id=assay.assay_id,
+            structure_length=structure_length,
+            group_items=list(groups.items()),
+            structure_mask_mode=structure_mask_mode,
+            sequence_length=sequence_length,
+            structure_offset=structure_offset,
+        )
     dataloader_args = {
         "dataset": geometry_dataset,
         "batch_size": batch_size,
@@ -523,6 +652,8 @@ def score_assay_option_f(
                     model._load_esm(device)
                 out = model(batch, device)
                 masked_logits = out["logits"][out["global_masked"]]
+                if head_to_res_type is not None:
+                    masked_logits = masked_logits[:, head_to_res_type]
                 sequence_logits = out.get("sequence_logits")
                 cursor = 0
                 for sample_index, (mutant_indices, num_positions) in enumerate(
@@ -604,4 +735,9 @@ def score_assay_option_f(
                 geometry_fallback_positions,
                 len(failed_groups),
             )
-    return scores
+    diagnostics = {
+        "num_groups": len(groups),
+        "num_groups_geometry_failed": len(failed_groups),
+        "num_positions_low_plddt": fallback_positions,
+    }
+    return scores, diagnostics

@@ -1,7 +1,13 @@
 """
-CATH dataset for S3F-exact encoder using precomputed dMaSIF point clouds.
+CATH datasets for the S3F-exact encoder.
 
-Loads .pt files produced by precompute_s3f_exact.py. Each file contains:
+`CATHDatasetS3FExact` reads precomputed dMaSIF point clouds.
+`CATHDatasetS3FExactOnFly` parses PDBs and generates the surface on CPU in the
+dataloader worker, or leaves it to `attach_surfaces`, which generates a whole
+batch at once on the GPU.
+
+The precomputed path reads .pt files produced by precompute_s3f_exact.py.
+Each file contains:
   - sequence: str
   - ca_pos: (n_res, 3)
   - bb_pos: (n_res, 3, 3) — N/CA/C per residue
@@ -75,6 +81,30 @@ SURF_KNN = 16
 FUSION_K_PER_ATOM = 21
 SURF_INIT_K = 3
 
+# Class order of the s3f_exact residue head.
+LETTER_TO_IDX = {
+    "A": 0,
+    "R": 1,
+    "N": 2,
+    "D": 3,
+    "C": 4,
+    "Q": 5,
+    "E": 6,
+    "G": 7,
+    "H": 8,
+    "I": 9,
+    "L": 10,
+    "K": 11,
+    "M": 12,
+    "F": 13,
+    "P": 14,
+    "S": 15,
+    "T": 16,
+    "W": 17,
+    "Y": 18,
+    "V": 19,
+}
+
 
 def _rbf(d, d_min=0.0, d_max=RBF_D_MAX, d_count=RBF_DIM):
     from alphasurf.network_utils.communication.passing_utils import _rbf as _impl
@@ -99,6 +129,30 @@ def _edge_attr(pos, edge_index):
     dist = vec.norm(dim=-1)
     rbf = _rbf(dist)
     return rbf, vec.unsqueeze(-2)
+
+
+def build_surface_data(surf_pos, surf_normals, surf_feat, res2surf, batch=None):
+    """Wrap a point cloud and its features in the Data the encoder expects.
+
+    Builds the k=16 surface kNN graph and its RBF/vector edge attributes.
+    `batch` assigns points to proteins so a whole batch can be built at once;
+    knn_graph then keeps edges inside each protein.
+    """
+    surf_edges = knn_graph(surf_pos, k=SURF_KNN, loop=False, batch=batch)
+    surf_rbf, surf_vec = _edge_attr(surf_pos, surf_edges)
+    surface = S3FSurfaceData(
+        verts=surf_pos,
+        vnormals=surf_normals,
+        x=surf_feat,
+        pos=surf_pos,
+        edge_index=surf_edges,
+        edge_rbf=surf_rbf,
+        edge_vec=surf_vec,
+        res2surf=res2surf,
+    )
+    if batch is not None:
+        surface.batch = batch
+    return surface
 
 
 class CATHDatasetS3FExact(Dataset):
@@ -199,51 +253,11 @@ class CATHDatasetS3FExact(Dataset):
         else:
             res2surf = full_res2surf.reshape(n_res, -1)
 
-        res_edges = _radius_edges(ca_pos, RADIUS_CUTOFF)
-        res_rbf, res_vec = _edge_attr(ca_pos, res_edges)
-
-        surf_edges = knn_graph(surf_pos, k=SURF_KNN, loop=False)
-        surf_rbf, surf_vec = _edge_attr(surf_pos, surf_edges)
-
-        masked_positions = self._sample_positions(n_res)
-        mask_types, target_residues, random_aa_indices, valid = self._masking_plan(
-            sequence, masked_positions
+        surface = build_surface_data(surf_pos, surf_normals, surf_feat, res2surf)
+        item = self._build_sample(
+            sequence, ca_pos, self.files[idx].replace(".pt", ""), surface
         )
-        masked_positions = masked_positions[valid]
-        mask_types = mask_types[valid]
-        target_residues = target_residues[valid]
-        random_aa_indices = random_aa_indices[valid]
-        if len(masked_positions) == 0:
-            return None
-
-        graph = Data(
-            x=torch.ones(n_res, 1),
-            node_pos=ca_pos,
-            edge_index=res_edges,
-            edge_rbf=res_rbf,
-            edge_vec=res_vec,
-        )
-        surface = S3FSurfaceData(
-            verts=surf_pos,
-            vnormals=surf_normals,
-            x=surf_feat,
-            pos=surf_pos,
-            edge_index=surf_edges,
-            edge_rbf=surf_rbf,
-            edge_vec=surf_vec,
-            res2surf=res2surf,
-        )
-
-        return Data(
-            graph=graph,
-            surface=surface,
-            sequence=sequence,
-            masked_positions=masked_positions,
-            mask_types=mask_types,
-            target_residues=target_residues,
-            random_aa_indices=random_aa_indices,
-            protein_name=self.files[idx].replace(".pt", ""),
-        )
+        return None if item is None else Data(**item)
 
     @staticmethod
     def _compute_res2surf(bb_pos, surf_pos, flatten=True):
@@ -277,34 +291,50 @@ class CATHDatasetS3FExact(Dataset):
         _, nn_idx = dists.topk(k_eff, dim=1, largest=False)
         return nn_idx
 
+    def _build_sample(self, sequence, ca_pos, protein_name, surface):
+        """Assemble the item once residue coords and the surface are known.
+
+        `surface` is None in the on-the-fly path; the batch hook fills it in
+        after generating the point cloud for the whole batch at once.
+        """
+        n_res = len(sequence)
+        res_edges = _radius_edges(ca_pos, RADIUS_CUTOFF)
+        res_rbf, res_vec = _edge_attr(ca_pos, res_edges)
+
+        masked_positions = self._sample_positions(n_res)
+        mask_types, target_residues, random_aa_indices, valid = self._masking_plan(
+            sequence, masked_positions
+        )
+        masked_positions = masked_positions[valid]
+        if len(masked_positions) == 0:
+            return None
+
+        graph = Data(
+            x=torch.ones(n_res, 1),
+            node_pos=ca_pos,
+            edge_index=res_edges,
+            edge_rbf=res_rbf,
+            edge_vec=res_vec,
+        )
+        item = dict(
+            graph=graph,
+            sequence=sequence,
+            masked_positions=masked_positions,
+            mask_types=mask_types[valid],
+            target_residues=target_residues[valid],
+            random_aa_indices=random_aa_indices[valid],
+            protein_name=protein_name,
+        )
+        if surface is not None:
+            item["surface"] = surface
+        return item
+
     def _sample_positions(self, n_res: int) -> torch.Tensor:
         n_mask = masked_residue_count(n_res, self.mask_rate)
         positions = worker_rng(self).choice(n_res, size=n_mask, replace=False)
         return torch.from_numpy(positions).long()
 
     def _masking_plan(self, sequence, positions):
-        LETTER_TO_IDX = {
-            "A": 0,
-            "R": 1,
-            "N": 2,
-            "D": 3,
-            "C": 4,
-            "Q": 5,
-            "E": 6,
-            "G": 7,
-            "H": 8,
-            "I": 9,
-            "L": 10,
-            "K": 11,
-            "M": 12,
-            "F": 13,
-            "P": 14,
-            "S": 15,
-            "T": 16,
-            "W": 17,
-            "Y": 18,
-            "V": 19,
-        }
         n_mask = len(positions)
         rng = worker_rng(self)
         r = rng.random(n_mask)
@@ -329,3 +359,183 @@ class CATHDatasetS3FExact(Dataset):
             torch.from_numpy(random_aa_indices).long(),
             torch.from_numpy(valid).bool(),
         )
+
+
+_keops_warmed = False
+
+
+def _build_warmup_surface():
+    from alphasurf.tasks.s3f_pretrain.precompute_s3f_exact import build_s3f_surfaces
+
+    build_s3f_surfaces([torch.zeros(32, 3, 3).normal_(std=2.0)], "cpu")
+
+
+def warm_keops_cache():
+    """Compile the CPU KeOps modules used by surface generation, once.
+
+    Dataloader workers share one KeOps cache directory. If several of them
+    first-compile the same module simultaneously they overwrite each other's
+    partially written .so, so the modules are compiled up front.
+
+    This runs in a spawned subprocess: surface generation backpropagates
+    through KeOps, and an autograd engine started in this process would make
+    autograd unusable in the forked dataloader workers.
+    """
+    global _keops_warmed
+    if _keops_warmed:
+        return
+    import subprocess
+    import sys
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from alphasurf.tasks.s3f_pretrain.dataset_s3f_exact import "
+            "_build_warmup_surface; _build_warmup_surface()",
+        ],
+        check=True,
+    )
+    _keops_warmed = True
+
+
+class CATHDatasetS3FExactOnFly(CATHDatasetS3FExact):
+    """S3F-exact CATH dataset that generates the surface at runtime.
+
+    With `surface_in_workers`, `__getitem__` generates the protein's surface on
+    CPU, so the cost is spread over the dataloader workers. Otherwise it returns
+    the N/CA/C coordinates and no surface, and `attach_surfaces` generates the
+    whole batch at once on the GPU.
+
+    The crop is applied before generation, so the surface is the cropped
+    fragment's, not a subset of the whole-protein surface.
+    """
+
+    def __init__(
+        self,
+        pdb_dir: str,
+        split: str,
+        mask_rate: float = 0.15,
+        max_length: int = 250,
+        seed: int = 0,
+        surface_in_workers: bool = True,
+    ):
+        Dataset.__init__(self)
+        if split not in ("train", "val", "test"):
+            raise ValueError(f"split must be train/val/test, got {split}")
+        self.pdb_dir = pdb_dir
+        self.split = split
+        self.mask_rate = mask_rate
+        self.max_length = max_length
+        self.surface_in_workers = surface_in_workers
+        if surface_in_workers:
+            warm_keops_cache()
+
+        all_pdbs = sorted(
+            f
+            for f in os.listdir(pdb_dir)
+            if not f.startswith(".") and os.path.isfile(os.path.join(pdb_dir, f))
+        )
+        self.files = split_like_s3f(all_pdbs, split, self.SPLIT_RATIOS)
+
+        self.seed = int(seed)
+        self._rng = None
+        self._rng_seed = None
+
+    def __getitem__(self, idx: int) -> Optional[Data]:
+        from alphasurf.tasks.s3f_pretrain.precompute_s3f_exact import parse_backbone
+
+        path = os.path.join(self.pdb_dir, self.files[idx])
+        bb_pos, sequence = parse_backbone(path)
+        if bb_pos is None:
+            return None
+
+        n_res = len(sequence)
+        if n_res < 32:
+            return None
+
+        bb_pos = torch.from_numpy(bb_pos).float()
+        if self.max_length is not None and n_res > self.max_length:
+            start = int(worker_rng(self).integers(0, n_res - self.max_length + 1))
+            end = start + self.max_length
+            sequence = sequence[start:end]
+            bb_pos = bb_pos[start:end]
+
+        surface = self._generate_surface(bb_pos) if self.surface_in_workers else None
+        if self.surface_in_workers and surface is None:
+            return None
+
+        item = self._build_sample(
+            sequence, bb_pos[:, 1].clone(), self.files[idx], surface
+        )
+        if item is None:
+            return None
+        if surface is None:
+            item["graph"].bb_pos = bb_pos
+        return Data(**item)
+
+    @staticmethod
+    def _generate_surface(bb_pos, min_surf_points=64):
+        from alphasurf.tasks.s3f_pretrain.precompute_s3f_exact import (
+            build_s3f_surfaces,
+        )
+        from alphasurf.utils.timing_stats import Timer
+
+        with Timer("s3f_surface_generation"):
+            surf = build_s3f_surfaces([bb_pos], "cpu", min_points=min_surf_points)[0]
+        if surf is None:
+            return None
+        res2surf = surf["res2surf"]
+        return build_surface_data(
+            surf["surf_pos"],
+            surf["surf_normals"],
+            surf["surf_feat"],
+            res2surf.reshape(res2surf.shape[0], -1),
+        )
+
+
+def attach_surfaces(batch, device, min_surf_points=64):
+    """Generate the batch's surfaces on `device` and attach them.
+
+    One batched dMaSIF + curvature call for the whole batch, then per-protein
+    HKS and res2surf. Returns None if any protein's cloud came out below
+    `min_surf_points`.
+    """
+    from alphasurf.tasks.s3f_pretrain.precompute_s3f_exact import build_s3f_surfaces
+    from alphasurf.utils.timing_stats import Timer
+
+    graph = batch.graph
+    n_proteins = int(graph.batch.max()) + 1
+    bb_list = [graph.bb_pos[graph.batch == i] for i in range(n_proteins)]
+
+    with Timer("s3f_surface_generation"):
+        surfaces = build_s3f_surfaces(bb_list, device, min_points=min_surf_points)
+
+    positions, normals, feats, res2surf, point_batch = [], [], [], [], []
+    offset = 0
+    for i, surf in enumerate(surfaces):
+        if surf is None:
+            logger.warning(
+                "dropping batch: protein %d generated fewer than %d surface points",
+                i,
+                min_surf_points,
+            )
+            return None
+        n_pts = surf["surf_pos"].shape[0]
+        positions.append(surf["surf_pos"])
+        normals.append(surf["surf_normals"])
+        feats.append(surf["surf_feat"])
+        res2surf.append(surf["res2surf"].reshape(surf["res2surf"].shape[0], -1) + offset)
+        point_batch.append(torch.full((n_pts,), i, dtype=torch.long))
+        offset += n_pts
+
+    surf_pos = torch.cat(positions).to(device)
+    point_batch = torch.cat(point_batch).to(device)
+    batch.surface = build_surface_data(
+        surf_pos,
+        torch.cat(normals).to(device),
+        torch.cat(feats).to(device),
+        torch.cat(res2surf).to(device),
+        batch=point_batch,
+    )
+    return batch

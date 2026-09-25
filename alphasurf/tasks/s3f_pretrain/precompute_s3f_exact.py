@@ -14,6 +14,11 @@ dMaSIF point cloud uses N/CA/C backbone atoms only (S3F-exact). Curvature
 is computed at scales [1, 2, 3, 5, 10] (mean + Gauss = 10 dims). HKS uses
 robust_laplacian point-cloud Laplacian + eigsh, 32 time bins.
 
+The geometry comes from `s3f_official/surface.py`, the verbatim upstream S3F
+module, so this script and `script/process_surface.py` produce the same
+features. Caches written before that switch used our own dMaSIF and curvature
+copies (`reg=0.01` instead of `1e-10`) and must be regenerated.
+
 Edges are recomputed at load time.  The full-protein res2surf map is stored
 because S3F uses it to select and reindex the surface when cropping residues.
 
@@ -29,7 +34,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-from multiprocessing import Pool
+from multiprocessing import get_context
 
 import numpy as np
 import torch
@@ -127,32 +132,51 @@ def parse_backbone(pdb_path):
     return np.asarray(bb_pos, dtype=np.float32), "".join(sequence)
 
 
-def generate_dmasif_cloud(bb_pos, device):
-    """Run dMaSIF atoms_to_points_normals on N/CA/C atoms (GPU).
+def _backbone_atoms(bb_pos):
+    """(n_res, 3, 3) numpy array or tensor -> flat (n_res*3, 3) float tensor.
+
+    The precompute script passes numpy; the training batch hook passes CUDA
+    tensors, which must not be routed through numpy.
+    """
+    if torch.is_tensor(bb_pos):
+        return bb_pos.detach().to(torch.float32).reshape(-1, 3)
+    return torch.as_tensor(np.asarray(bb_pos), dtype=torch.float32).reshape(-1, 3)
+
+
+def generate_dmasif_cloud(bb_pos_list, device):
+    """Run dMaSIF atoms_to_points_normals on N/CA/C atoms for several proteins.
 
     S3F atom-type convention: [3, 0, 0] per residue (N, C, C) one-hot over
     {C, H, O, N, S, SE} (index 3 = N, index 0 = C).
 
-    Returns GPU tensors — caller is responsible for moving to CPU when needed
-    (HKS uses scipy/numpy which is CPU-only).
+    `bb_pos_list` is a list of (n_res, 3, 3) arrays or tensors. One batched
+    call is issued for the whole list; `batch_points` assigns each generated
+    point to its protein.
+
+    Returns (points, normals, batch_points) on `device` — the caller moves to
+    CPU where needed, since HKS is scipy-only.
     """
-    from alphasurf.network_utils.misc_arch.dmasif_utils.geometry_processing import (
+    from alphasurf.tasks.s3f_pretrain.s3f_official.surface import (
         atoms_to_points_normals,
     )
 
-    n_res = bb_pos.shape[0]
-    atoms_flat = torch.from_numpy(bb_pos.reshape(-1, 3)).float().to(device)
-    batch = torch.zeros(n_res * 3, dtype=torch.long, device=device)
+    atoms, atom_batch, atom_type_idx = [], [], []
+    for i, bb_pos in enumerate(bb_pos_list):
+        bb = _backbone_atoms(bb_pos)
+        n_res = bb.shape[0] // 3
+        atoms.append(bb)
+        atom_batch.append(torch.full((bb.shape[0],), i, dtype=torch.long))
+        atom_type_idx.append(torch.tensor([3, 0, 0], dtype=torch.long).repeat(n_res))
 
-    atom_type_idx = torch.tensor([3, 0, 0], dtype=torch.long, device=device).repeat(
-        n_res
-    )
-    atomtypes = torch.nn.functional.one_hot(atom_type_idx, num_classes=6).float()
+    atoms_flat = torch.cat(atoms).to(device)
+    atom_batch = torch.cat(atom_batch).to(device)
+    atomtypes = torch.nn.functional.one_hot(
+        torch.cat(atom_type_idx).to(device), num_classes=6
+    ).float()
 
-    points, normals, _ = atoms_to_points_normals(
+    points, normals, batch_points = atoms_to_points_normals(
         atoms_flat,
-        batch,
-        num_atoms=6,
+        atom_batch,
         distance=DMASIF_DISTANCE,
         smoothness=DMASIF_SMOOTHNESS,
         resolution=DMASIF_RESOLUTION,
@@ -161,72 +185,115 @@ def generate_dmasif_cloud(bb_pos, device):
         sup_sampling=DMASIF_SUPSAMPLING,
         variance=DMASIF_VARIANCE,
     )
-    return points.detach(), normals.detach()
+    return points.detach(), normals.detach(), batch_points.detach()
+
+
+def build_s3f_surfaces(bb_pos_list, device, min_points=16):
+    """dMaSIF cloud + 42-d features + res2surf for a list of proteins.
+
+    The point cloud and multi-scale curvature are computed for the whole list
+    in one batched GPU call; HKS and res2surf are per protein.
+
+    Returns a list with one dict per input protein, holding CPU tensors
+    `surf_pos`, `surf_normals`, `surf_feat` (M, 42) and `res2surf`
+    (n_res, 3, k), or None where the cloud came out too small to use.
+    """
+    from alphasurf.tasks.s3f_pretrain.s3f_official.surface import knn_atoms
+    from alphasurf.utils.timing_stats import Timer
+
+    with Timer("s3f_dmasif_cloud"):
+        points, normals, batch_points = generate_dmasif_cloud(bb_pos_list, device)
+    with Timer("s3f_curvatures"):
+        curv = compute_curvatures(points, normals, batch=batch_points)
+
+    out = []
+    for i, bb_pos in enumerate(bb_pos_list):
+        sel = batch_points == i
+        pts = points[sel]
+        if pts.shape[0] < min_points:
+            out.append(None)
+            continue
+        nrm = normals[sel]
+        crv = curv[sel]
+
+        with Timer("s3f_hks"):
+            hks = torch.from_numpy(compute_hks(pts)).float()
+        # load_surface() in released S3F concatenates HKS before curvatures.
+        surf_feat = torch.cat([hks, crv.cpu()], dim=-1)
+
+        bb = _backbone_atoms(bb_pos).to(pts.device)
+        res2surf = (
+            knn_atoms(bb, pts, k=FUSION_K_PER_ATOM - 1)[0]
+            .view(bb.shape[0] // 3, 3, -1)
+            .cpu()
+        )
+
+        out.append(
+            {
+                "surf_pos": pts.cpu().float(),
+                "surf_normals": nrm.cpu().float(),
+                "surf_feat": surf_feat.float(),
+                "res2surf": res2surf.long(),
+            }
+        )
+    return out
 
 
 def compute_curvatures(points, normals, batch=None):
     """KeOps curvatures — runs on GPU if input tensors are on GPU."""
-    from alphasurf.network_utils.misc_arch.dmasif_utils.geometry_processing import (
-        curvatures,
+    from alphasurf.tasks.s3f_pretrain.s3f_official.surface import (
+        compute_curvatures as official_compute_curvatures,
     )
 
-    result = curvatures(
-        points.float(),
-        triangles=None,
-        normals=normals.float(),
-        scales=CURV_SCALES,
-        batch=batch,
+    if batch is None:
+        batch = torch.zeros(points.shape[0], dtype=torch.long, device=points.device)
+    return official_compute_curvatures(
+        points.float(), normals.float(), batch, CURV_SCALES
     ).detach()
-    # Released S3F replaces undefined curvature estimates with zero.
-    return torch.nan_to_num(result, nan=0.0)
 
 
-def compute_hks(points):
-    """32-dim HKS via robust_laplacian point-cloud Laplacian + eigsh.
+def compute_hks(points, faces=None):
+    """32-dim HKS via S3F's compute_HKS.
 
-    Mirrors S3F script/process_surface.py settings. CPU-only (scipy).
-    Accepts CPU or GPU tensor; converts internally.
+    The eigenbasis comes from S3F's compute_eigens (point-cloud Laplacian), or,
+    when `faces` is given, from the cotan eigenbasis of `compute_operators`
+    (`laplacian_eigenbasis`), with S3F's eigenpair count in both cases.
+    Accepts CPU or GPU tensors; converts internally. The upstream functions
+    assert on degenerate spectra, which would abort a training run, so a
+    failure yields zeros for this protein instead.
     """
-    import robust_laplacian
-    from scipy.sparse.linalg import eigsh
+    from alphasurf.protein.create_operators import laplacian_eigenbasis
+    from alphasurf.tasks.s3f_pretrain.s3f_official.surface import (
+        compute_eigens,
+        compute_HKS,
+    )
 
-    pts_np = points.detach().cpu().numpy().astype(np.float64)
+    pts_np = points.detach().cpu().numpy()
     n = len(pts_np)
-    if n < 10:
-        return np.zeros((n, HKS_DIM), dtype=np.float32)
-
-    try:
-        L, M = robust_laplacian.point_cloud_laplacian(pts_np)
-    except Exception as e:
-        logger.warning("robust_laplacian failed (n=%d): %s", n, e)
-        return np.zeros((n, HKS_DIM), dtype=np.float32)
-
     eigs_ratio = HKS_LARGE_EIGS_RATIO if n > HKS_LARGE_SURFACE else HKS_EIGS_RATIO
-    n_eigs = max(HKS_MIN_EIGS, int(n * eigs_ratio) + 1)
-    n_eigs = min(n_eigs, n - 1)
-    if n_eigs < 4:
-        return np.zeros((n, HKS_DIM), dtype=np.float32)
 
     try:
-        # This regularization and shift match S3F's compute_eigens exactly.
-        L.data += 1e-8
-        evals, evecs = eigsh(L, k=n_eigs, M=M, sigma=0, which="LM")
-    except Exception as e:
-        logger.warning("eigsh failed (n=%d, k=%d): %s", n, n_eigs, e)
+        if faces is None:
+            evals, evecs, _ = compute_eigens(
+                n, pts_np, min_n_eigs=HKS_MIN_EIGS, eigs_ratio=eigs_ratio
+            )
+        else:
+            n_eigs = max(HKS_MIN_EIGS, int(eigs_ratio * n) + 1)
+            _, _, evals, evecs = laplacian_eigenbasis(
+                pts_np, np.asarray(faces, dtype=np.int64), k_eig=n_eigs
+            )
+        hks = compute_HKS(
+            evecs,
+            evals,
+            num_t=HKS_DIM,
+            t_min=HKS_T_MIN,
+            t_max=HKS_T_MAX,
+            scale=HKS_SCALE,
+        )
+    except (AssertionError, ValueError, RuntimeError) as e:
+        logger.warning("HKS failed (n=%d): %s", n, e)
         return np.zeros((n, HKS_DIM), dtype=np.float32)
 
-    order = np.argsort(evals)
-    evals, evecs = evals[order], evecs[:, order]
-    evals[0] = 0.0
-    if evals[1] <= 0:
-        return np.zeros((n, HKS_DIM), dtype=np.float32)
-
-    t_list = np.geomspace(HKS_T_MIN, HKS_T_MAX, HKS_DIM, dtype=np.float64)
-    phase = np.exp(-np.outer(t_list, evals[1:]))
-    wphi = phase[:, None, :] * evecs[None, :, 1:]
-    hks = np.einsum("tnk,nk->nt", wphi, evecs[:, 1:]) * HKS_SCALE
-    heat_trace = np.sum(phase, axis=1)
-    hks /= heat_trace
     return hks.astype(np.float32)
 
 
@@ -241,44 +308,19 @@ def process_one(pdb_path, output_path, device, overwrite=False):
     ca_pos = torch.from_numpy(bb_pos[:, 1]).float()
 
     try:
-        surf_pos, surf_normals = generate_dmasif_cloud(bb_pos, device)
+        surface = build_s3f_surfaces([bb_pos], device)[0]
     except Exception as e:
         logger.warning("dMaSIF failed for %s: %s", pdb_path, e)
         return "fail"
-    if surf_pos.shape[0] < 16:
+    if surface is None:
         return "fail"
-
-    curv = compute_curvatures(surf_pos, surf_normals)
-    if curv.shape[0] != surf_pos.shape[0]:
-        curv = curv[: surf_pos.shape[0]]
-
-    hks = compute_hks(surf_pos)
-    if hks.shape[0] != surf_pos.shape[0]:
-        hks = hks[: surf_pos.shape[0]]
-
-    surf_pos_cpu = surf_pos.cpu()
-    surf_normals_cpu = surf_normals.cpu()
-    curv_cpu = curv.cpu()
-    # load_surface() in released S3F concatenates HKS before curvatures.
-    surf_feat = torch.cat([torch.from_numpy(hks).float(), curv_cpu], dim=-1)
-
-    # Released knn_atoms(k=20) increments k internally and therefore stores
-    # 21 neighbors per N/CA/C atom.  Preserve that observable behavior.
-    bb_flat = torch.from_numpy(bb_pos.reshape(-1, 3)).float().to(surf_pos.device)
-    k = min(FUSION_K_PER_ATOM, surf_pos.shape[0])
-    res2surf = torch.cdist(bb_flat, surf_pos).topk(
-        k, dim=1, largest=False
-    ).indices.view(len(sequence), 3, k).cpu()
 
     data = {
         "sequence": sequence,
         "ca_pos": ca_pos,
         "bb_pos": torch.from_numpy(bb_pos).float(),
-        "surf_pos": surf_pos_cpu.float(),
-        "surf_normals": surf_normals_cpu.float(),
-        "surf_feat": surf_feat.float(),
         "surf_feature_order": "hks_curv",
-        "res2surf": res2surf.long(),
+        **surface,
     }
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -345,7 +387,8 @@ def main():
             r = _worker(t)
             counts[r] = counts.get(r, 0) + 1
     else:
-        with Pool(args.num_workers) as pool:
+        # Workers are spawned, not forked: CUDA is unusable in a forked child.
+        with get_context("spawn").Pool(args.num_workers) as pool:
             results = list(tqdm(pool.imap_unordered(_worker, tasks), total=len(tasks)))
         counts = {"ok": 0, "skip": 0, "fail": 0}
         for r in results:

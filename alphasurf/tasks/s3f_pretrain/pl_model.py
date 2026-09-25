@@ -9,6 +9,8 @@ Optimizer: plain Adam (lr 2e-4), no scheduler, no warmup, no weight decay
 from __future__ import annotations
 
 import logging
+import os
+import time
 
 import torch
 import torch.nn as nn
@@ -73,6 +75,75 @@ class S3FPretrainModule(AtomPLModule):
         self.log(
             "acc/val", extra["acc"], prog_bar=True, batch_size=metric_batch_size
         )
+        # Slash-free alias: ModelCheckpoint interpolates the monitored name into
+        # the filename, and a "/" there makes Lightning create a directory per
+        # epoch instead of a checkpoint file.
+        self.log("acc_val", extra["acc"], batch_size=metric_batch_size)
+
+    def _timing_enabled(self):
+        return os.environ.get("TIMING", "0") == "1"
+
+    def on_train_epoch_start(self):
+        if not self._timing_enabled():
+            return
+        if not hasattr(self, "_timing_reset"):
+            from alphasurf.utils.timing_stats import reset
+
+            reset()
+            self._timing_reset = True
+        self._epoch_t0 = time.perf_counter()
+        self._epoch_proteins = 0
+
+    def on_train_batch_start(self, batch, batch_idx):
+        if not self._timing_enabled():
+            return
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        self._train_t0 = time.perf_counter()
+
+    def on_train_batch_end(self, outputs, batch, batch_idx):
+        if not self._timing_enabled() or batch is None:
+            return
+        if not hasattr(self, "_train_t0"):
+            return
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        elapsed = time.perf_counter() - self._train_t0
+
+        from alphasurf.utils.timing_stats import record
+
+        n_proteins = batch.num_graphs
+        self._epoch_proteins = getattr(self, "_epoch_proteins", 0) + n_proteins
+        record("train_fwd_bwd", elapsed)
+        record("batch_size", n_proteins)
+        record("train_per_protein", elapsed / n_proteins)
+        self.log(
+            "timing/train_per_protein",
+            elapsed / n_proteins,
+            on_step=True,
+            on_epoch=False,
+            batch_size=1,
+        )
+        if (batch_idx + 1) % 100 == 0:
+            from alphasurf.utils.timing_stats import print_summary
+
+            print(f"\n[Timing] batch {batch_idx + 1} (proteins={n_proteins}):")
+            print_summary()
+
+    def on_train_epoch_end(self):
+        if not self._timing_enabled() or not hasattr(self, "_epoch_t0"):
+            return
+        from alphasurf.utils.timing_stats import print_summary, record
+
+        elapsed = time.perf_counter() - self._epoch_t0
+        proteins = max(getattr(self, "_epoch_proteins", 0), 1)
+        record("train_epoch", elapsed)
+        self.log("timing/train_epoch", elapsed, on_epoch=True, batch_size=1)
+        print(
+            f"\n[Timing] epoch {self.current_epoch}: {elapsed:.1f}s "
+            f"({proteins} proteins, {elapsed / proteins * 1000:.1f} ms/protein)"
+        )
+        print_summary()
 
     def configure_optimizers(self):
         lr = self.cfg.optimizer.lr

@@ -45,14 +45,12 @@ class PinderPairDataModule(pl.LightningDataModule):
         super().__init__()
         self.cfg = cfg
 
-        # Data directories
         data_dir = cfg.data_dir
         self.pdb_dir = os.path.join(data_dir, "pdb")
 
         # Test setting: 'holo' (bound), 'apo' (unbound), 'af2' (predicted)
         self.test_setting = getattr(cfg, "test_setting", "apo")
 
-        # Load splits
         self.systems = {}
         for split in ["train", "val", "test"]:
             self.systems[split] = load_pinder_split(
@@ -64,27 +62,27 @@ class PinderPairDataModule(pl.LightningDataModule):
         # Filter test split to common systems (shared across all surface methods)
         common_only = getattr(cfg, "common_only", False)
         if common_only and self.test_setting:
+            common_systems_dir = getattr(cfg, "common_systems_dir", data_dir)
             common_csv = os.path.join(
-                data_dir, f"common_systems_{self.test_setting}.csv"
+                common_systems_dir, f"common_systems_{self.test_setting}.csv"
             )
-            if os.path.exists(common_csv):
-                import pandas as pd
+            if not os.path.exists(common_csv):
+                raise FileNotFoundError(
+                    f"common_only=True but common-system file is missing: {common_csv}"
+                )
 
-                common_df = pd.read_csv(common_csv)
-                common_ids = set(common_df["id"])
-                n_before = len(self.systems["test"])
-                self.systems["test"] = [
-                    s for s in self.systems["test"] if s["id"] in common_ids
-                ]
-                print(
-                    f"Common-only filter: {len(self.systems['test'])}/{n_before} systems "
-                    f"({self.test_setting})"
-                )
-            else:
-                print(
-                    f"WARNING: common_only=True but {common_csv} not found. "
-                    f"Using full test set."
-                )
+            import pandas as pd
+
+            common_df = pd.read_csv(common_csv)
+            common_ids = set(common_df["id"])
+            n_before = len(self.systems["test"])
+            self.systems["test"] = [
+                s for s in self.systems["test"] if s["id"] in common_ids
+            ]
+            print(
+                f"Common-only filter: {len(self.systems['test'])}/{n_before} systems "
+                f"({self.test_setting})"
+            )
 
         # Merge holo reference paths into test systems for apo/af2 alignment
         if self.test_setting in ["apo", "af2"]:
@@ -111,11 +109,9 @@ class PinderPairDataModule(pl.LightningDataModule):
             self.protein_loader_eval,
         ) = self._build_protein_loaders(cfg)
 
-        # Task-specific params
         self.neg_to_pos_ratio = getattr(cfg, "neg_to_pos_ratio", 1.0)
         self.surface_neg_to_pos_ratio = getattr(cfg, "surface_neg_to_pos_ratio", 10.0)
         self.max_pos_per_pair = getattr(cfg, "max_pos_per_pair", -1)
-        # Interface distances
         self.interface_distance = getattr(cfg, "interface_distance", 8.0)
         self.interface_distance_graph = getattr(
             cfg, "interface_distance_graph", self.interface_distance
@@ -127,16 +123,13 @@ class PinderPairDataModule(pl.LightningDataModule):
         # Precomputed interface directory (disk mode)
         self.interface_dir = self._resolve_interface_dir(cfg)
 
-        # DataLoader args
         self.loader_args = self._build_loader_args(cfg)
 
-        # Resolve surface label mode from config
         if getattr(cfg, "on_fly", None) is not None:
             surface_label_mode = getattr(cfg.on_fly, "surface_label_mode", "atom")
         else:
             surface_label_mode = getattr(cfg, "surface_label_mode", "atom")
 
-        # Update model input dimensions
         temp_dataset = PinderPairDataset(
             systems=self.systems["train"][:10],
             protein_loader=self.protein_loader_eval,
@@ -166,7 +159,6 @@ class PinderPairDataModule(pl.LightningDataModule):
         on_fly_cfg = getattr(cfg, "on_fly", None)
         mode = "on_fly" if on_fly_cfg is not None else "disk"
 
-        # Directories for disk mode
         surface_dir = None
         graph_dir = None
         if mode == "disk":
@@ -179,7 +171,6 @@ class PinderPairDataModule(pl.LightningDataModule):
 
         noise_augmentor = self._build_noise_augmentor(cfg)
 
-        # Merge configs
         surface_config = self._merge_config(cfg.cfg_surface, on_fly_cfg)
         graph_config = self._merge_config(cfg.cfg_graph, on_fly_cfg)
 
@@ -213,6 +204,8 @@ class PinderPairDataModule(pl.LightningDataModule):
             sigma_graph=getattr(on_fly_cfg, "sigma_graph", 0.3),
             sigma_mesh=getattr(on_fly_cfg, "sigma_mesh", 0.3),
             clip_sigma=getattr(on_fly_cfg, "clip_sigma", 3.0),
+            alpha_min=getattr(on_fly_cfg, "alpha_min", 0.0),
+            alpha_max=getattr(on_fly_cfg, "alpha_max", 5.0),
         )
 
     def _merge_config(self, base_cfg, override_cfg):
@@ -238,8 +231,6 @@ class PinderPairDataModule(pl.LightningDataModule):
             args["persistent_workers"] = getattr(
                 loader_cfg, "persistent_workers", False
             )
-            # Use spawn instead of fork for CGAL/alpha_complex compatibility
-            # args["multiprocessing_context"] = "spawn"
 
         return args
 
@@ -296,7 +287,6 @@ class PinderPairDataModule(pl.LightningDataModule):
         return dataset
 
     def train_dataloader(self) -> DataLoader:
-        # Use dynamic batch sampler if configured
         use_dynamic_batching = getattr(self.cfg.loader, "use_dynamic_batching", False)
 
         if use_dynamic_batching:
@@ -305,7 +295,6 @@ class PinderPairDataModule(pl.LightningDataModule):
 
             dataset = self._create_dataset("train")
 
-            # Compute atom counts from systems
             print("Computing atom counts for dynamic batching...")
             sizes = self._compute_atom_counts(self.systems["train"], dataset)
 
@@ -399,8 +388,8 @@ class PinderPairDataModule(pl.LightningDataModule):
                     count += 1
         return count
 
-    def val_dataloader(self):
-        return [self._eval_dataloader("val"), self._eval_dataloader("test")]
+    def val_dataloader(self) -> DataLoader:
+        return self._eval_dataloader("val")
 
     def test_dataloader(self) -> DataLoader:
         return self._eval_dataloader("test")

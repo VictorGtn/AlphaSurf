@@ -2,13 +2,13 @@
 """
 Zero-shot ProteinGym evaluation.
 
-Option D: embedding-delta heuristic (PINDER checkpoint).
-Option F: S3F-style log-odds from masked residue head (S3F checkpoint).
+alphasurf: S3F-style log-odds from the masked residue head (S3F checkpoint).
+esm2:      masked ESM-2 log-odds only, no structure (sequence baseline).
 
 Usage:
     python -m alphasurf.tasks.proteingym.evaluate \
         --ckpt alphasurf/tasks/s3f_pretrain/ckpt/last.ckpt \
-        --scoring-method option_f \
+        --scoring-method alphasurf \
         --substitutions-dir data/proteingym/substitutions/DMS_ProteinGym_substitutions \
         --af2-dir data/proteingym/af2_structures/ProteinGym_AF2_structures \
         --output-dir runs/proteingym_s3f
@@ -41,14 +41,15 @@ from alphasurf.tasks.proteingym.dataset import (
 )
 from alphasurf.tasks.proteingym.model import (
     build_protein_loader,
-    load_encoder_module,
+    load_s3f_module,
+    load_s3f_reference,
 )
 from alphasurf.tasks.proteingym.scoring import (
     RES_TYPE_ONEHOT_SLICE,
     aa_one_letter_to_idx,
     compute_metrics,
-    score_assay,
-    score_assay_option_f,
+    score_assay_esm2,
+    score_assay_alphasurf,
 )
 
 logger = logging.getLogger("alphasurf.proteingym")
@@ -89,10 +90,10 @@ def resolve_position_offset(assay: DMSAssay, af2_graph_len: int) -> Optional[int
     return None
 
 
-def validate_aa_identity(assay: DMSAssay, graph, offset: int) -> bool:
-    """Sanity-check that AF2 residue types match the WT amino acids in the CSV
-    at the first mutant's positions. Returns True if all match."""
-    aa_idx = graph_aa_sequence(graph)
+def validate_aa_identity(assay: DMSAssay, aa_idx: np.ndarray, offset: int) -> bool:
+    """Sanity-check that AF2 residue types (res_type_dict indices) match the WT
+    amino acids in the CSV at the first mutant's positions. Returns True if all
+    match."""
     m = assay.mutants[0]
     for pos, wt_aa in zip(m.positions, m.wt_aas):
         graph_pos = pos + offset
@@ -126,6 +127,7 @@ def score_one_assay(
     scoring_method: str,
     metadata: Optional[dict] = None,
     plddt_threshold: float | None = 70.0,
+    s3f_surface_dir: Optional[Path] = None,
 ) -> Optional[dict]:
     assay = load_dms_assay(csv_path)
     structure_id = assay.uniprot_id
@@ -136,95 +138,87 @@ def score_one_assay(
         start, end = (int(value) for value in pdb_range.split("-"))
         assay.structure_range = (start - 1, end)
 
+    if scoring_method == "esm2":
+        predictions, diagnostics = score_assay_esm2(
+            module, assay, device, batch_size=batch_size
+        )
+        metrics = compute_metrics(
+            np.array([m.score for m in assay.mutants], dtype=np.float64), predictions
+        )
+        return {
+            "assay": assay,
+            "predictions": predictions,
+            "metrics": {**metrics, **diagnostics},
+        }
+
     pdb_path = af2_structure_path(af2_dir, structure_id)
     if pdb_path is None:
         logger.warning(f"[{assay.assay_id}] no AF2 structure {structure_id}; skipping.")
         return None
 
-    if scoring_method == "option_f":
-        ref_protein = loader.load(assay.assay_id, pdb_path=str(pdb_path))
-        if ref_protein is None:
-            logger.warning(
-                f"[{assay.assay_id}] failed to build protein from {pdb_path}"
-            )
-            return None
-        graph = ref_protein.graph
-        offset = resolve_position_offset(assay, graph.x.shape[0])
-        if offset is None:
-            return None
-        if not validate_aa_identity(assay, graph, offset):
-            logger.warning(f"[{assay.assay_id}] AA identity check failed; skipping.")
-            return None
-        if offset != 0:
-            shifted_mutants = []
-            for m in assay.mutants:
-                shifted_mutants.append(
-                    type(m)(
-                        mutant_str=m.mutant_str,
-                        mutated_sequence=m.mutated_sequence,
-                        score=m.score,
-                        positions=[p + offset for p in m.positions],
-                        wt_aas=m.wt_aas,
-                        mt_aas=m.mt_aas,
-                    )
-                )
-            assay.mutants = shifted_mutants
-        predictions = score_assay_option_f(
-            module,
-            loader,
-            str(pdb_path),
-            assay.assay_id,
-            assay,
-            device,
-            batch_size=batch_size,
-            num_workers=num_workers,
-            prefetch_factor=prefetch_factor,
-            progress=progress,
-            structure_length=int(graph.x.shape[0]),
-            sequence_length=assay.seq_len,
-            structure_offset=offset,
-            reference_protein=ref_protein,
-            plddt_threshold=plddt_threshold,
-        )
+    ref_protein = None
+    s3f_reference = None
+    if s3f_surface_dir is not None:
+        s3f_reference = load_s3f_reference(pdb_path, s3f_surface_dir)
+        built = s3f_reference is not None
     else:
-        protein = loader.load(assay.assay_id, pdb_path=str(pdb_path))
-        if protein is None:
-            logger.warning(
-                f"[{assay.assay_id}] failed to build protein from {pdb_path}"
-            )
-            return None
-        graph = protein.graph
-        surface = protein.surface
-        offset = resolve_position_offset(assay, graph.x.shape[0])
-        if offset is None:
-            return None
-        if not validate_aa_identity(assay, graph, offset):
-            logger.warning(f"[{assay.assay_id}] AA identity check failed; skipping.")
-            return None
-        if offset != 0:
-            shifted_mutants = []
-            for m in assay.mutants:
-                shifted_mutants.append(
-                    type(m)(
-                        mutant_str=m.mutant_str,
-                        mutated_sequence=m.mutated_sequence,
-                        score=m.score,
-                        positions=[p + offset for p in m.positions],
-                        wt_aas=m.wt_aas,
-                        mt_aas=m.mt_aas,
-                    )
-                )
-            assay.mutants = shifted_mutants
-        predictions = score_assay(
-            module, graph, surface, assay, device, batch_size=batch_size
+        ref_protein = loader.load(assay.assay_id, pdb_path=str(pdb_path))
+        built = ref_protein is not None
+    if not built:
+        logger.warning(
+            f"[{assay.assay_id}] failed to build protein from {pdb_path}"
         )
+        return None
+    if s3f_reference is not None:
+        aa_idx = np.array([aa_one_letter_to_idx(aa) for aa in s3f_reference.sequence])
+    else:
+        aa_idx = graph_aa_sequence(ref_protein.graph)
+    structure_length = len(aa_idx)
+    offset = resolve_position_offset(assay, structure_length)
+    if offset is None:
+        return None
+    if not validate_aa_identity(assay, aa_idx, offset):
+        logger.warning(f"[{assay.assay_id}] AA identity check failed; skipping.")
+        return None
+    if offset != 0:
+        shifted_mutants = []
+        for m in assay.mutants:
+            shifted_mutants.append(
+                type(m)(
+                    mutant_str=m.mutant_str,
+                    mutated_sequence=m.mutated_sequence,
+                    score=m.score,
+                    positions=[p + offset for p in m.positions],
+                    wt_aas=m.wt_aas,
+                    mt_aas=m.mt_aas,
+                )
+            )
+        assay.mutants = shifted_mutants
+    predictions, diagnostics = score_assay_alphasurf(
+        module,
+        loader,
+        str(pdb_path),
+        assay.assay_id,
+        assay,
+        device,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        progress=progress,
+        structure_length=structure_length,
+        sequence_length=assay.seq_len,
+        structure_offset=offset,
+        reference_protein=ref_protein,
+        plddt_threshold=plddt_threshold,
+        s3f_reference=s3f_reference,
+    )
     metrics = compute_metrics(
         np.array([m.score for m in assay.mutants], dtype=np.float64), predictions
     )
     return {
         "assay": assay,
         "predictions": predictions,
-        "metrics": metrics,
+        "metrics": {**metrics, **diagnostics},
     }
 
 
@@ -261,14 +255,46 @@ def aggregate_stats(summary_rows: List[dict]) -> dict:
     }
 
 
+def proteingym_aggregate(summary_rows: List[dict]) -> dict:
+    """The published ProteinGym headline metric.
+
+    Averages per UniProt first (so proteins with several assays do not dominate),
+    then per coarse function category, then unweighted across the five
+    categories. A flat mean over assays runs ~0.02-0.03 higher because the assay
+    list is skewed towards Stability and OrganismalFitness.
+    """
+    by_protein: dict = {}
+    for row in summary_rows:
+        category = row.get("coarse_selection_type")
+        if np.isnan(row["spearmanr"]) or not isinstance(category, str):
+            continue
+        by_protein.setdefault((category, row["UniProt_ID"]), []).append(
+            row["spearmanr"]
+        )
+    if not by_protein:
+        return {}
+    by_category: dict = {}
+    for (category, _), values in by_protein.items():
+        by_category.setdefault(category, []).append(float(np.mean(values)))
+    per_category = {
+        category: float(np.mean(values))
+        for category, values in sorted(by_category.items())
+    }
+    return {
+        "proteingym_spearman": float(np.mean(list(per_category.values()))),
+        "n_proteins": len(by_protein),
+        "per_category": per_category,
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ckpt", required=True)
     parser.add_argument(
         "--scoring-method",
-        default="option_d",
-        choices=["option_d", "option_f"],
-        help="option_d: embedding-delta (PINDER ckpt). option_f: S3F log-odds (S3F ckpt).",
+        default="alphasurf",
+        choices=["alphasurf", "esm2"],
+        help="alphasurf: S3F-style masked log-odds from the residue head. esm2: masked ESM-2 log-odds only, no structure (sequence baseline, expect ~0.414).",
     )
     parser.add_argument("--substitutions-dir", required=True)
     parser.add_argument("--af2-dir", required=True)
@@ -301,6 +327,11 @@ def parse_args() -> argparse.Namespace:
         help="Use ESM logits for mutation sites below this AF2 pLDDT; set to -1 to disable.",
     )
     parser.add_argument(
+        "--s3f-surface-dir",
+        default=None,
+        help="Precomputed S3F surfaces of the AF2 structures, of the type the s3f_exact checkpoint was trained on. Required for s3f_exact checkpoints.",
+    )
+    parser.add_argument(
         "--progress",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -324,13 +355,11 @@ def main() -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.scoring_method == "option_f":
-        from alphasurf.tasks.proteingym.model import load_s3f_module
-
-        module, device = load_s3f_module(args.ckpt)
-    else:
-        module, device = load_encoder_module(args.ckpt)
-    loader = build_protein_loader(module)
+    module, device = load_s3f_module(args.ckpt)
+    s3f_exact = module.model.is_s3f_exact
+    if args.scoring_method == "alphasurf" and s3f_exact != (args.s3f_surface_dir is not None):
+        raise ValueError("--s3f-surface-dir is required for, and only valid with, s3f_exact checkpoints")
+    loader = None if s3f_exact else build_protein_loader(module)
 
     reference_file = (
         Path(args.reference_file)
@@ -359,6 +388,7 @@ def main() -> None:
     plddt_threshold = None if args.plddt_threshold < 0 else args.plddt_threshold
 
     summary_rows: List[dict] = []
+    skipped_assays: List[str] = []
     assay_iterator = tqdm(
         csv_paths,
         desc="ProteinGym assays",
@@ -372,6 +402,7 @@ def main() -> None:
     )
     for i, csv_path in enumerate(assay_iterator, 1):
         logger.info(f"[{i}/{len(csv_paths)}] {csv_path.stem}")
+        metadata = metadata_by_assay.get(csv_path.stem)
         result = score_one_assay(
             csv_path,
             Path(args.af2_dir),
@@ -383,10 +414,12 @@ def main() -> None:
             prefetch_factor=args.prefetch_factor,
             progress=args.progress,
             scoring_method=args.scoring_method,
-            metadata=metadata_by_assay.get(csv_path.stem),
+            metadata=metadata,
             plddt_threshold=plddt_threshold,
+            s3f_surface_dir=args.s3f_surface_dir,
         )
         if result is None:
+            skipped_assays.append(csv_path.stem)
             continue
         write_per_assay_csv(output_dir, result)
         assay = result["assay"]
@@ -397,13 +430,36 @@ def main() -> None:
                 "UniProt_ID": assay.uniprot_id,
                 "seq_len": assay.seq_len,
                 "DMS_number_single_mutants": len(assay.mutants),
+                "coarse_selection_type": (
+                    metadata.get("coarse_selection_type") if metadata else None
+                ),
                 **metrics,
             }
         )
 
     write_summary_csv(output_dir, summary_rows)
+    if skipped_assays:
+        logger.warning(
+            "Skipped %d/%d assays entirely (no predictions written): %s",
+            len(skipped_assays),
+            len(csv_paths),
+            ", ".join(skipped_assays),
+        )
     stats = aggregate_stats(summary_rows)
     logger.info(f"Aggregate: {stats}")
+    leaderboard = proteingym_aggregate(summary_rows)
+    if leaderboard:
+        logger.info(
+            "ProteinGym leaderboard Spearman: %.4f (%d proteins)",
+            leaderboard["proteingym_spearman"],
+            leaderboard["n_proteins"],
+        )
+        for category, value in leaderboard["per_category"].items():
+            logger.info("  %-18s %.4f", category, value)
+    else:
+        logger.warning(
+            "No coarse_selection_type metadata; skipping ProteinGym leaderboard metric"
+        )
 
 
 if __name__ == "__main__":
