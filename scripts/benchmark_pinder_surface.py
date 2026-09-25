@@ -763,7 +763,7 @@ def main():
         "--output-dir",
         type=Path,
         default=None,
-        help="Directory for raw/summary CSVs and plots",
+        help="Directory for raw/summary CSVs and plots (default: outputs/pinder_benchmark)",
     )
     parser.add_argument(
         "--pdb-dir",
@@ -783,11 +783,12 @@ def main():
     )
     args = parser.parse_args()
 
-    csv_dir = os.path.dirname(os.path.abspath(__file__))
-    os.chdir(csv_dir)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    default_csv_dir = Path(script_dir) / "outputs" / "pinder_benchmark"
+    os.chdir(script_dir)
 
     if args.plot_only:
-        plot_results(csv_dir, args.workers)
+        plot_results(str(args.output_dir or default_csv_dir), args.workers)
         return
 
     methods = {method.strip() for method in args.methods.split(",") if method.strip()}
@@ -803,8 +804,7 @@ def main():
         PDB_DIR = str(args.pdb_dir.resolve())
 
     grid_scales = [float(x.strip()) for x in args.grid_scales.split(",")]
-    csv_dir = args.output_dir or Path(os.path.dirname(os.path.abspath(__file__)))
-    csv_dir = Path(csv_dir).resolve()
+    csv_dir = Path(args.output_dir or default_csv_dir).resolve()
     csv_dir.mkdir(parents=True, exist_ok=True)
     pdb_files = select_pdb_files(args.sample_lr, args.seed)
     if args.max_files:

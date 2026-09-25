@@ -37,7 +37,10 @@ except ImportError:
     print("Warning: igl not available, falling back to manual normal computation")
 
 # Default paths (used when no --dirs specified)
-BASE_DIR = "/cluster/CBIO/data2/vgertner/alphasurf/alphasurf/data/masif_ligand/msms_01"
+BASE_DIR = os.environ.get(
+    "MASIF_LIGAND_SURFACE_DIR",
+    str(Path(__file__).resolve().parents[1] / "data" / "masif_ligand" / "msms_01"),
+)
 DEFAULT_DIRS = [
     f"{BASE_DIR}/surfaces_full_alpha0_fr1.0",
     f"{BASE_DIR}/surfaces_full_alpha2_fr0.7",
@@ -70,7 +73,9 @@ DEFAULT_NAMES = [
     "alpha8_fr1.0",
 ]
 
-OUTPUT_DIR = "/cluster/CBIO/data2/vgertner/alphasurf/alphasurf/scripts/"
+OUTPUT_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "outputs", "mesh_statistics"
+)
 
 
 def compute_edge_lengths(verts, faces):

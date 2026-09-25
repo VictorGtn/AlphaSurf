@@ -17,7 +17,7 @@ hydra:
     job:
         chdir: False
     searchpath:
-        - file:///cluster/CBIO/data2/vgertner/alphasurf/alphasurf/alphasurf/tasks/shared_conf
+        - pkg://alphasurf.tasks.shared_conf
 
 # General
 seed: 2024
@@ -25,7 +25,7 @@ loss_mode: metric # "metric" (dot product + site loss) or "focal" (MLP head, foc
 use_wandb: False
 run_name: default
 project_name: pinder_pair
-data_dir: /cluster/CBIO/data2/vgertner/alphasurf/alphasurf/data/pinder-pair
+data_dir: ???
 log_dir: "./"
 epochs: 100
 device: 0
@@ -62,7 +62,7 @@ on_fly:
     use_pymesh: false
     use_whole_surfaces: true # Full proteins for pair task
     nanoshaper_grid_scale: 0.3
-    edtsurf_surface_mode: 1
+    edtsurf_surface_mode: 2
     tufting: true
 
     # Noise augmentation
@@ -70,6 +70,8 @@ on_fly:
     sigma_graph: 0.3
     sigma_mesh: 0.3
     clip_sigma: 3.0
+    alpha_min: 0.0
+    alpha_max: 5.0
     use_igl_normals: false
 
 # Preprocessing (for preprocess.py)

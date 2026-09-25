@@ -156,7 +156,8 @@ def run_msms_all_components(pdb_path, atom_pos, atom_radius, density=1.0):
                 continue
             try:
                 v, fc = parse_verts(vp, fp)
-            except Exception:
+            except (ValueError, OSError) as error:
+                print(f"skipping unreadable MSMS component {vf}: {error}")
                 continue
             if len(v) == 0 or len(fc) == 0:
                 continue
@@ -342,7 +343,6 @@ def check_one(args):
             method_timeout,
             pdb_abs,
             alpha_value=alpha,
-            use_python_binding=True,
         )
         if len(v) == 0 or len(f) == 0:
             raise ValueError("empty surface")
@@ -363,7 +363,6 @@ def check_one(args):
         result["algo2_status"] = f"error: {msg}"
         save_data["algo2_error"] = msg[:500]
 
-    # msms
     try:
         v, f, n_comp = _run_with_timeout(
             run_msms_all_components,
@@ -433,7 +432,6 @@ def check_one(args):
         save_data,
     )
 
-    # nanoshaper
     for gs in [0.3, 0.4, 0.5, 0.6]:
         m = f"nanoshaper_{gs}"
         try:
@@ -811,7 +809,15 @@ def _label_for(method):
     return DISPLAY_NAME.get(method, method)
 
 
-def plot_sweep(paths, y_scale_offset=0.005, y_scale_power=1.35, x_max=5):
+def plot_sweep(
+    paths,
+    y_scale_offset=0.005,
+    y_scale_power=1.35,
+    x_max=5,
+    include_legend=True,
+    include_title=True,
+    save_pdf=False,
+):
     # When a classify_csv is set, re-aggregate from filtered per-protein rows
     # instead of using the (unfiltered) pre-aggregated summary CSV.
     use_filtered = bool(paths.classify_csv) and os.path.exists(paths.classify_csv)
@@ -822,6 +828,8 @@ def plot_sweep(paths, y_scale_offset=0.005, y_scale_power=1.35, x_max=5):
             for m in METHODS:
                 s = row.get(f"{m}_status", "")
                 if not s.startswith("ok"):
+                    for t in thresholds:
+                        agg[m][t]["fail"] += 1
                     continue
                 sizes_str = row.get(f"{m}_cc_sizes", "")
                 n_faces = int(row.get(f"{m}_n_faces", 0) or 0)
@@ -832,6 +840,8 @@ def plot_sweep(paths, y_scale_offset=0.005, y_scale_power=1.35, x_max=5):
                 try:
                     sizes = np.array([int(size) for size in sizes_str.split(";")])
                 except ValueError:
+                    for t in thresholds:
+                        agg[m][t]["fail"] += 1
                     continue
                 largest = int(np.max(sizes))
                 second_largest = (
@@ -877,38 +887,41 @@ def plot_sweep(paths, y_scale_offset=0.005, y_scale_power=1.35, x_max=5):
             ms=5,
         )
 
-    legend_handles = [
-        plt.Line2D(
-            [],
-            [],
-            color=_color_for(m),
-            marker="o",
-            linestyle="-",
-            lw=2.0,
-            markersize=6,
-            label=_label_for(m),
+    if include_legend:
+        legend_handles = [
+            plt.Line2D(
+                [],
+                [],
+                color=_color_for(m),
+                marker="o",
+                linestyle="-",
+                lw=2.0,
+                markersize=6,
+                label=_label_for(m),
+            )
+            for m in ORDERED_METHODS
+        ]
+        ax.legend(
+            handles=legend_handles,
+            loc="center left",
+            bbox_to_anchor=(1.01, 0.5),
+            fontsize=8.5,
+            ncol=1,
+            title="Surface method",
+            title_fontsize=9.5,
+            frameon=True,
+            edgecolor="#CCCCCC",
         )
-        for m in ORDERED_METHODS
-    ]
-    ax.legend(
-        handles=legend_handles,
-        loc="center left",
-        bbox_to_anchor=(1.01, 0.5),
-        fontsize=8.5,
-        ncol=1,
-        title="Surface method",
-        title_fontsize=9.5,
-        frameon=True,
-        edgecolor="#CCCCCC",
-    )
 
-    ax.set_xlabel("CC size threshold (% of largest)")
-    ax.set_ylabel("% proteins passing (≤1 CC above threshold)")
-    ax.set_title(f"CC threshold sweep — {last_total:,} proteins")
+    ax.set_xlabel("CC size threshold (% of largest)", fontsize=16)
+    ax.set_ylabel("Usable surface", fontsize=16)
+    ax.tick_params(axis="both", labelsize=14)
+    if include_title:
+        ax.set_title(f"CC threshold sweep — {last_total:,} proteins")
     ax.set_yscale("custom", offset=y_scale_offset, power=y_scale_power)
     from matplotlib.ticker import FixedLocator, FuncFormatter
 
-    ax.yaxis.set_major_locator(FixedLocator([0, 0.5, 0.9, 0.95, 0.99, 0.999, 0.9999]))
+    ax.yaxis.set_major_locator(FixedLocator([0, 0.5, 0.9, 0.95, 0.99, 0.9999]))
     ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y * 100:g}%"))
     ax.set_ylim(0, 1)
     ax.set_xlim(0, x_max)
@@ -919,6 +932,8 @@ def plot_sweep(paths, y_scale_offset=0.005, y_scale_power=1.35, x_max=5):
     plt.tight_layout()
     out = f"{paths.out_dir}/sweep_summary.png"
     plt.savefig(out, dpi=130, bbox_inches="tight")
+    if save_pdf:
+        plt.savefig(f"{paths.out_dir}/sweep_summary.pdf", bbox_inches="tight")
     plt.close()
     print(f"wrote {out}")
 
@@ -1480,21 +1495,19 @@ def plot_usable_vs_subprocess_success(
     threshold_frac=0.01,
     include_legend=False,
     output_name="validity_vs_subprocess_success",
-    conditional=False,
 ):
-    """Plot surface usability against subprocess success."""
+    """Plot surface usability against subprocess success, both over all proteins."""
     counts = {m: {"total": 0, "success": 0, "usable": 0} for m in PLOT_METHODS}
     for row in _iter_per_protein_rows(paths):
         for m in PLOT_METHODS:
             counts[m]["total"] += 1
-            status = row.get(f"{m}_status", "")
-            if status.startswith("ok"):
-                counts[m]["success"] += 1
-            if status.startswith("ok"):
-                sizes_str = row.get(f"{m}_cc_sizes", "")
-                n_faces = int(row.get(f"{m}_n_faces", 0) or 0)
-                if _evaluate_at_threshold(sizes_str, n_faces, threshold_frac):
-                    counts[m]["usable"] += 1
+            if not row.get(f"{m}_status", "").startswith("ok"):
+                continue
+            counts[m]["success"] += 1
+            sizes_str = row.get(f"{m}_cc_sizes", "")
+            n_faces = int(row.get(f"{m}_n_faces", 0) or 0)
+            if _evaluate_at_threshold(sizes_str, n_faces, threshold_frac):
+                counts[m]["usable"] += 1
 
     if not counts or not any(c["total"] for c in counts.values()):
         print("no data for usable-vs-subprocess-success plot")
@@ -1504,8 +1517,7 @@ def plot_usable_vs_subprocess_success(
     for m in ORDERED_METHODS:
         c = counts[m]
         x = c["success"] / c["total"] if c["total"] else 0
-        denominator = c["success"] if conditional else c["total"]
-        y = c["usable"] / denominator if denominator else 0
+        y = c["usable"] / c["total"] if c["total"] else 0
         points.append((m, x, y))
 
     overlap_counts = Counter((round(x, 12), round(y, 12)) for _, x, y in points)
@@ -1534,15 +1546,9 @@ def plot_usable_vs_subprocess_success(
     ax.set_box_aspect(1)
     ax.set_xscale("custom", offset=0.005, sup_lim=1, power=1.35)
     ax.set_yscale("custom", offset=0.005, power=1.35)
-    ax.set_xlabel("1 − subprocess error rate" if conditional else "Surface generated")
-    if conditional:
-        ax.set_ylabel(
-            f"Usable surface rate among successful runs ({threshold_frac * 100:g}% CC threshold)"
-        )
-        ax.set_title("Usable surfaces vs subprocess success")
-    else:
-        ax.set_ylabel(f"Valid surface rate ({threshold_frac * 100:g}% CC threshold)")
-        ax.set_title("Surface validity vs surface generation")
+    ax.set_xlabel("Surface generated")
+    ax.set_ylabel(f"Valid surface rate ({threshold_frac * 100:g}% CC threshold)")
+    ax.set_title("Surface validity vs surface generation")
     from matplotlib.ticker import FixedLocator, FuncFormatter
 
     percent_formatter = FuncFormatter(lambda x, _: f"{x * 100:g}%")
@@ -1655,8 +1661,8 @@ def main():
         "--edtsurf-surface-mode",
         type=int,
         choices=(1, 2, 3),
-        default=1,
-        help="EDTSurf -h mode: 1 outer+inner, 2 outer, 3 inner (default: 1).",
+        default=2,
+        help="EDTSurf -h mode: 1 outer+inner, 2 outer, 3 inner (default: 2).",
     )
     parser.add_argument(
         "--edtsurf-only",
@@ -1865,7 +1871,6 @@ def main():
             print(f"Timeouts: {n_timeouts}/{n_total}")
         print(f"Generation done in {time.time() - t0:.1f}s")
 
-    # Load previously-processed results
     prev_results = []
     done_stems = {Path(t[0]).stem for t in task_args}
     load_tasks = [
@@ -1903,7 +1908,6 @@ def main():
 
     results = prev_results + new_results
 
-    # Per-method error counts
     print(f"\nTotal results: {len(results)}")
     for m in METHODS:
         errors = sum(1 for r in results if r.get(f"{m}_status", "").startswith("error"))
@@ -1924,7 +1928,6 @@ def main():
     if not ok_results:
         return
 
-    # Threshold sweep
     thresholds = [0, 1, 2, 3, 4, 5, 6] + list(range(8, 32, 2))
 
     print(f"\n{'=' * 200}")
@@ -1962,7 +1965,6 @@ def main():
         print()
         sweep_rows.append(row)
 
-    # Per-protein CSV
     csv_path = os.path.join(args.output_dir, f"cc_threshold_sweep{args.csv_suffix}.csv")
     fields = ["pdb_name", "n_atoms"]
     for m in METHODS:
@@ -1973,7 +1975,6 @@ def main():
         writer.writerows(results)
     print(f"\nPer-protein CSV: {csv_path}")
 
-    # Sweep summary CSV
     sweep_path = os.path.join(
         args.output_dir, f"cc_threshold_sweep_summary{args.csv_suffix}.csv"
     )

@@ -20,14 +20,14 @@ hydra:
     job:
         chdir: False
     searchpath:
-        - file:///cluster/CBIO/data2/vgertner/alphasurf/alphasurf/alphasurf/tasks/shared_conf
+        - pkg://alphasurf.tasks.shared_conf
 
 seed: 2024
 use_wandb: False
 run_name: s3f_pretrain
 project_name: s3f_pretrain
-data_dir: /cluster/CBIO/data2/vgertner/alphasurf/alphasurf/data/cath/dompdb
-precompute_dir: /cluster/CBIO/data2/vgertner/alphasurf/alphasurf/data/cath/s3f_exact_precomputed
+data_dir: ???
+precompute_dir: ???
 log_dir: "./"
 epochs: 100
 device: 0
@@ -39,11 +39,11 @@ max_length: 250
 k_surf_leak: 20
 
 # Geometry used at every masked residue before rebuilding the AlphaSurf graph
-# and surface. "alanine" removes the native sidechain (including native CB)
-# and synthesizes the same ideal L-alanine CB from N/CA/C for every residue.
-# "backbone" retains only N/CA/C/O and reproduces the previous behavior.
+# and surface. "backbone" retains only N/CA/C/O, i.e. glycine geometry, and is
+# what every run so far has used. "alanine" additionally synthesizes the same
+# ideal L-alanine CB from N/CA/C for every residue; kept as an ablation.
 structure_mask:
-    mode: alanine
+    mode: backbone
 
 # Lightweight S3F-style sequence initialization of AlphaSurf vertices.
 # Each vertex receives the mean of a shared linear projection of the masked
@@ -53,7 +53,9 @@ structure_mask:
 # its own released-code-compatible surface initializer.
 surface_esm:
     enabled: false
+    mode: light
     k: 3
+    dropout: 0.1
 
 on_fly:
     surface_method: alpha_complex
@@ -66,6 +68,9 @@ on_fly:
     nanoshaper_grid_scale: 0.3
     tufting: true
     noise_mode: "none"
+    # s3f_exact only: generate the surface per protein on CPU in the dataloader
+    # workers. False generates the whole batch at once on the GPU.
+    surface_in_workers: true
     sigma_graph: 0.3
     sigma_mesh: 0.3
     clip_sigma: 3.0
@@ -93,7 +98,7 @@ train:
     detect_anomaly: False
     overfit_batches: 0
     fast_dev_run: false
-    to_monitor: acc/val
+    to_monitor: acc_val
 
 cfg_surface:
     use_surfaces: true

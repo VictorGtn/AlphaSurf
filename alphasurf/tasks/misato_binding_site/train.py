@@ -33,7 +33,7 @@ def main(cfg=None):
 
     datamodule = MisatoBindingSiteDataModule(cfg)
     model = MisatoBindingSiteModule(cfg)
-    version = os.environ.get("ATOMSURF_VERSION")
+    version = os.environ.get("ALPHASURF_VERSION")
     if version is None:
         version = (
             f"version_{TensorBoardLogger(save_dir=cfg.log_dir).version}_{cfg.run_name}"
@@ -90,7 +90,7 @@ def main(cfg=None):
     )
 
     ckpt_path = cfg.ckpt_path
-    if os.environ.get("ATOMSURF_RESUME") == "True":
+    if os.environ.get("ALPHASURF_RESUME") == "True":
         # Prefer progress from this run over the original warm-start checkpoint.
         # HPC checkpoints are written on the Slurm preemption signal; last.ckpt
         # is the fallback for ordinary process restarts.

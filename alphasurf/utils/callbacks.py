@@ -14,7 +14,7 @@ def add_wandb_logger(loggers, projectname, runname):
     tags = []
     log_dir = Path(tb_logger.log_dir).absolute()
     log_dir.mkdir(parents=True, exist_ok=True)
-    wand_id = os.environ.get("ATOMSURF_WANDB_ID", log_dir.stem)
+    wand_id = os.environ.get("ALPHASURF_WANDB_ID", log_dir.stem)
 
     # Respect WANDB_DIR env var when set; otherwise fall back to TB log dir
     wandb_save_dir = os.environ.get("WANDB_DIR", str(log_dir))

@@ -51,8 +51,8 @@ def main(cfg=None):
     datamodule = S3FPretrainDataModule(cfg)
     model = S3FPretrainModule(cfg)
 
-    if os.environ.get("ATOMSURF_VERSION"):
-        version_name = os.environ.get("ATOMSURF_VERSION")
+    if os.environ.get("ALPHASURF_VERSION"):
+        version_name = os.environ.get("ALPHASURF_VERSION")
     else:
         version = TensorBoardLogger(save_dir=cfg.log_dir).version
         version_name = f"version_{version}_{cfg.run_name}"
@@ -67,7 +67,7 @@ def main(cfg=None):
     callbacks = [
         pl.callbacks.LearningRateMonitor(),
         pl.callbacks.ModelCheckpoint(
-            filename="{epoch}-{acc/val:.3f}",
+            filename="{epoch}-{acc_val:.3f}",
             dirpath=Path(tb_logger.log_dir) / "checkpoints",
             monitor=cfg.train.to_monitor,
             mode="max",
@@ -108,7 +108,7 @@ def main(cfg=None):
     user_ckpt_path = getattr(cfg, "ckpt_path", None)
     ckpt_path = user_ckpt_path
 
-    if os.environ.get("ATOMSURF_RESUME") == "True":
+    if os.environ.get("ALPHASURF_RESUME") == "True":
         ckpt_dir = Path(tb_logger.log_dir) / "checkpoints"
         if ckpt_dir.exists():
             last_ckpt = ckpt_dir / "last.ckpt"
@@ -127,5 +127,5 @@ def main(cfg=None):
 if __name__ == "__main__":
     if "--resume" in sys.argv:
         sys.argv.remove("--resume")
-        os.environ["ATOMSURF_RESUME"] = "True"
+        os.environ["ALPHASURF_RESUME"] = "True"
     main()

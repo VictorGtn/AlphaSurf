@@ -46,25 +46,21 @@ def main(cfg=None):
 
     pl.seed_everything(cfg.seed, workers=True)
 
-    # DEBUG: Enable anomaly detection (slows training ~2x)
+    # Anomaly detection slows training ~2x.
     if getattr(cfg.train, "detect_anomaly", False):
         torch.autograd.set_detect_anomaly(True)
 
-    # Print mode info
     on_fly = getattr(cfg, "on_fly", None)
     mode_str = "ON-THE-FLY" if on_fly else "DISK"
     print(f"\n{'=' * 60}\nPINDER-PAIR TASK ({mode_str} MODE)\n{'=' * 60}\n")
 
-    # DataModule
     datamodule = PinderPairDataModule(cfg)
 
-    # Model
     model = PinderPairModule(cfg)
 
-    # Loggers
-    if os.environ.get("ATOMSURF_VERSION"):
+    if os.environ.get("ALPHASURF_VERSION"):
         # Force a specific version name (e.g. SLURM_JOB_ID) to simplify restarts
-        version_name = os.environ.get("ATOMSURF_VERSION")
+        version_name = os.environ.get("ALPHASURF_VERSION")
         tb_logger = TensorBoardLogger(
             save_dir=cfg.log_dir, version=version_name, name=cfg.run_name
         )
@@ -80,7 +76,6 @@ def main(cfg=None):
         project = getattr(cfg, "project_name", "pinder_pair")
         add_wandb_logger(loggers, projectname=project, runname=cfg.run_name)
 
-    # Callbacks
     callbacks = [
         pl.callbacks.LearningRateMonitor(),
         pl.callbacks.ModelCheckpoint(
@@ -100,7 +95,6 @@ def main(cfg=None):
         CommandLoggerCallback(command),
     ]
 
-    # Trainer
     params = {}
     if torch.cuda.is_available():
         params = {"accelerator": "gpu", "devices": [cfg.device]}
@@ -123,13 +117,10 @@ def main(cfg=None):
         **params,
     )
 
-    # Train
-    # Auto-resume logic
     user_ckpt_path = getattr(cfg, "ckpt_path", None)
     ckpt_path = user_ckpt_path
 
-    if os.environ.get("ATOMSURF_RESUME") == "True":
-        # Check in the current log directory for checkpoints
+    if os.environ.get("ALPHASURF_RESUME") == "True":
         ckpt_dir = Path(tb_logger.log_dir) / "checkpoints"
 
         found_local = False
@@ -212,7 +203,6 @@ def main(cfg=None):
                     "auroc_hetero_mean": r.get("auroc/test_hetero_mean", float("nan")),
                 }
 
-        # Summary table
         header = f"{'':^8} | {'AUROC mean':^10} | {'AUROC med':^10} | {'BACC mean':^10} | {'Homo':^10} | {'Hetero':^10} | {'N':^7}"
         sep = "-" * len(header)
         print(f"\n{'=' * len(header)}")
@@ -239,5 +229,5 @@ if __name__ == "__main__":
     # Handle --resume flag manually to avoid Hydra conflict
     if "--resume" in sys.argv:
         sys.argv.remove("--resume")
-        os.environ["ATOMSURF_RESUME"] = "True"
+        os.environ["ALPHASURF_RESUME"] = "True"
     main()

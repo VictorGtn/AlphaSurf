@@ -327,7 +327,6 @@ class SurfaceObject(Data, FeaturesHolder):
         """
 
         surface_method = kwargs.pop("surface_method", "msms")
-        sbl_exe_path = kwargs.pop("sbl_exe_path", None)
         alpha_value = kwargs.pop("alpha_value", 0.1)
         atom_pos = kwargs.pop("atom_pos", None)
         atom_radius = kwargs.pop("atom_radius", None)
@@ -345,7 +344,6 @@ class SurfaceObject(Data, FeaturesHolder):
 
                 verts, faces = pdb_to_alpha_complex(
                     pdb_path,
-                    sbl_exe_path=sbl_exe_path,
                     alpha_value=alpha_value,
                     atom_pos=atom_pos,
                     atom_radius=atom_radius,

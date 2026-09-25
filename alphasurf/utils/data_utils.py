@@ -167,7 +167,6 @@ def pdb_to_surf(
     use_pymesh=None,
     recompute_s=False,
     surface_method="msms",
-    sbl_exe_path=None,
     alpha_value=0.1,
 ):
     """
@@ -186,7 +185,6 @@ def pdb_to_surf(
                 use_pymesh=use_pymesh,
                 max_vert_number=max_vert_number,
                 surface_method=surface_method,
-                sbl_exe_path=sbl_exe_path,
                 alpha_value=alpha_value,
             )
             surface.add_geom_feats()
@@ -252,7 +250,6 @@ class PreprocessDataset(Dataset):
         face_reduction_rate=0.1,
         use_pymesh=None,
         surface_method="msms",
-        sbl_exe_path=None,
         alpha_value=0.1,
         _skip_surf_dir_creation=False,
     ):
@@ -263,7 +260,6 @@ class PreprocessDataset(Dataset):
         self.face_reduction_rate = face_reduction_rate
         self.use_pymesh = use_pymesh
         self.surface_method = surface_method
-        self.sbl_exe_path = sbl_exe_path
         self.alpha_value = alpha_value
 
         # Build surface directory name
@@ -303,7 +299,6 @@ class PreprocessDataset(Dataset):
             use_pymesh=self.use_pymesh,
             recompute_s=self.recompute_s,
             surface_method=self.surface_method,
-            sbl_exe_path=self.sbl_exe_path,
             alpha_value=self.alpha_value,
         )
 
