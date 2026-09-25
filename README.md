@@ -27,6 +27,9 @@ AlphaSurf is a protein structure encoder that jointly encodes graphs and surface
 
 ### Environment setup
 
+<details open>
+<summary><b>Conda environment, PyTorch and PyG</b></summary>
+
 ```bash
 conda create -n alphasurf python=3.10 -y
 conda activate alphasurf
@@ -48,6 +51,8 @@ pip install git+https://github.com/pvnieo/diffusion-net-plus.git
 pip install -r requirements.txt
 ```
 
+</details>
+
 ### CGAL alpha complex bindings
 
 On-the-fly surface generation requires CGAL Python bindings. These are located in `cgal_alpha_bindings/`.
@@ -62,7 +67,8 @@ On-the-fly surface generation requires CGAL Python bindings. These are located i
 
 #### Build
 
-**Linux (Ubuntu/Debian)**
+<details open>
+<summary><b>Linux (Ubuntu/Debian)</b></summary>
 
 ```bash
 sudo apt install libcgal-dev libgmp-dev libmpfr-dev python3-dev cmake
@@ -74,7 +80,10 @@ cmake ..
 make cgal_alpha_algo2 -j$(nproc)
 ```
 
-**macOS (Homebrew)**
+</details>
+
+<details>
+<summary><b>macOS (Homebrew)</b></summary>
 
 ```bash
 brew install cgal gmp mpfr
@@ -86,7 +95,10 @@ cmake ..
 make cgal_alpha_algo2 -j$(sysctl -n hw.ncpu)
 ```
 
-**Conda**
+</details>
+
+<details>
+<summary><b>Conda</b></summary>
 
 ```bash
 conda install -c conda-forge cgal-cpp pybind11
@@ -97,9 +109,14 @@ cmake ..
 make cgal_alpha_algo2 -j8
 ```
 
+</details>
+
 #### Making the bindings available
 
 After building, the compiled `.so` file lands in `cgal_alpha_bindings/build/`. When you import `cgal_alpha_algo2` in Python, it needs to find that `.so` on `sys.path`. The code does this automatically by looking for `cgal_alpha_bindings/build/` relative to the source tree.
+
+<details>
+<summary><b>If your environment overrides the working directory or <code>sys.path</code></b></summary>
 
 This works out of the box when running from the repo. However, some environments override the working directory or `sys.path` — for example SLURM jobs with `multiprocessing` workers using the `spawn` or `forkserver` start method. In that case each worker process starts fresh and may not inherit the path setup. To handle this, set the environment variable before launching your job:
 
@@ -107,6 +124,8 @@ This works out of the box when running from the repo. However, some environments
 export CGAL_BINDINGS_DIR=/path/to/cgal_alpha_bindings/build
 export PYTHONPATH="$CGAL_BINDINGS_DIR:$PYTHONPATH"
 ```
+
+</details>
 
 ### Curvature extension
 
@@ -123,7 +142,8 @@ The `eigen` headers are already available from the `cgal-cpp` conda install, and
 
 Every task takes its data directory as `data_dir=`; there is no default.
 
-**PINDER-Pair** — PDBs and split CSVs via the `pinder` package:
+<details>
+<summary><b>PINDER-Pair</b> — PDBs and split CSVs via the <code>pinder</code> package</summary>
 
 ```bash
 python alphasurf/tasks/pinder_pair/preprocess.py \
@@ -132,7 +152,10 @@ python alphasurf/tasks/pinder_pair/preprocess.py \
   --num_workers 30
 ```
 
-**MISATO** (`MD.hdf5` is ~133 GB):
+</details>
+
+<details>
+<summary><b>MISATO</b> — <code>MD.hdf5</code> is ~133 GB</summary>
 
 ```bash
 mkdir -p data/misato/splits
@@ -143,7 +166,10 @@ for split in train val test; do
 done
 ```
 
-**CATH** (S3F pretraining):
+</details>
+
+<details>
+<summary><b>CATH</b> — S3F pretraining</summary>
 
 ```bash
 mkdir -p data/cath && cd data/cath
@@ -151,7 +177,10 @@ curl -fL -o dompdb.tar https://huggingface.co/datasets/tyang816/cath/resolve/mai
 tar -xf dompdb.tar
 ```
 
-**ProteinGym** v1.3 substitutions plus AF2 structures:
+</details>
+
+<details>
+<summary><b>ProteinGym</b> — v1.3 substitutions plus AF2 structures</summary>
 
 ```bash
 mkdir -p data/proteingym && cd data/proteingym
@@ -163,6 +192,8 @@ unzip -q ProteinGym_AF2_structures.zip    -d af2_structures
 curl -fL -o substitutions/DMS_substitutions.csv \
   https://raw.githubusercontent.com/OATML-Markslab/ProteinGym/main/reference_files/DMS_substitutions.csv
 ```
+
+</details>
 
 **MaSIF-Ligand** — take the raw release from
 [MaSIF](https://github.com/LPDI-EPFL/masif) and lay it out as
@@ -180,16 +211,20 @@ Classifies surface patches by ligand type (7 classes).
 On-the-fly mode generates surfaces and graphs during training, so changing surface
 method needs no re-preprocessing.
 
+<details>
+<summary><b>On-the-fly training with alpha complex surfaces</b></summary>
+
 ```bash
 cd alphasurf/tasks/masif_ligand_new
 
-# On-the-fly training with alpha complex surfaces
 python train.py \
   data_dir=/path/to/masif_ligand \
   on_fly.surface_method=alpha_complex \
   on_fly.alpha_value=0 \
   on_fly.face_reduction_rate=1.0
 ```
+
+</details>
 
 ### PINDER-Pair
 
@@ -200,10 +235,12 @@ interaction probabilities and per-residue binding-site scores.
 
 Three test settings: holo (bound), apo (unbound experimental), af2 (predicted).
 
+<details>
+<summary><b>On-the-fly training</b></summary>
+
 ```bash
 cd alphasurf/tasks/pinder_pair
 
-# On-the-fly training
 python train.py \
   data_dir=/path/to/pinder \
   on_fly.surface_method=alpha_complex \
@@ -220,17 +257,30 @@ python train.py \
   loader.num_workers=8 \
   loader.pin_memory=false \
   loader.persistent_workers=true
+```
 
-# Disk-based training (requires precompute.py first)
+</details>
+
+<details>
+<summary><b>Disk-based training</b> — requires <code>precompute.py</code> first</summary>
+
+```bash
+cd alphasurf/tasks/pinder_pair
+
 python precompute.py data_dir=/path/to/pinder
 python train.py data_dir=/path/to/pinder on_fly=null
 ```
+
+</details>
 
 #### Noise augmentation
 
 `joint_mesh` adds Gaussian noise to the atom coordinates feeding both the graph
 and the surface, then displaces the resulting vertices along their normals.
 Validation and test always use clean structures; `noise_mode=none` disables it.
+
+<details>
+<summary><b>Training with noise</b></summary>
 
 ```bash
 cd alphasurf/tasks/pinder_pair
@@ -244,7 +294,10 @@ python train.py \
   on_fly.clip_sigma=3.0
 ```
 
-Evaluate a checkpoint on all three clean settings:
+</details>
+
+<details>
+<summary><b>Evaluating a checkpoint on all three clean settings</b></summary>
 
 ```bash
 python test.py \
@@ -252,6 +305,8 @@ python test.py \
   ckpt_path=/path/to/model.ckpt \
   test_setting=all
 ```
+
+</details>
 
 ### MISATO binding-site prediction
 
@@ -263,15 +318,18 @@ frame 0.
 
 **Location:** `alphasurf/tasks/misato_binding_site/`
 
-Preprocessing writes `binding_site/<pdb_id>.pt` with atom metadata, residue
-indices and labels:
+<details>
+<summary><b>Preprocessing</b> — writes <code>binding_site/&lt;pdb_id&gt;.pt</code> with atom metadata, residue indices and labels</summary>
 
 ```bash
 python -m alphasurf.tasks.misato_binding_site.preprocess \
   --data-dir /path/to/misato
 ```
 
-Coordinates stay in `MD.hdf5`; training reads one frame per complex lazily.
+</details>
+
+<details>
+<summary><b>Training</b> — coordinates stay in <code>MD.hdf5</code>, one frame read lazily per complex</summary>
 
 ```bash
 python -m alphasurf.tasks.misato_binding_site.train \
@@ -279,6 +337,8 @@ python -m alphasurf.tasks.misato_binding_site.train \
   train_frame_mode=random \
   eval_frame_mode=first
 ```
+
+</details>
 
 Published numbers use Guo et al.'s factorized batch-64 aggregation — systems in
 test-split order, residue predictions pooled per 64-system chunk, chunks averaged
@@ -296,13 +356,19 @@ checkpoints scored by ProteinGym.
 Leave `on_fly` set to build surfaces at runtime, or `on_fly=null` to read
 precomputed clouds from `precompute_dir`.
 
+<details>
+<summary><b>On-the-fly training</b></summary>
+
 ```bash
 cd alphasurf/tasks/s3f_pretrain
 
 python train.py data_dir=/path/to/cath/dompdb
 ```
 
-For the precomputed path, build the clouds first:
+</details>
+
+<details>
+<summary><b>Precomputed clouds</b> — build them first, then train with <code>on_fly=null</code></summary>
 
 ```bash
 python precompute_s3f_exact.py \
@@ -315,6 +381,8 @@ python train.py \
   on_fly=null
 ```
 
+</details>
+
 `precompute_alpha.py` is the alpha-complex equivalent; it writes
 `<parent of data_dir>/{surfaces,graphs}/<method>_<face_reduction_rate>_a<alpha>/`.
 
@@ -325,6 +393,9 @@ log-odds from an S3F-pretrained checkpoint.
 
 **Location:** `alphasurf/tasks/proteingym/`
 
+<details>
+<summary><b>Running the evaluation</b></summary>
+
 ```bash
 cd alphasurf/tasks/proteingym
 
@@ -334,6 +405,8 @@ python evaluate.py \
   --af2-dir /path/to/proteingym/af2_structures \
   --output-dir runs/alphasurf
 ```
+
+</details>
 
 `summary.csv` records, per assay, how much of it was scored structurally
 (`num_scored`, `num_groups_geometry_failed`, `num_positions_low_plddt`); read
