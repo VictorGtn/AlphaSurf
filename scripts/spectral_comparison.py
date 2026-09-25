@@ -64,8 +64,6 @@ sys.path.insert(
 )
 sys.path.append(os.path.join(project_root, "cgal_alpha_bindings", "build"))
 
-import cgal_sbl_sampling  # noqa: E402
-
 from alphasurf.protein.create_surface import (  # noqa: E402
     mesh_simplification,
     pdb_to_alpha_complex,
@@ -169,19 +167,6 @@ def assign_atom_index(verts, ref_points, ref_atom_idx):
     """
     dist, idx = cKDTree(ref_points).query(verts, k=1)
     return ref_atom_idx[idx].astype(np.int64), float(dist.max())
-
-
-def sas_surface(centers, radii, size):
-    """Outer boundary of the union of balls meshed by CGAL Mesh_3, with the atom index of every vertex.
-
-    The mesh is a closed manifold with vertices on the spheres, triangle circumradius at most
-    `size`, angles of at least 25 degrees and facets within size / 10 of the surface.
-    """
-    verts, faces, _ = cgal_sbl_sampling.mesh_union_of_balls(centers, radii, size, 0.1 * size, 25.0, size, mode=2)
-    verts, faces, _ = largest_component(verts, faces)
-    dist, idx = cKDTree(centers).query(verts, k=min(16, len(centers)))
-    atom_idx = idx[np.arange(len(verts)), np.abs(dist ** 2 - radii[idx] ** 2).argmin(axis=1)]
-    return verts, faces, atom_idx
 
 
 def atom_representatives(verts, atom_idx, atom_pos):
@@ -312,21 +297,14 @@ def build_mesh_set(pdb_path, args):
             store(kind, verts, faces, atom_pos, np.arange(len(atom_pos)))
 
     if {"msms_full", "msms_dec"} & wanted:
-        if args.surface_engine == "sbl":
-            raw_v, raw_f, raw_idx = sas_surface(
-                atom_pos.astype(np.float64),
-                (atom_radius + args.msms_radius_offset).astype(np.float64),
-                args.sbl_epsilon,
-            )
-        else:
-            raw_v, raw_f, raw_idx = pdb_to_surf(
-                pdb_path,
-                density=args.msms_density,
-                atom_pos=atom_pos,
-                atom_radius=atom_radius + args.msms_radius_offset,
-                keep_atom_idx=True,
-                probe_radius=args.msms_probe,
-            )
+        raw_v, raw_f, raw_idx = pdb_to_surf(
+            pdb_path,
+            density=args.msms_density,
+            atom_pos=atom_pos,
+            atom_radius=atom_radius + args.msms_radius_offset,
+            keep_atom_idx=True,
+            probe_radius=args.msms_probe,
+        )
         for kind, rate in (("msms_full", 1.0), ("msms_dec", args.msms_reduction)):
             if kind not in wanted:
                 continue
@@ -684,11 +662,6 @@ def main():
                         help="added to every atom radius before MSMS; 1.4 with a tiny probe approximates the SAS")
     parser.add_argument("--msms-probe", type=float, default=None,
                         help="MSMS probe radius (MSMS default 1.5)")
-    parser.add_argument("--surface-engine", choices=["msms", "sbl"], default="msms",
-                        help="build msms_full and msms_dec with MSMS, or as the boundary of the union of balls "
-                             "(radii + --msms-radius-offset) meshed by CGAL Mesh_3 on SBL creases")
-    parser.add_argument("--sbl-epsilon", type=float, default=1.0,
-                        help="largest triangle circumradius of the --surface-engine sbl mesh")
     parser.add_argument("--grid-scale", type=float, default=0.5,
                         help="grid points per angstrom of the nanoshaper and edtsurf meshes named without @scale")
     parser.add_argument("--area-scale", default="",

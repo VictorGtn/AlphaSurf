@@ -61,7 +61,6 @@ KIND_LABELS = {
 }
 GRID_KINDS = ("edtsurf", "nanoshaper")
 # The SAS is the union of balls with radii + 1.4 A, meshed from SBL samples as in spectral_comparison.
-SAS_KINDS = {"sas": "msms_full", "sas_dec": "msms_dec"}
 # Colours of plot_surface_speed.py; grid kinds are keyed by grid scale.
 KIND_COLORS = {
     "alpha": "#E41A1C", "alpha_tuft": "#E41A1C", "msms_dec": "#B07CC6", "msms_full": "#6A3D9A",
@@ -425,10 +424,10 @@ def main():
 
     grids = {k: grid_tool(k, args.grid_scale) for k in kinds}
     mesh_args = SimpleNamespace(
-        pairs=[f"{k}:{k}" for k in kinds if grids[k] is None and k not in SAS_KINDS], alpha_value=0.0,
+        pairs=[f"{k}:{k}" for k in kinds if grids[k] is None], alpha_value=0.0,
         msms_density=1.0,
         msms_reduction=args.msms_reduction, min_vert_number=16, max_vert_number=1000000,
-        support="patch", msms_radius_offset=0.0, msms_probe=None, surface_engine="msms",
+        support="patch", msms_radius_offset=0.0, msms_probe=None,
         allow_multiple_components=False,
     )
     meshes, _ = build_mesh_set(args.pdb, mesh_args)
@@ -438,13 +437,6 @@ def main():
         if grids[kind]:
             tool, scale = grids[kind]
             meshes[kind] = grid_mesh(tool, args.pdb, atom_pos, np.asarray(parsed[7], dtype=float), scale)
-    sas_kinds = [k for k in kinds if k in SAS_KINDS]
-    if sas_kinds:
-        sas_args = SimpleNamespace(**{**vars(mesh_args), "pairs": [f"{SAS_KINDS[k]}:{SAS_KINDS[k]}" for k in sas_kinds],
-                                      "msms_radius_offset": 1.4, "surface_engine": "sbl", "sbl_epsilon": 1.0})
-        sas_meshes, _ = build_mesh_set(args.pdb, sas_args)
-        for k in sas_kinds:
-            meshes[k] = sas_meshes[SAS_KINDS[k]]
     atom = args.atom if args.atom is not None else source_atom(atom_pos, args.partner, meshes)
 
     all_verts = np.concatenate([np.asarray(meshes[k]["verts"], dtype=float) for k in kinds])

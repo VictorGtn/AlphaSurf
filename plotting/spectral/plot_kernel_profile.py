@@ -119,8 +119,8 @@ def main():
         pdbs = [pdbs[i] for i in picked]
     mesh_args = SimpleNamespace(
         pairs=["msms_full:msms_full"], alpha_value=0.0, msms_density=1.0, msms_reduction=0.1, min_vert_number=16,
-        max_vert_number=1000000, support="sampled", msms_radius_offset=0.0, msms_probe=None, surface_engine="msms",
-        grid_scale=0.5, n_samples=args.n_samples, seed=2024, sbl_epsilon=1.0,
+        max_vert_number=1000000, support="sampled", msms_radius_offset=0.0, msms_probe=None,
+        grid_scale=0.5, n_samples=args.n_samples, seed=2024,
         allow_multiple_components=args.allow_multiple_components,
     )
     work = partial(profile, mesh_args=mesh_args, times=times, k_eig=args.k_eig)
