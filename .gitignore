@@ -203,3 +203,4 @@ plotting/figures/
 
 # Local-only parity harness against an upstream S3F clone.
 tests/manual/test_s3f_official_parity.py
+CLAUDE.md
