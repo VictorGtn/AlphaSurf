@@ -22,8 +22,9 @@ from torch.utils.data import DataLoader, Dataset
 if __name__ == "__main__":
     sys.path.append(str(Path(__file__).absolute().parents[3]))
 
+from alphasurf.protein.graphs import res_type_idx_to_1
 from alphasurf.protein.protein_loader import ProteinLoader
-from alphasurf.tasks.pinder_pair.pl_model import PinderPairModule
+from alphasurf.tasks.s3f_pretrain.pl_model import S3FPretrainModule
 from alphasurf.utils.config_utils import merge_surface_config
 from alphasurf.utils.data_utils import AtomBatch
 
@@ -60,10 +61,35 @@ def collate_fn(batch):
 
 def load_model(ckpt_path):
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    module = PinderPairModule.load_from_checkpoint(ckpt_path, map_location=device)
+    checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
+    module = S3FPretrainModule(checkpoint["hyper_parameters"]["cfg"])
+    # Checkpoints trained before e74d7b4 store an empty dummy_param in every GVP layer.
+    state_dict = {
+        key: value
+        for key, value in checkpoint["state_dict"].items()
+        if not key.endswith(".dummy_param")
+    }
+    module.load_state_dict(state_dict)
     module.eval()
     module.to(device)
+    module.model._load_esm(device)
     return module, device
+
+
+def append_esm_embeddings(s3f_model, graph):
+    """Concatenate unmasked ESM-2 embeddings to graph.x, as S3F pretraining does."""
+    aa_idx = graph.x[:, 1:21].argmax(dim=-1).cpu().numpy()
+    ptr = graph.ptr.tolist()
+    sequences = [
+        "".join(res_type_idx_to_1[i] for i in aa_idx[start:end])
+        for start, end in zip(ptr[:-1], ptr[1:])
+    ]
+    no_mask = [{"masked": torch.empty(0, dtype=torch.long)}] * len(sequences)
+    esm_emb, _ = s3f_model._run_esm_masked(
+        sequences, no_mask, graph.x.device, graph.x.dtype
+    )
+    graph.x = torch.cat([graph.x, esm_emb], dim=-1)
+    return graph
 
 
 def build_protein_loader(cfg):
@@ -83,7 +109,9 @@ def main():
     parser = argparse.ArgumentParser(
         description=(
             "Embed proteins into graph and surface latent vectors using a trained\n"
-            "PINDER-Pair encoder. Generates alpha complex surfaces on the fly.\n"
+            "S3F-pretrain encoder. Generates alpha complex surfaces on the fly and\n"
+            "appends unmasked ESM-2 650M embeddings to the graph features, as in\n"
+            "pretraining.\n"
             "\n"
             "Output .pt contents per protein:\n"
             "  graph_embedding   (N_residues, D) per-residue graph embeddings\n"
@@ -97,7 +125,7 @@ def main():
     parser.add_argument(
         "--ckpt",
         required=True,
-        help="Path to a trained PINDER-Pair model checkpoint (.ckpt). "
+        help="Path to a trained S3F-pretrain checkpoint (.ckpt). "
         "All config (encoder, surface method, etc.) is read from the checkpoint.",
     )
     pdb_group = parser.add_mutually_exclusive_group(required=True)
@@ -172,6 +200,7 @@ def main():
         # Extract batched surface and graph from AtomBatch
         surface = atom_batch.surface.to(device)
         graph = atom_batch.graph.to(device)
+        graph = append_esm_embeddings(module.model, graph)
 
         # Run the shared encoder (all blocks before the prediction heads)
         with torch.no_grad():
